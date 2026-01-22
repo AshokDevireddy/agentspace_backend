@@ -17,7 +17,7 @@ from . import views
 # Search agents URL pattern (mounted at /api/search-agents)
 search_agents_urlpatterns = [
     path('', views.SearchAgentsView.as_view(), name='search_agents'),
-    path('/fuzzy', views.SearchAgentsFuzzyView.as_view(), name='search_agents_fuzzy'),
+    path('fuzzy', views.SearchAgentsFuzzyView.as_view(), name='search_agents_fuzzy'),
 ]
 
 # Search clients URL pattern (mounted at /api/deals/search-clients)

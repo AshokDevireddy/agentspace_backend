@@ -69,7 +69,7 @@ urlpatterns = [
     path('api/ingest/', include('apps.ingest.urls')),
 
     # Search endpoints (mounted at different paths)
-    path('api/search-agents', include(search_agents_urlpatterns)),
+    path('api/search-agents/', include(search_agents_urlpatterns)),
     path('api/search-clients/fuzzy', include(search_clients_fuzzy_urlpatterns)),
     path('api/search-policies', include(search_policies_urlpatterns)),
     path('api/deals/search-clients', include(search_clients_urlpatterns)),
