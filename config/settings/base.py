@@ -56,6 +56,7 @@ INSTALLED_APPS = [
     'apps.messaging',  # Cron messaging (birthday, lapse, billing, etc.)
     'apps.nipr',       # NIPR job management
     'apps.ingest',     # Policy report ingest/processing
+    'apps.ai',         # AI conversations (P1-015)
 ]
 
 MIDDLEWARE = [

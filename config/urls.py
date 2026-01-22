@@ -68,6 +68,9 @@ urlpatterns = [
     # Ingest endpoints (policy report processing)
     path('api/ingest/', include('apps.ingest.urls')),
 
+    # AI endpoints (P1-015)
+    path('api/ai/', include('apps.ai.urls')),
+
     # Search endpoints (mounted at different paths)
     path('api/search-agents/', include(search_agents_urlpatterns)),
     path('api/search-clients/fuzzy', include(search_clients_fuzzy_urlpatterns)),

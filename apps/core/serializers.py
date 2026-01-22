@@ -11,6 +11,8 @@ from rest_framework import serializers
 
 from .models import (
     Agency,
+    AIConversation,
+    AIMessage,
     Beneficiary,
     Carrier,
     Client,
@@ -780,3 +782,58 @@ class ExpectedPayoutsResponseSerializer(serializers.Serializer):
     payouts = ExpectedPayoutSerializer(many=True)
     total_expected = serializers.DecimalField(max_digits=15, decimal_places=2)
     pagination = PaginationSerializer()
+
+
+# =============================================================================
+# AI Conversation/Message Serializers (P1-015)
+# =============================================================================
+
+class AIConversationListSerializer(serializers.ModelSerializer):
+    """Lightweight serializer for list views."""
+    message_count = serializers.SerializerMethodField()
+
+    class Meta:
+        model = AIConversation
+        fields = ['id', 'title', 'user_id', 'is_active',
+                  'message_count', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'created_at', 'updated_at']
+
+    def get_message_count(self, obj):
+        return getattr(obj, 'message_count', obj.messages.count())
+
+
+class AIMessageSerializer(serializers.ModelSerializer):
+    """Read serializer for AI messages."""
+
+    class Meta:
+        model = AIMessage
+        fields = ['id', 'conversation_id', 'role', 'content',
+                  'tool_calls', 'tool_results', 'created_at']
+        read_only_fields = ['id', 'created_at']
+
+
+class AIConversationDetailSerializer(serializers.ModelSerializer):
+    """Full serializer with messages."""
+    messages = AIMessageSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = AIConversation
+        fields = ['id', 'title', 'user_id', 'agency_id', 'is_active',
+                  'messages', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'created_at', 'updated_at']
+
+
+class AIConversationCreateSerializer(serializers.ModelSerializer):
+    """Write serializer for creating conversations."""
+
+    class Meta:
+        model = AIConversation
+        fields = ['title']
+
+
+class AIMessageCreateSerializer(serializers.ModelSerializer):
+    """Write serializer for creating messages."""
+
+    class Meta:
+        model = AIMessage
+        fields = ['conversation', 'role', 'content', 'tool_calls', 'tool_results']
