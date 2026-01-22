@@ -10,5 +10,6 @@ from . import views
 urlpatterns = [
     path('summary', views.DashboardSummaryView.as_view(), name='dashboard_summary'),
     path('scoreboard', views.ScoreboardView.as_view(), name='dashboard_scoreboard'),
+    path('scoreboard-lapsed', views.ScoreboardLapsedView.as_view(), name='dashboard_scoreboard_lapsed'),
     path('production', views.ProductionView.as_view(), name='dashboard_production'),
 ]

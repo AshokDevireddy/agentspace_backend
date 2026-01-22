@@ -18,6 +18,11 @@ from .selectors import (
     search_agents_downline,
     search_agents_all,
     search_clients_for_filter,
+    search_agents_for_filter,
+    search_agents_fuzzy,
+    search_clients_fuzzy,
+    search_policies_fuzzy,
+    search_policy_numbers_for_filter,
 )
 
 logger = logging.getLogger(__name__)
@@ -175,6 +180,257 @@ class SearchClientsView(APIView):
             return Response(clients)
         except Exception as e:
             logger.error(f'Search clients failed: {e}')
+            return Response(
+                {'error': str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
+class SearchAgentsForFilterView(APIView):
+    """
+    GET /api/deals/search-agents
+
+    Search agents for filter dropdown (with deals only).
+    Translated from Supabase RPC: search_agents_for_filter
+
+    Query params:
+        q: Search term (empty returns all)
+        limit: Max results (default: 20)
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = get_user_context(request)
+        if not user:
+            return Response(
+                {'error': 'Unauthorized'},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
+        search_term = request.query_params.get('q', '')
+        try:
+            limit = min(int(request.query_params.get('limit', 20)), 100)
+        except ValueError:
+            limit = 20
+
+        try:
+            results = search_agents_for_filter(user.id, search_term, limit)
+            return Response(results)
+        except Exception as e:
+            logger.error(f'Search agents for filter failed: {e}')
+            return Response(
+                {'error': str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
+class SearchAgentsFuzzyView(APIView):
+    """
+    GET /api/search-agents/fuzzy
+
+    Fuzzy search for agents using pg_trgm similarity.
+    Translated from Supabase RPC: search_agents_fuzzy
+
+    Query params:
+        q: Search query (required)
+        limit: Max results (default: 20)
+        threshold: Similarity threshold 0.0-1.0 (default: 0.3)
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = get_user_context(request)
+        if not user:
+            return Response(
+                {'error': 'Unauthorized'},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
+        query = request.query_params.get('q', '').strip()
+        if not query:
+            return Response(
+                {'error': 'Search query is required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            limit = min(int(request.query_params.get('limit', 20)), 100)
+        except ValueError:
+            limit = 20
+
+        try:
+            threshold = float(request.query_params.get('threshold', 0.3))
+            threshold = max(0.0, min(1.0, threshold))
+        except ValueError:
+            threshold = 0.3
+
+        # Get allowed agent IDs based on user permissions
+        is_admin = user.is_admin or user.role == 'admin'
+        allowed_ids = None if is_admin else None  # Fuzzy search handles this internally
+
+        try:
+            results = search_agents_fuzzy(
+                query=query,
+                agency_id=user.agency_id,
+                allowed_agent_ids=allowed_ids,
+                limit=limit,
+                similarity_threshold=threshold,
+            )
+            return Response(results)
+        except Exception as e:
+            logger.error(f'Fuzzy search agents failed: {e}')
+            return Response(
+                {'error': str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
+class SearchClientsFuzzyView(APIView):
+    """
+    GET /api/search-clients/fuzzy
+
+    Fuzzy search for clients using pg_trgm similarity.
+    Translated from Supabase RPC: search_clients_fuzzy
+
+    Query params:
+        q: Search query (required)
+        limit: Max results (default: 20)
+        threshold: Similarity threshold 0.0-1.0 (default: 0.3)
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = get_user_context(request)
+        if not user:
+            return Response(
+                {'error': 'Unauthorized'},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
+        query = request.query_params.get('q', '').strip()
+        if not query:
+            return Response(
+                {'error': 'Search query is required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            limit = min(int(request.query_params.get('limit', 20)), 100)
+        except ValueError:
+            limit = 20
+
+        try:
+            threshold = float(request.query_params.get('threshold', 0.3))
+            threshold = max(0.0, min(1.0, threshold))
+        except ValueError:
+            threshold = 0.3
+
+        try:
+            results = search_clients_fuzzy(
+                query=query,
+                agency_id=user.agency_id,
+                allowed_agent_ids=None,  # Permission checking done internally
+                limit=limit,
+                similarity_threshold=threshold,
+            )
+            return Response(results)
+        except Exception as e:
+            logger.error(f'Fuzzy search clients failed: {e}')
+            return Response(
+                {'error': str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
+class SearchPoliciesFuzzyView(APIView):
+    """
+    GET /api/search-policies
+
+    Fuzzy search for policies/deals using pg_trgm similarity.
+    Translated from Supabase RPC: search_policies_fuzzy
+
+    Query params:
+        q: Search query (required)
+        limit: Max results (default: 20)
+        threshold: Similarity threshold 0.0-1.0 (default: 0.3)
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = get_user_context(request)
+        if not user:
+            return Response(
+                {'error': 'Unauthorized'},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
+        query = request.query_params.get('q', '').strip()
+        if not query:
+            return Response(
+                {'error': 'Search query is required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            limit = min(int(request.query_params.get('limit', 20)), 100)
+        except ValueError:
+            limit = 20
+
+        try:
+            threshold = float(request.query_params.get('threshold', 0.3))
+            threshold = max(0.0, min(1.0, threshold))
+        except ValueError:
+            threshold = 0.3
+
+        try:
+            results = search_policies_fuzzy(
+                query=query,
+                agency_id=user.agency_id,
+                allowed_agent_ids=None,
+                limit=limit,
+                similarity_threshold=threshold,
+            )
+            return Response(results)
+        except Exception as e:
+            logger.error(f'Fuzzy search policies failed: {e}')
+            return Response(
+                {'error': str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
+class SearchPolicyNumbersForFilterView(APIView):
+    """
+    GET /api/deals/search-policy-numbers
+
+    Search policy numbers for filter dropdown.
+    Translated from Supabase RPC: search_policy_numbers_for_filter
+
+    Query params:
+        q: Search term (empty returns all)
+        limit: Max results (default: 20)
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = get_user_context(request)
+        if not user:
+            return Response(
+                {'error': 'Unauthorized'},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
+        search_term = request.query_params.get('q', '')
+        try:
+            limit = min(int(request.query_params.get('limit', 20)), 100)
+        except ValueError:
+            limit = 20
+
+        try:
+            results = search_policy_numbers_for_filter(user.id, search_term, limit)
+            return Response(results)
+        except Exception as e:
+            logger.error(f'Search policy numbers failed: {e}')
             return Response(
                 {'error': str(e)},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR

@@ -19,6 +19,7 @@ from .services import (
     get_user_context_from_auth_id,
     get_dashboard_summary,
     get_scoreboard_data,
+    get_scoreboard_lapsed_deals,
     get_production_data,
 )
 
@@ -259,5 +260,97 @@ class ProductionView(APIView):
             logger.error(f'Production data failed: {e}')
             return Response(
                 {'error': 'ServerError', 'message': 'Failed to get production data'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
+class ScoreboardLapsedView(APIView):
+    """
+    GET /api/dashboard/scoreboard-lapsed
+
+    Get scoreboard data with updated lapsed deals calculation.
+    Translated from Supabase RPC: get_scoreboard_data_updated_lapsed_deals
+
+    Query params:
+        start_date: Required date (YYYY-MM-DD)
+        end_date: Required date (YYYY-MM-DD)
+        assumed_months_till_lapse: Optional int (default: 0)
+        scope: Optional 'agency' or 'downline' (default: 'agency')
+        submitted: Optional boolean (default: false)
+
+    Response (200):
+        {
+            "success": true,
+            "data": {
+                "leaderboard": [...],
+                "stats": { "totalProduction": ..., "totalDeals": ..., "activeAgents": ... },
+                "dateRange": { "startDate": "...", "endDate": "..." }
+            }
+        }
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = get_user_context(request)
+        if not user:
+            return Response(
+                {'error': 'Unauthorized', 'message': 'Authentication required'},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
+        # Get user context from auth_user_id
+        user_ctx = get_user_context_from_auth_id(user.auth_user_id)
+        if not user_ctx:
+            return Response(
+                {'success': False, 'error': 'User not associated with an agency'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        # Parse required date parameters
+        start_date_str = request.query_params.get('start_date')
+        end_date_str = request.query_params.get('end_date')
+
+        if not start_date_str or not end_date_str:
+            return Response(
+                {'success': False, 'error': 'start_date and end_date are required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        start_date = parse_date(start_date_str)
+        end_date = parse_date(end_date_str)
+
+        if not start_date or not end_date:
+            return Response(
+                {'success': False, 'error': 'Invalid date format. Use YYYY-MM-DD'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Parse optional parameters
+        try:
+            assumed_months = int(request.query_params.get('assumed_months_till_lapse', 0))
+        except (ValueError, TypeError):
+            assumed_months = 0
+
+        scope = request.query_params.get('scope', 'agency')
+        if scope not in ('agency', 'downline'):
+            scope = 'agency'
+
+        submitted_str = request.query_params.get('submitted', 'false').lower()
+        submitted = submitted_str in ('true', '1', 'yes')
+
+        try:
+            data = get_scoreboard_lapsed_deals(
+                user_ctx,
+                start_date,
+                end_date,
+                assumed_months_till_lapse=assumed_months,
+                scope=scope,
+                submitted=submitted,
+            )
+            return Response(data)
+        except Exception as e:
+            logger.error(f'Scoreboard lapsed failed: {e}')
+            return Response(
+                {'success': False, 'error': 'Failed to get scoreboard data'},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )

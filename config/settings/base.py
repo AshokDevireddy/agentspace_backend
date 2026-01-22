@@ -48,6 +48,14 @@ INSTALLED_APPS = [
     'apps.positions',
     'apps.agents',
     'apps.search',
+    'apps.deals',      # P2-027, P2-028
+    'apps.payouts',    # P2-029
+    'apps.sms',        # P2-033 to P2-035
+    'apps.clients',    # P2-037
+    'apps.analytics',  # Analytics split view, downline distribution
+    'apps.messaging',  # Cron messaging (birthday, lapse, billing, etc.)
+    'apps.nipr',       # NIPR job management
+    'apps.ingest',     # Policy report ingest/processing
 ]
 
 MIDDLEWARE = [
@@ -63,6 +71,7 @@ MIDDLEWARE = [
 ROOT_URLCONF = 'config.urls'
 
 WSGI_APPLICATION = 'config.wsgi.application'
+ASGI_APPLICATION = 'config.asgi.application'
 
 # =============================================================================
 # Templates (required for admin)

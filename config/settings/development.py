@@ -38,4 +38,4 @@ DATABASES['default']['OPTIONS']['sslmode'] = config(  # noqa: F405
 # =============================================================================
 
 LOGGING['root']['level'] = 'DEBUG'  # noqa: F405
-LOGGING['loggers']['django']['level'] = 'DEBUG'  # noqa: F405
+LOGGING['loggers']['django']['level'] = 'INFO'  # noqa: F405

@@ -459,6 +459,276 @@ def get_scoreboard_data(
         }
 
 
+def get_scoreboard_lapsed_deals(
+    user_ctx: UserContext,
+    start_date: date,
+    end_date: date,
+    assumed_months_till_lapse: int = 0,
+    scope: str = 'agency',
+    submitted: bool = False,
+) -> dict:
+    """
+    Get scoreboard data with updated lapsed deals calculation.
+
+    Translated from Supabase RPC: get_scoreboard_data_updated_lapsed_deals
+
+    Args:
+        user_ctx: User context
+        start_date: Start date for calculations
+        end_date: End date for calculations
+        assumed_months_till_lapse: Assumed months till lapse for lapsed deals
+        scope: 'agency' for all agency or 'downline' for user's downline only
+        submitted: If True, use submission_date; otherwise use policy_effective_date
+
+    Returns:
+        {
+            'success': True,
+            'data': {
+                'leaderboard': [...],
+                'stats': { totalProduction, totalDeals, activeAgents },
+                'dateRange': { startDate, endDate }
+            }
+        }
+    """
+    internal_id = str(user_ctx.internal_user_id)
+    agency_id = str(user_ctx.agency_id)
+    assumed_months = max(assumed_months_till_lapse or 0, 0)
+
+    try:
+        with connection.cursor() as cursor:
+            # Build scope filter for agents and deals
+            if scope == 'agency':
+                agent_scope_filter = ""
+                deal_scope_filter = ""
+            else:  # 'downline'
+                agent_scope_filter = """
+                    AND (
+                        u.id = %(internal_id)s
+                        OR u.id IN (
+                            WITH RECURSIVE downline AS (
+                                SELECT id FROM users WHERE id = %(internal_id)s::uuid
+                                UNION ALL
+                                SELECT u2.id FROM users u2 JOIN downline d ON u2.upline_id = d.id
+                            )
+                            SELECT id FROM downline WHERE id != %(internal_id)s::uuid
+                        )
+                    )
+                """
+                deal_scope_filter = """
+                    AND (
+                        d.agent_id = %(internal_id)s::uuid
+                        OR d.agent_id IN (
+                            WITH RECURSIVE downline AS (
+                                SELECT id FROM users WHERE id = %(internal_id)s::uuid
+                                UNION ALL
+                                SELECT u2.id FROM users u2 JOIN downline d ON u2.upline_id = d.id
+                            )
+                            SELECT id FROM downline WHERE id != %(internal_id)s::uuid
+                        )
+                    )
+                """
+
+            # Build date field selection based on submitted flag
+            date_field = "d.submission_date" if submitted else "COALESCE(d.policy_effective_date, d.submission_date)"
+
+            query = f"""
+                WITH
+                agency_agents AS (
+                    SELECT
+                        u.id AS agent_id,
+                        CONCAT(u.first_name, ' ', u.last_name) AS name
+                    FROM users u
+                    WHERE u.agency_id = %(agency_id)s
+                        AND u.role <> 'client'
+                        AND u.is_active = true
+                        {agent_scope_filter}
+                ),
+
+                agency_deals AS (
+                    SELECT
+                        d.id AS deal_id,
+                        d.agent_id,
+                        d.carrier_id,
+                        d.status,
+                        d.status_standardized,
+                        d.annual_premium,
+                        d.billing_cycle,
+                        {date_field} AS policy_start_date
+                    FROM deals d
+                    JOIN users u ON u.id = d.agent_id AND u.is_active = true
+                    WHERE d.agency_id = %(agency_id)s
+                        AND {date_field} IS NOT NULL
+                        AND {date_field} BETWEEN %(start_date)s AND %(end_date)s
+                        AND d.annual_premium > 0
+                        {deal_scope_filter}
+                ),
+
+                positive_deals AS (
+                    SELECT
+                        ad.deal_id,
+                        ad.agent_id,
+                        ad.annual_premium,
+                        ad.billing_cycle,
+                        ad.policy_start_date,
+                        COALESCE(sm.status_standardized = 'Lapsed', false) AS is_lapsed
+                    FROM agency_deals ad
+                    LEFT JOIN status_mapping sm
+                        ON sm.carrier_id = ad.carrier_id
+                        AND sm.raw_status = ad.status
+                    WHERE
+                        %(submitted)s = true
+                        OR (
+                            COALESCE(sm.impact, 'neutral') = 'positive'
+                            OR sm.status_standardized = 'Lapsed'
+                        )
+                ),
+
+                agent_daily_breakdown AS (
+                    SELECT
+                        x.agent_id,
+                        jsonb_object_agg(
+                            x.policy_start_date::text,
+                            ROUND(x.daily_total::numeric, 2)
+                        ) AS daily_breakdown
+                    FROM (
+                        SELECT
+                            src.agent_id,
+                            src.policy_start_date,
+                            SUM(src.annual_premium) AS daily_total
+                        FROM (
+                            SELECT pd.agent_id, pd.policy_start_date, pd.annual_premium
+                            FROM positive_deals pd
+                            WHERE %(submitted)s = false
+
+                            UNION ALL
+
+                            SELECT ad.agent_id, ad.policy_start_date, ad.annual_premium
+                            FROM agency_deals ad
+                            WHERE %(submitted)s = true
+                        ) src
+                        GROUP BY src.agent_id, src.policy_start_date
+                    ) x
+                    GROUP BY x.agent_id
+                ),
+
+                agent_totals AS (
+                    SELECT
+                        t.agent_id,
+                        SUM(t.annual_premium) AS total_production,
+                        COUNT(DISTINCT t.deal_id) AS deal_count
+                    FROM (
+                        SELECT pd.agent_id, pd.deal_id, pd.annual_premium
+                        FROM positive_deals pd
+                        WHERE %(submitted)s = false
+
+                        UNION ALL
+
+                        SELECT ad.agent_id, ad.deal_id, ad.annual_premium
+                        FROM agency_deals ad
+                        WHERE %(submitted)s = true
+                    ) t
+                    GROUP BY t.agent_id
+                ),
+
+                new_business_agents AS (
+                    SELECT DISTINCT agent_id
+                    FROM positive_deals pd
+                    WHERE pd.policy_start_date BETWEEN %(start_date)s AND %(end_date)s
+                ),
+
+                leaderboard_data AS (
+                    SELECT
+                        aa.agent_id,
+                        aa.name,
+                        COALESCE(at.total_production, 0) AS total,
+                        COALESCE(adb.daily_breakdown, '{{}}'::jsonb) AS daily_breakdown,
+                        COALESCE(at.deal_count, 0) AS deal_count
+                    FROM agency_agents aa
+                    JOIN new_business_agents nba ON nba.agent_id = aa.agent_id
+                    LEFT JOIN agent_totals at ON at.agent_id = aa.agent_id
+                    LEFT JOIN agent_daily_breakdown adb ON adb.agent_id = aa.agent_id
+                    WHERE COALESCE(at.deal_count, 0) > 0
+                    ORDER BY total DESC
+                ),
+
+                ranked_leaderboard AS (
+                    SELECT
+                        ROW_NUMBER() OVER (ORDER BY total DESC) AS rank,
+                        agent_id,
+                        name,
+                        total,
+                        daily_breakdown,
+                        deal_count
+                    FROM leaderboard_data
+                ),
+
+                overall_stats AS (
+                    SELECT
+                        COALESCE(SUM(total), 0) AS total_production,
+                        COALESCE(SUM(deal_count), 0) AS total_deals,
+                        COUNT(*) AS active_agents
+                    FROM leaderboard_data
+                )
+
+                SELECT
+                    COALESCE(
+                        (SELECT jsonb_agg(
+                            jsonb_build_object(
+                                'rank', rank,
+                                'agent_id', agent_id,
+                                'name', name,
+                                'total', ROUND(total::numeric, 2),
+                                'dailyBreakdown', daily_breakdown,
+                                'dealCount', deal_count
+                            )
+                        ) FROM ranked_leaderboard),
+                        '[]'::jsonb
+                    ) AS leaderboard,
+                    (SELECT jsonb_build_object(
+                        'totalProduction', ROUND(total_production::numeric, 2),
+                        'totalDeals', total_deals,
+                        'activeAgents', active_agents
+                    ) FROM overall_stats) AS stats
+            """
+
+            params = {
+                'agency_id': agency_id,
+                'internal_id': internal_id,
+                'start_date': start_date.isoformat(),
+                'end_date': end_date.isoformat(),
+                'submitted': submitted,
+            }
+
+            cursor.execute(query, params)
+            row = cursor.fetchone()
+
+            leaderboard = row[0] if row and row[0] else []
+            stats = row[1] if row and row[1] else {
+                'totalProduction': 0,
+                'totalDeals': 0,
+                'activeAgents': 0,
+            }
+
+            return {
+                'success': True,
+                'data': {
+                    'leaderboard': leaderboard,
+                    'stats': stats,
+                    'dateRange': {
+                        'startDate': start_date.isoformat(),
+                        'endDate': end_date.isoformat(),
+                    },
+                },
+            }
+
+    except Exception as e:
+        logger.error(f'Error getting scoreboard lapsed deals data: {e}')
+        return {
+            'success': False,
+            'error': str(e),
+        }
+
+
 def get_production_data(
     user_ctx: UserContext,
     agent_ids: list[str],

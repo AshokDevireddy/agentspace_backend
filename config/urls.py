@@ -7,7 +7,14 @@ from django.contrib import admin
 from django.urls import include, path
 
 from apps.core.views import health_check
-from apps.search.urls import search_agents_urlpatterns, search_clients_urlpatterns
+from apps.search.urls import (
+    search_agents_urlpatterns,
+    search_clients_urlpatterns,
+    search_agents_filter_urlpatterns,
+    search_policy_numbers_urlpatterns,
+    search_clients_fuzzy_urlpatterns,
+    search_policies_urlpatterns,
+)
 
 urlpatterns = [
     # Django Admin
@@ -37,7 +44,35 @@ urlpatterns = [
     # Agents endpoints
     path('api/agents/', include('apps.agents.urls')),
 
+    # Deals endpoints (P2-027, P2-028)
+    path('api/deals/', include('apps.deals.urls')),
+
+    # Expected Payouts endpoints (P2-029)
+    path('api/expected-payouts/', include('apps.payouts.urls')),
+
+    # SMS endpoints (P2-033 to P2-035)
+    path('api/sms/', include('apps.sms.urls')),
+
+    # Clients endpoints (P2-037)
+    path('api/clients/', include('apps.clients.urls')),
+
+    # Analytics endpoints
+    path('api/analytics/', include('apps.analytics.urls')),
+
+    # Messaging endpoints (cron jobs)
+    path('api/messaging/', include('apps.messaging.urls')),
+
+    # NIPR job management endpoints
+    path('api/nipr/', include('apps.nipr.urls')),
+
+    # Ingest endpoints (policy report processing)
+    path('api/ingest/', include('apps.ingest.urls')),
+
     # Search endpoints (mounted at different paths)
     path('api/search-agents', include(search_agents_urlpatterns)),
+    path('api/search-clients/fuzzy', include(search_clients_fuzzy_urlpatterns)),
+    path('api/search-policies', include(search_policies_urlpatterns)),
     path('api/deals/search-clients', include(search_clients_urlpatterns)),
+    path('api/deals/search-agents', include(search_agents_filter_urlpatterns)),
+    path('api/deals/search-policy-numbers', include(search_policy_numbers_urlpatterns)),
 ]

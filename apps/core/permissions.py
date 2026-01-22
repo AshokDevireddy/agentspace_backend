@@ -14,6 +14,38 @@ from .authentication import AuthenticatedUser
 logger = logging.getLogger(__name__)
 
 
+# =============================================================================
+# Subscription Tier Configuration
+# =============================================================================
+
+TIER_LIMITS = {
+    'free': {
+        'max_agents': 5,
+        'max_deals_per_month': 50,
+        'max_sms_per_month': 100,
+        'ai_chat_enabled': False,
+        'advanced_analytics': False,
+        'custom_branding': False,
+    },
+    'pro': {
+        'max_agents': 25,
+        'max_deals_per_month': 500,
+        'max_sms_per_month': 1000,
+        'ai_chat_enabled': True,
+        'advanced_analytics': True,
+        'custom_branding': False,
+    },
+    'expert': {
+        'max_agents': None,  # Unlimited
+        'max_deals_per_month': None,  # Unlimited
+        'max_sms_per_month': None,  # Unlimited
+        'ai_chat_enabled': True,
+        'advanced_analytics': True,
+        'custom_branding': True,
+    },
+}
+
+
 class IsAuthenticated(permissions.BasePermission):
     """
     Allows access only to authenticated users with valid status.
@@ -204,3 +236,182 @@ def get_visible_agent_ids(user: AuthenticatedUser, include_full_agency: bool = F
             SELECT id FROM downline
         """, [str(user.id), str(user.agency_id)])
         return [row[0] for row in cursor.fetchall()]
+
+
+# =============================================================================
+# Additional Permission Classes (P1-017, P1-018, P1-019)
+# =============================================================================
+
+class IsAgencyMember(permissions.BasePermission):
+    """
+    Ensures user belongs to an agency (P1-017).
+
+    SECURITY: Critical for multi-tenancy - prevents access without agency context.
+    """
+    message = 'Agency membership required'
+
+    def has_permission(self, request, view):
+        user = getattr(request, 'user', None)
+        if not isinstance(user, AuthenticatedUser):
+            return False
+        return user.agency_id is not None
+
+
+class IsAdminOrSelfOrDownline(permissions.BasePermission):
+    """
+    Allows access based on hierarchy (P1-018).
+
+    - Admins can access any user in their agency
+    - Users can access themselves
+    - Users can access their downlines
+
+    Use with views that have a target user (via URL param, query param, or object).
+    """
+    message = 'Access denied - not in your hierarchy'
+
+    def has_permission(self, request, view):
+        user = getattr(request, 'user', None)
+        if not isinstance(user, AuthenticatedUser):
+            return False
+        return True
+
+    def has_object_permission(self, request, view, obj):
+        user = request.user
+
+        # Get target user ID from object
+        target_user_id = None
+        if hasattr(obj, 'agent_id'):
+            target_user_id = obj.agent_id
+        elif hasattr(obj, 'user_id'):
+            target_user_id = obj.user_id
+        elif hasattr(obj, 'id') and hasattr(obj, 'email'):  # Looks like a User
+            target_user_id = obj.id
+
+        if target_user_id is None:
+            return True  # No user context on object, allow
+
+        return check_hierarchy_access(user, target_user_id)
+
+
+class SubscriptionTierPermission(permissions.BasePermission):
+    """
+    Feature gating based on subscription tier (P1-019).
+
+    Configure required features on the view:
+        class MyView(APIView):
+            permission_classes = [SubscriptionTierPermission]
+            required_features = ['ai_chat_enabled', 'advanced_analytics']
+            # OR
+            required_tier = 'pro'  # Minimum tier required
+    """
+    message = 'Subscription upgrade required for this feature'
+
+    def has_permission(self, request, view):
+        user = getattr(request, 'user', None)
+        if not isinstance(user, AuthenticatedUser):
+            return False
+
+        user_tier = user.subscription_tier or 'free'
+        tier_config = TIER_LIMITS.get(user_tier, TIER_LIMITS['free'])
+
+        # Check required features
+        required_features = getattr(view, 'required_features', [])
+        for feature in required_features:
+            if not tier_config.get(feature, False):
+                self.message = f'Upgrade to access {feature.replace("_", " ")}'
+                return False
+
+        # Check minimum tier
+        required_tier = getattr(view, 'required_tier', None)
+        if required_tier:
+            tier_order = ['free', 'pro', 'expert']
+            user_tier_index = tier_order.index(user_tier) if user_tier in tier_order else 0
+            required_tier_index = tier_order.index(required_tier) if required_tier in tier_order else 0
+            if user_tier_index < required_tier_index:
+                self.message = f'Upgrade to {required_tier} tier to access this feature'
+                return False
+
+        return True
+
+
+class CanAccessConversation(permissions.BasePermission):
+    """
+    Check if user can access an SMS conversation.
+
+    Rules:
+    - User owns the conversation (is the agent)
+    - User is in the upline of the conversation's agent
+    - User is admin
+    """
+    message = 'Access denied to this conversation'
+
+    def has_object_permission(self, request, view, obj):
+        user = request.user
+        if not isinstance(user, AuthenticatedUser):
+            return False
+
+        # Admin can access any conversation in their agency
+        if user.is_admin or user.role == 'admin':
+            return str(obj.agency_id) == str(user.agency_id)
+
+        # Check if user is the conversation's agent
+        if obj.agent_id and str(obj.agent_id) == str(user.id):
+            return True
+
+        # Check if conversation's agent is in user's downline
+        if obj.agent_id:
+            return check_hierarchy_access(user, obj.agent_id)
+
+        return False
+
+
+class HasUnlimitedSMS(permissions.BasePermission):
+    """
+    Check if user has unlimited SMS based on subscription tier.
+    """
+    message = 'SMS limit reached. Upgrade for unlimited messaging.'
+
+    def has_permission(self, request, view):
+        user = getattr(request, 'user', None)
+        if not isinstance(user, AuthenticatedUser):
+            return False
+
+        user_tier = user.subscription_tier or 'free'
+        tier_config = TIER_LIMITS.get(user_tier, TIER_LIMITS['free'])
+
+        # Expert tier has unlimited
+        if tier_config.get('max_sms_per_month') is None:
+            return True
+
+        # For limited tiers, would need to check usage count
+        # This is a simplified check - real implementation would query usage
+        return True  # Allow for now, actual limit check in service layer
+
+
+def get_tier_limits(tier: str) -> dict:
+    """
+    Get the limits for a subscription tier.
+
+    Args:
+        tier: The subscription tier name
+
+    Returns:
+        Dictionary of tier limits
+    """
+    return TIER_LIMITS.get(tier, TIER_LIMITS['free']).copy()
+
+
+def check_feature_access(user: AuthenticatedUser, feature: str) -> bool:
+    """
+    Check if a user has access to a specific feature.
+
+    Args:
+        user: The authenticated user
+        feature: The feature name to check
+
+    Returns:
+        True if user has access to the feature
+    """
+    user_tier = user.subscription_tier or 'free'
+    tier_config = TIER_LIMITS.get(user_tier, TIER_LIMITS['free'])
+    return tier_config.get(feature, False)

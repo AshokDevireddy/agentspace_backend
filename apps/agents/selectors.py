@@ -427,6 +427,89 @@ def get_agent_downlines_with_details(agent_id: UUID) -> List[dict]:
         return [dict(zip(columns, row)) for row in cursor.fetchall()]
 
 
+def check_agent_upline_positions(agent_id: UUID) -> dict:
+    """
+    Check if all agents in the upline chain have positions assigned.
+    Translated from Supabase RPC: check_agent_upline_positions
+
+    Traverses from the given agent up to the top of hierarchy,
+    checking if each agent has a position assigned.
+
+    Args:
+        agent_id: The agent to start checking from
+
+    Returns:
+        Dictionary with:
+        - has_all_positions: boolean
+        - missing_positions: list of agents without positions
+        - total_checked: count of checked agents
+    """
+    with connection.cursor() as cursor:
+        cursor.execute("""
+            WITH RECURSIVE upline_chain AS (
+                -- Start with the given agent
+                SELECT
+                    u.id,
+                    u.first_name,
+                    u.last_name,
+                    u.email,
+                    u.position_id,
+                    u.upline_id,
+                    0 as depth
+                FROM users u
+                WHERE u.id = %s
+
+                UNION ALL
+
+                -- Traverse up the hierarchy
+                SELECT
+                    u.id,
+                    u.first_name,
+                    u.last_name,
+                    u.email,
+                    u.position_id,
+                    u.upline_id,
+                    uc.depth + 1
+                FROM users u
+                JOIN upline_chain uc ON u.id = uc.upline_id
+                WHERE uc.upline_id IS NOT NULL
+                    AND uc.depth < 50  -- Safety limit
+            )
+            SELECT
+                id as agent_id,
+                first_name,
+                last_name,
+                email,
+                position_id,
+                upline_id IS NULL as is_top_of_hierarchy
+            FROM upline_chain
+            ORDER BY depth ASC
+        """, [str(agent_id)])
+
+        columns = [col[0] for col in cursor.description]
+        rows = [dict(zip(columns, row)) for row in cursor.fetchall()]
+
+    all_have_positions = True
+    missing_positions = []
+
+    for row in rows:
+        if row['position_id'] is None:
+            all_have_positions = False
+            missing_positions.append({
+                'agent_id': str(row['agent_id']),
+                'first_name': row['first_name'],
+                'last_name': row['last_name'],
+                'email': row['email'],
+                'is_top_of_hierarchy': row['is_top_of_hierarchy'],
+            })
+
+    return {
+        'has_all_positions': all_have_positions,
+        'missing_positions': missing_positions,
+        'total_checked': len(rows),
+    }
+
+
 def get_agents_debt_production(
     user_id: UUID,
     agent_ids: List[UUID],

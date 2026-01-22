@@ -19,6 +19,7 @@ from rest_framework.views import APIView
 
 from apps.core.authentication import get_user_context
 from .selectors import (
+    check_agent_upline_positions,
     get_agent_downline,
     get_agent_options,
     get_agents_hierarchy_nodes,
@@ -26,8 +27,9 @@ from .selectors import (
     get_agents_without_positions,
     get_agent_downlines_with_details,
     get_agents_debt_production,
+    get_agent_upline_chain,
 )
-from .services import assign_position_to_agent
+from .services import assign_position_to_agent, update_agent_position
 
 logger = logging.getLogger(__name__)
 
@@ -496,5 +498,161 @@ class AssignPositionView(APIView):
             logger.error(f'Assign position failed: {e}')
             return Response(
                 {'error': 'Failed to assign position', 'detail': str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
+class CheckUplinePositionsView(APIView):
+    """
+    GET /api/agents/{agent_id}/upline-positions
+
+    Check if all agents in the upline chain have positions assigned.
+    Translated from Supabase RPC: check_agent_upline_positions
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, agent_id):
+        user = get_user_context(request)
+        if not user:
+            return Response(
+                {'error': 'Unauthorized'},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
+        try:
+            agent_uuid = UUID(agent_id)
+        except ValueError:
+            return Response(
+                {'error': 'Invalid agent_id format'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            result = check_agent_upline_positions(agent_uuid)
+            return Response(result)
+
+        except Exception as e:
+            logger.error(f'Check upline positions failed: {e}')
+            return Response(
+                {'error': 'Failed to check upline positions', 'detail': str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
+class UpdateAgentPositionView(APIView):
+    """
+    PATCH /api/agents/{agent_id}/position
+
+    Update an agent's position with permission checks.
+    Translated from Supabase RPC: update_agent_position
+
+    Request body:
+        {
+            "position_id": "uuid"
+        }
+    """
+    permission_classes = [IsAuthenticated]
+
+    def patch(self, request, agent_id):
+        user = get_user_context(request)
+        if not user:
+            return Response(
+                {'error': 'Unauthorized'},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
+        try:
+            agent_uuid = UUID(agent_id)
+        except ValueError:
+            return Response(
+                {'error': 'Invalid agent_id format'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        position_id = request.data.get('position_id')
+        if not position_id:
+            return Response(
+                {'error': 'position_id is required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            position_uuid = UUID(position_id)
+        except ValueError:
+            return Response(
+                {'error': 'Invalid position_id format'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            result = update_agent_position(
+                user_id=user.id,
+                agent_id=agent_uuid,
+                position_id=position_uuid,
+            )
+
+            if result.get('success'):
+                return Response(result)
+            else:
+                return Response(
+                    {'error': result.get('error', 'Unknown error')},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+        except Exception as e:
+            logger.error(f'Update agent position failed: {e}')
+            return Response(
+                {'error': 'Failed to update position', 'detail': str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
+class GetAgentUplineChainView(APIView):
+    """
+    GET /api/agents/{agent_id}/upline-chain
+
+    Get the complete upline chain from an agent to the top of hierarchy.
+    Translated from Supabase RPC: get_agent_upline_chain
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, agent_id):
+        user = get_user_context(request)
+        if not user:
+            return Response(
+                {'error': 'Unauthorized'},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
+        try:
+            agent_uuid = UUID(agent_id)
+        except ValueError:
+            return Response(
+                {'error': 'Invalid agent_id format'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            chain = get_agent_upline_chain(agent_uuid)
+
+            # Format response
+            formatted_chain = []
+            for row in chain:
+                formatted_chain.append({
+                    'agent_id': str(row['agent_id']),
+                    'upline_id': str(row['upline_id']) if row['upline_id'] else None,
+                    'depth': row['depth'],
+                })
+
+            return Response({
+                'agent_id': agent_id,
+                'upline_chain': formatted_chain,
+                'chain_length': len(formatted_chain),
+            })
+
+        except Exception as e:
+            logger.error(f'Get agent upline chain failed: {e}')
+            return Response(
+                {'error': 'Failed to get upline chain', 'detail': str(e)},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
