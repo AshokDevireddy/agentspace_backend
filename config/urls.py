@@ -71,6 +71,9 @@ urlpatterns = [
     # AI endpoints (P1-015)
     path('api/ai/', include('apps.ai.urls')),
 
+    # Onboarding endpoints (server-side onboarding state)
+    path('api/onboarding/', include('apps.onboarding.urls')),
+
     # Search endpoints (mounted at different paths)
     path('api/search-agents/', include(search_agents_urlpatterns)),
     path('api/search-clients/fuzzy', include(search_clients_fuzzy_urlpatterns)),

@@ -16,6 +16,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.core.authentication import AuthenticatedUser, get_user_context
+from apps.onboarding.services import create_onboarding_progress
 
 logger = logging.getLogger(__name__)
 
@@ -295,16 +296,22 @@ class RegisterView(APIView):
                 """, [agency_name])
                 agency_id = cursor.fetchone()[0]
 
-                # Create user
+                # Create user with onboarding status
                 cursor.execute("""
                     INSERT INTO public.users (
                         auth_user_id, email, first_name, last_name,
                         agency_id, role, is_admin, status
                     )
-                    VALUES (%s, %s, %s, %s, %s, 'admin', true, 'active')
+                    VALUES (%s, %s, %s, %s, %s, 'admin', true, 'onboarding')
                     RETURNING id
                 """, [auth_user_id, email, first_name, last_name, agency_id])
                 user_id = cursor.fetchone()[0]
+
+            # Initialize onboarding progress for new admin
+            try:
+                create_onboarding_progress(user_id)
+            except Exception as e:
+                logger.warning(f'Failed to create onboarding progress for new admin: {e}')
 
             return Response(
                 {
@@ -383,15 +390,27 @@ class VerifyInviteView(APIView):
 
                 auth_data = response.json()
 
-            # Update user status to onboarding
+            # Update user status to onboarding and create onboarding progress
             auth_user_id = auth_data.get('user', {}).get('id')
+            user_id = None
             if auth_user_id:
                 with connection.cursor() as cursor:
                     cursor.execute("""
                         UPDATE public.users
                         SET status = 'onboarding'
                         WHERE auth_user_id = %s AND status = 'invited'
+                        RETURNING id
                     """, [auth_user_id])
+                    row = cursor.fetchone()
+                    if row:
+                        user_id = row[0]
+
+                # Initialize onboarding progress for the user
+                if user_id:
+                    try:
+                        create_onboarding_progress(user_id)
+                    except Exception as e:
+                        logger.warning(f'Failed to create onboarding progress: {e}')
 
             return Response({
                 'valid': True,

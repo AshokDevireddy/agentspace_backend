@@ -57,6 +57,7 @@ INSTALLED_APPS = [
     'apps.nipr',       # NIPR job management
     'apps.ingest',     # Policy report ingest/processing
     'apps.ai',         # AI conversations (P1-015)
+    'apps.onboarding', # Onboarding flow state management
 ]
 
 MIDDLEWARE = [
