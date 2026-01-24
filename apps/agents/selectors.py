@@ -277,6 +277,18 @@ def get_agents_hierarchy_nodes(user_id: UUID, include_full_agency: bool = False)
         ]
 
 
+# Allowed filter keys for get_agents_table() - security whitelist
+ALLOWED_AGENT_TABLE_FILTER_KEYS = frozenset({
+    'status',
+    'agent_name',
+    'in_upline',
+    'direct_upline',
+    'in_downline',
+    'direct_downline',
+    'position_id',
+})
+
+
 def get_agents_table(
     user_id: UUID,
     filters: Optional[Dict[str, Any]] = None,
@@ -300,8 +312,16 @@ def get_agents_table(
 
     Returns:
         List of agent rows with total_count for pagination
+
+    Raises:
+        ValueError: If an invalid filter key is provided
     """
     filters = filters or {}
+
+    # Validate filter keys against whitelist to prevent injection
+    invalid_keys = set(filters.keys()) - ALLOWED_AGENT_TABLE_FILTER_KEYS
+    if invalid_keys:
+        raise ValueError(f"Invalid filter key(s): {', '.join(sorted(invalid_keys))}")
 
     # Extract filter values
     status_filter = filters.get('status')
@@ -332,10 +352,11 @@ def get_agents_table(
             """
         else:
             base_cte = """
-                WITH current_usr AS (
+                WITH RECURSIVE
+                current_usr AS (
                     SELECT id, agency_id FROM users WHERE id = %s LIMIT 1
                 ),
-                RECURSIVE downline AS (
+                downline AS (
                     SELECT u.id
                     FROM users u
                     WHERE u.id = (SELECT id FROM current_usr)

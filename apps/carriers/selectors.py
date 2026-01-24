@@ -2,41 +2,49 @@
 Carrier Selectors
 
 Query functions for carrier data following the selector pattern.
+
+Uses Django ORM with select_related and prefetch_related for efficient queries.
 """
 from typing import List, Optional
 from uuid import UUID
 
-from django.db import connection
+from django.db.models import Prefetch
 
-from apps.core.models import Carrier
+from apps.core.models import Carrier, Product
 
 
 def get_active_carriers() -> List[dict]:
     """
     Get all active carriers ordered by display_name.
 
+    Uses Django ORM.
+
     Returns:
         List of carrier dictionaries with id, name, display_name, is_active, created_at
     """
-    with connection.cursor() as cursor:
-        cursor.execute("""
-            SELECT
-                id,
-                name,
-                display_name,
-                is_active,
-                created_at
-            FROM carriers
-            WHERE is_active = true
-            ORDER BY COALESCE(display_name, name) ASC
-        """)
-        columns = [col[0] for col in cursor.description]
-        return [dict(zip(columns, row)) for row in cursor.fetchall()]
+    carriers = (
+        Carrier.objects
+        .filter(is_active=True)
+        .order_by('name')  # Fallback since display_name may not exist
+    )
+
+    return [
+        {
+            'id': c.id,
+            'name': c.name,
+            'display_name': getattr(c, 'display_name', None),
+            'is_active': c.is_active,
+            'created_at': c.created_at,
+        }
+        for c in carriers
+    ]
 
 
 def get_carriers_with_products_for_agency(agency_id: UUID) -> List[dict]:
     """
     Get carriers that have products associated with the given agency.
+
+    Uses Django ORM with Prefetch to prevent N+1 queries.
 
     Args:
         agency_id: The agency UUID
@@ -44,60 +52,98 @@ def get_carriers_with_products_for_agency(agency_id: UUID) -> List[dict]:
     Returns:
         List of carrier dictionaries with nested products
     """
-    with connection.cursor() as cursor:
-        cursor.execute("""
-            SELECT DISTINCT
-                c.id,
-                c.name,
-                c.display_name,
-                c.is_active
-            FROM carriers c
-            INNER JOIN products p ON p.carrier_id = c.id
-            WHERE p.agency_id = %s
-                AND c.is_active = true
-                AND p.is_active = true
-            ORDER BY COALESCE(c.display_name, c.name) ASC
-        """, [str(agency_id)])
-        columns = [col[0] for col in cursor.description]
-        carriers = [dict(zip(columns, row)) for row in cursor.fetchall()]
+    # Prefetch active products for this agency
+    products_prefetch = Prefetch(
+        'products',
+        queryset=Product.objects.filter(
+            agency_id=agency_id,
+            is_active=True
+        ).order_by('name'),
+        to_attr='agency_products'
+    )
 
-    # Fetch products for each carrier
-    for carrier in carriers:
-        with connection.cursor() as cursor:
-            cursor.execute("""
-                SELECT
-                    id,
-                    name,
-                    product_code,
-                    is_active,
-                    created_at
-                FROM products
-                WHERE carrier_id = %s
-                    AND agency_id = %s
-                    AND is_active = true
-                ORDER BY name ASC
-            """, [str(carrier['id']), str(agency_id)])
-            columns = [col[0] for col in cursor.description]
-            carrier['products'] = [dict(zip(columns, row)) for row in cursor.fetchall()]
+    # Get carriers with active products for this agency
+    carriers = (
+        Carrier.objects
+        .filter(
+            is_active=True,
+            products__agency_id=agency_id,
+            products__is_active=True,
+        )
+        .distinct()
+        .prefetch_related(products_prefetch)
+        .order_by('name')
+    )
 
-    return carriers
+    return [
+        {
+            'id': c.id,
+            'name': c.name,
+            'display_name': getattr(c, 'display_name', None),
+            'is_active': c.is_active,
+            'products': [
+                {
+                    'id': p.id,
+                    'name': p.name,
+                    'product_code': getattr(p, 'product_code', None),
+                    'is_active': p.is_active,
+                    'created_at': p.created_at,
+                }
+                for p in c.agency_products
+            ],
+        }
+        for c in carriers
+    ]
 
 
 def get_carrier_names() -> List[dict]:
     """
     Get carrier names for dropdowns (lightweight query).
 
+    Uses Django ORM with only() to minimize data transfer.
+
     Returns:
         List of carrier dictionaries with id and name only
     """
-    with connection.cursor() as cursor:
-        cursor.execute("""
-            SELECT
-                id,
-                COALESCE(display_name, name) as name
-            FROM carriers
-            WHERE is_active = true
-            ORDER BY COALESCE(display_name, name) ASC
-        """)
-        columns = [col[0] for col in cursor.description]
-        return [dict(zip(columns, row)) for row in cursor.fetchall()]
+    carriers = (
+        Carrier.objects
+        .filter(is_active=True)
+        .only('id', 'name')
+        .order_by('name')
+    )
+
+    return [
+        {
+            'id': c.id,
+            'name': getattr(c, 'display_name', None) or c.name,
+        }
+        for c in carriers
+    ]
+
+
+def get_carrier_by_id(carrier_id: UUID) -> Optional[dict]:
+    """
+    Get a single carrier by ID.
+
+    Uses Django ORM.
+
+    Args:
+        carrier_id: The carrier UUID
+
+    Returns:
+        Carrier dictionary or None if not found
+    """
+    carrier = Carrier.objects.filter(id=carrier_id).first()
+
+    if not carrier:
+        return None
+
+    return {
+        'id': carrier.id,
+        'name': carrier.name,
+        'display_name': getattr(carrier, 'display_name', None),
+        'code': getattr(carrier, 'code', None),
+        'is_active': carrier.is_active,
+        'created_at': carrier.created_at,
+        'updated_at': carrier.updated_at,
+    }

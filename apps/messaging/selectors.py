@@ -11,18 +11,122 @@ Cron job queries for automated messaging translated from Supabase RPC functions:
 - get_quarterly_checkin_deals -> get_quarterly_checkin_deals()
 """
 import logging
-from datetime import date
+from datetime import date, timedelta
 from typing import Optional
+import calendar
 
 from django.db import connection
 
 logger = logging.getLogger(__name__)
 
 
+def calculate_next_billing_date(
+    billing_day_of_month: Optional[int],
+    billing_weekday: Optional[int],
+    billing_cycle: str,
+    reference_date: date,
+    today: Optional[date] = None
+) -> Optional[date]:
+    """
+    Calculate the next billing date based on billing pattern.
+
+    Port of RPC calculate_next_billing_date function.
+
+    Args:
+        billing_day_of_month: Day of month (1-31) for monthly billing, or None
+        billing_weekday: Weekday (0=Monday, 6=Sunday) for weekly billing, or None
+        billing_cycle: 'monthly', 'quarterly', 'semi-annually', 'annually', or 'weekly'
+        reference_date: The policy effective date or last billing date
+        today: Override for current date (for testing)
+
+    Returns:
+        Next billing date, or None if can't be calculated
+    """
+    if today is None:
+        today = date.today()
+
+    if not reference_date:
+        return None
+
+    # Determine billing interval in months
+    interval_map = {
+        'monthly': 1,
+        'quarterly': 3,
+        'semi-annually': 6,
+        'annually': 12,
+        'weekly': 0,  # Special case handled separately
+    }
+    billing_cycle_lower = (billing_cycle or 'monthly').lower()
+    interval_months = interval_map.get(billing_cycle_lower, 1)
+
+    # Weekly billing uses weekday
+    if billing_cycle_lower == 'weekly' and billing_weekday is not None:
+        # Find next occurrence of billing_weekday after today
+        days_ahead = billing_weekday - today.weekday()
+        if days_ahead <= 0:
+            days_ahead += 7
+        return today + timedelta(days=days_ahead)
+
+    # Monthly/Quarterly/etc. billing uses day of month
+    if billing_day_of_month is not None and 1 <= billing_day_of_month <= 31:
+        # Start from reference_date and find next billing date after today
+        current_year = reference_date.year
+        current_month = reference_date.month
+
+        # Generate billing dates until we find one after today
+        for _ in range(60):  # Max 5 years of monthly billing
+            # Clamp billing day to valid range for this month
+            _, days_in_month = calendar.monthrange(current_year, current_month)
+            actual_day = min(billing_day_of_month, days_in_month)
+
+            try:
+                billing_date = date(current_year, current_month, actual_day)
+                if billing_date > today:
+                    return billing_date
+            except ValueError:
+                pass  # Invalid date, skip
+
+            # Move to next billing period
+            current_month += interval_months
+            while current_month > 12:
+                current_month -= 12
+                current_year += 1
+
+        return None
+
+    # Fallback: use reference_date day of month
+    if reference_date:
+        ref_day = reference_date.day
+        current_year = reference_date.year
+        current_month = reference_date.month
+
+        for _ in range(60):
+            _, days_in_month = calendar.monthrange(current_year, current_month)
+            actual_day = min(ref_day, days_in_month)
+
+            try:
+                billing_date = date(current_year, current_month, actual_day)
+                if billing_date > today:
+                    return billing_date
+            except ValueError:
+                pass
+
+            current_month += interval_months
+            while current_month > 12:
+                current_month -= 12
+                current_year += 1
+
+    return None
+
+
 def get_billing_reminder_deals() -> list[dict]:
     """
     Get deals eligible for billing reminder messages (3 days before next billing).
     Translated from Supabase RPC: get_billing_reminder_deals_v2
+
+    Supports two billing date calculation methods:
+    1. billing_day_of_month: Uses specific day of month for billing
+    2. policy_effective_date: Falls back to recurring dates from effective date
 
     Returns:
         List of deals with billing reminder info
@@ -75,10 +179,51 @@ def get_billing_reminder_deals() -> list[dict]:
                     ad.client_name,
                     ad.client_phone,
                     ad.billing_cycle,
+                    ad.billing_day_of_month,
                     ad.policy_effective_date,
                     ad.monthly_premium,
                     ad.annual_premium,
-                    -- Fallback to old calculation method using policy_effective_date
+                    -- Method 1: Use billing_day_of_month if set
+                    -- Calculate next occurrence of billing day in current or next month
+                    CASE
+                        WHEN ad.billing_day_of_month IS NOT NULL AND ad.billing_day_of_month BETWEEN 1 AND 31 THEN
+                            CASE
+                                -- If billing day hasn't passed this month, use this month
+                                WHEN ad.billing_day_of_month > EXTRACT(DAY FROM CURRENT_DATE) THEN
+                                    make_date(
+                                        EXTRACT(YEAR FROM CURRENT_DATE)::int,
+                                        EXTRACT(MONTH FROM CURRENT_DATE)::int,
+                                        LEAST(ad.billing_day_of_month,
+                                            (DATE_TRUNC('month', CURRENT_DATE) + INTERVAL '1 month' - INTERVAL '1 day')::date -
+                                            DATE_TRUNC('month', CURRENT_DATE)::date + 1)::int
+                                    )
+                                -- Otherwise use next month (accounting for billing cycle)
+                                ELSE
+                                    make_date(
+                                        EXTRACT(YEAR FROM CURRENT_DATE + (
+                                            CASE ad.billing_cycle
+                                                WHEN 'monthly' THEN INTERVAL '1 month'
+                                                WHEN 'quarterly' THEN INTERVAL '3 months'
+                                                WHEN 'semi-annually' THEN INTERVAL '6 months'
+                                                WHEN 'annually' THEN INTERVAL '1 year'
+                                                ELSE INTERVAL '1 month'
+                                            END
+                                        ))::int,
+                                        EXTRACT(MONTH FROM CURRENT_DATE + (
+                                            CASE ad.billing_cycle
+                                                WHEN 'monthly' THEN INTERVAL '1 month'
+                                                WHEN 'quarterly' THEN INTERVAL '3 months'
+                                                WHEN 'semi-annually' THEN INTERVAL '6 months'
+                                                WHEN 'annually' THEN INTERVAL '1 year'
+                                                ELSE INTERVAL '1 month'
+                                            END
+                                        ))::int,
+                                        LEAST(ad.billing_day_of_month, 28)::int
+                                    )
+                            END
+                        ELSE NULL
+                    END AS billing_day_calculated_date,
+                    -- Method 2: Fallback to generate_series from policy_effective_date
                     (
                         SELECT dt::date
                         FROM generate_series(
@@ -101,7 +246,7 @@ def get_billing_reminder_deals() -> list[dict]:
                         ) AS dt
                         WHERE dt::date > CURRENT_DATE
                         LIMIT 1
-                    ) AS calculated_next_billing_date
+                    ) AS fallback_billing_date
                 FROM active_deals ad
             )
             SELECT
@@ -117,12 +262,13 @@ def get_billing_reminder_deals() -> list[dict]:
                 dwcd.client_name,
                 dwcd.client_phone,
                 dwcd.billing_cycle,
-                dwcd.calculated_next_billing_date as next_billing_date,
+                -- Prefer billing_day calculation, fall back to effective date method
+                COALESCE(dwcd.billing_day_calculated_date, dwcd.fallback_billing_date) as next_billing_date,
                 dwcd.policy_effective_date,
                 dwcd.monthly_premium,
                 dwcd.annual_premium
             FROM deals_with_calculated_dates dwcd
-            WHERE dwcd.calculated_next_billing_date = (CURRENT_DATE + INTERVAL '3 days')::date
+            WHERE COALESCE(dwcd.billing_day_calculated_date, dwcd.fallback_billing_date) = (CURRENT_DATE + INTERVAL '3 days')::date
                 OR dwcd.policy_effective_date = (CURRENT_DATE + INTERVAL '3 days')::date
         """)
 

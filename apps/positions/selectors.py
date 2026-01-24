@@ -3,11 +3,15 @@ Position Selectors
 
 Query functions for position data following the selector pattern.
 Replaces Supabase RPC: get_positions_for_agency
+
+Uses Django ORM with annotations and prefetch for efficient queries.
 """
 from typing import List, Optional
 from uuid import UUID
 
-from django.db import connection
+from django.db.models import Count, Q
+
+from apps.core.models import Position, PositionProductCommission, User
 
 
 def get_positions_for_agency(user_id: UUID) -> List[dict]:
@@ -15,40 +19,54 @@ def get_positions_for_agency(user_id: UUID) -> List[dict]:
     Get all positions for a user's agency.
     Translated from Supabase RPC: get_positions_for_agency
 
+    Uses Django ORM with annotation for agent count.
+
     Args:
         user_id: The user UUID (to determine agency)
 
     Returns:
         List of position dictionaries with counts
     """
-    with connection.cursor() as cursor:
-        cursor.execute("""
-            WITH user_agency AS (
-                SELECT agency_id FROM users WHERE id = %s LIMIT 1
+    # Get user's agency first
+    user = User.objects.filter(id=user_id).values('agency_id').first()
+    if not user or not user['agency_id']:
+        return []
+
+    agency_id = user['agency_id']
+
+    # Query positions with agent count annotation
+    positions = (
+        Position.objects
+        .filter(agency_id=agency_id)
+        .annotate(
+            agent_count=Count(
+                'users',
+                filter=Q(users__agency_id=agency_id)
             )
-            SELECT
-                p.id,
-                p.name,
-                p.level,
-                p.description,
-                p.is_active,
-                p.created_at,
-                p.updated_at,
-                COUNT(u.id) FILTER (WHERE u.position_id = p.id) as agent_count
-            FROM positions p
-            CROSS JOIN user_agency ua
-            LEFT JOIN users u ON u.position_id = p.id AND u.agency_id = ua.agency_id
-            WHERE p.agency_id = ua.agency_id
-            GROUP BY p.id, p.name, p.level, p.description, p.is_active, p.created_at, p.updated_at
-            ORDER BY p.level ASC, p.name ASC
-        """, [str(user_id)])
-        columns = [col[0] for col in cursor.description]
-        return [dict(zip(columns, row)) for row in cursor.fetchall()]
+        )
+        .order_by('level', 'name')
+    )
+
+    return [
+        {
+            'id': p.id,
+            'name': p.name,
+            'level': p.level,
+            'description': p.description,
+            'is_active': p.is_active,
+            'created_at': p.created_at,
+            'updated_at': p.updated_at,
+            'agent_count': p.agent_count,
+        }
+        for p in positions
+    ]
 
 
 def get_position_by_id(position_id: UUID, agency_id: UUID) -> Optional[dict]:
     """
     Get a single position by ID (agency-scoped).
+
+    Uses Django ORM with annotation for agent count.
 
     Args:
         position_id: The position UUID
@@ -57,32 +75,38 @@ def get_position_by_id(position_id: UUID, agency_id: UUID) -> Optional[dict]:
     Returns:
         Position dictionary or None if not found
     """
-    with connection.cursor() as cursor:
-        cursor.execute("""
-            SELECT
-                p.id,
-                p.name,
-                p.level,
-                p.description,
-                p.is_active,
-                p.created_at,
-                p.updated_at,
-                COUNT(u.id) FILTER (WHERE u.position_id = p.id) as agent_count
-            FROM positions p
-            LEFT JOIN users u ON u.position_id = p.id AND u.agency_id = %s
-            WHERE p.id = %s AND p.agency_id = %s
-            GROUP BY p.id, p.name, p.level, p.description, p.is_active, p.created_at, p.updated_at
-        """, [str(agency_id), str(position_id), str(agency_id)])
-        columns = [col[0] for col in cursor.description]
-        row = cursor.fetchone()
-        if row:
-            return dict(zip(columns, row))
+    position = (
+        Position.objects
+        .filter(id=position_id, agency_id=agency_id)
+        .annotate(
+            agent_count=Count(
+                'users',
+                filter=Q(users__agency_id=agency_id)
+            )
+        )
+        .first()
+    )
+
+    if not position:
         return None
+
+    return {
+        'id': position.id,
+        'name': position.name,
+        'level': position.level,
+        'description': position.description,
+        'is_active': position.is_active,
+        'created_at': position.created_at,
+        'updated_at': position.updated_at,
+        'agent_count': position.agent_count,
+    }
 
 
 def get_position_product_commissions(position_id: UUID, agency_id: UUID) -> List[dict]:
     """
     Get product commissions for a position.
+
+    Uses Django ORM with select_related to prevent N+1 queries.
 
     Args:
         position_id: The position UUID
@@ -91,26 +115,28 @@ def get_position_product_commissions(position_id: UUID, agency_id: UUID) -> List
     Returns:
         List of commission dictionaries with product info
     """
-    with connection.cursor() as cursor:
-        cursor.execute("""
-            SELECT
-                ppc.id,
-                ppc.position_id,
-                ppc.product_id,
-                ppc.commission_percentage,
-                p.name as product_name,
-                p.product_code,
-                c.name as carrier_name,
-                c.display_name as carrier_display_name
-            FROM position_product_commissions ppc
-            INNER JOIN products p ON p.id = ppc.product_id
-            INNER JOIN carriers c ON c.id = p.carrier_id
-            INNER JOIN positions pos ON pos.id = ppc.position_id
-            WHERE ppc.position_id = %s
-                AND pos.agency_id = %s
-                AND p.agency_id = %s
-                AND p.is_active = true
-            ORDER BY c.name ASC, p.name ASC
-        """, [str(position_id), str(agency_id), str(agency_id)])
-        columns = [col[0] for col in cursor.description]
-        return [dict(zip(columns, row)) for row in cursor.fetchall()]
+    commissions = (
+        PositionProductCommission.objects
+        .filter(
+            position_id=position_id,
+            position__agency_id=agency_id,
+            product__agency_id=agency_id,
+            product__is_active=True,
+        )
+        .select_related('product', 'product__carrier')
+        .order_by('product__carrier__name', 'product__name')
+    )
+
+    return [
+        {
+            'id': c.id,
+            'position_id': c.position_id,
+            'product_id': c.product_id,
+            'commission_percentage': c.commission_percentage,
+            'product_name': c.product.name,
+            'product_code': getattr(c.product, 'product_code', None),
+            'carrier_name': c.product.carrier.name if c.product.carrier else None,
+            'carrier_display_name': getattr(c.product.carrier, 'display_name', None) if c.product.carrier else None,
+        }
+        for c in commissions
+    ]

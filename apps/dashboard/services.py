@@ -16,6 +16,8 @@ from uuid import UUID
 
 from django.db import connection
 
+from services.hierarchy_service import HierarchyService
+
 logger = logging.getLogger(__name__)
 
 
@@ -254,23 +256,28 @@ def get_dashboard_summary(user_ctx: UserContext, as_of_date: Optional[date] = No
                         AND u.position_id IS NULL
                         AND u.role <> 'client'
                 """, [agency_id])
+                pending_row = cursor.fetchone()
+                pending_positions = pending_row[0] if pending_row else 0
             else:
-                cursor.execute("""
-                    WITH visible_users AS (
-                        SELECT gd.id AS user_id
-                        FROM public.get_agent_downline(%s) gd
-                        UNION
-                        SELECT %s AS user_id
-                    )
-                    SELECT COUNT(*)::int
-                    FROM visible_users vu
-                    JOIN users u ON u.id = vu.user_id
-                    WHERE u.position_id IS NULL
-                        AND u.role <> 'client'
-                """, [internal_id, internal_id])
-
-            pending_row = cursor.fetchone()
-            pending_positions = pending_row[0] if pending_row else 0
+                # Use HierarchyService instead of Supabase RPC
+                downline_ids = HierarchyService.get_downline(
+                    user_id=user_ctx.internal_user_id,
+                    agency_id=user_ctx.agency_id,
+                    include_self=True
+                )
+                if downline_ids:
+                    downline_ids_str = [str(uid) for uid in downline_ids]
+                    cursor.execute("""
+                        SELECT COUNT(*)::int
+                        FROM users u
+                        WHERE u.id = ANY(%s::uuid[])
+                            AND u.position_id IS NULL
+                            AND u.role <> 'client'
+                    """, [downline_ids_str])
+                    pending_row = cursor.fetchone()
+                    pending_positions = pending_row[0] if pending_row else 0
+                else:
+                    pending_positions = 0
 
             return {
                 'your_deals': your_deals,
