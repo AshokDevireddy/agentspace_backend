@@ -1,213 +1,267 @@
 """
-Deals API Views (P2-027, P2-028)
+Deals API Views (P1-011, P1-012, P1-013, P1-014, P2-027, P2-028)
 
-Provides deal-related endpoints:
-- GET /api/deals/book-of-business - Get paginated deals
+Endpoints:
+- GET /api/deals - List deals (book of business)
+- POST /api/deals - Create a new deal
+- GET /api/deals/{id} - Get deal details
+- PUT/PATCH /api/deals/{id} - Update a deal
+- DELETE /api/deals/{id} - Delete a deal
+- POST /api/deals/{id}/status - Update deal status
 - GET /api/deals/filter-options - Get filter options
 """
 import logging
-from datetime import datetime
-from uuid import UUID
+from decimal import Decimal
 
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from apps.core.authentication import get_user_context
+from apps.core.constants import PAGINATION
+from apps.core.mixins import AuthenticatedAPIView
 from .selectors import get_book_of_business, get_static_filter_options
+from .services import (
+    DealCreateInput,
+    DealUpdateInput,
+    create_deal,
+    update_deal,
+    update_deal_status,
+    delete_deal,
+    get_deal_by_id,
+)
 
 logger = logging.getLogger(__name__)
 
 
-class BookOfBusinessView(APIView):
-    """
-    GET /api/deals/book-of-business
+class DealsListCreateView(AuthenticatedAPIView, APIView):
+    """GET/POST /api/deals - List deals or create a new deal."""
 
-    Get paginated book of business (deals) with keyset pagination.
-
-    Query params:
-        limit: Page size (default: 50)
-        cursor_policy_effective_date: Cursor date for pagination (alias: cursor_created_at)
-        cursor_id: Cursor ID for pagination
-        carrier_id: Filter by carrier
-        product_id: Filter by product
-        agent_id: Filter by agent
-        client_id: Filter by specific client (P2-027)
-        status: Filter by raw status
-        status_standardized: Filter by standardized status
-        date_from: Filter by policy effective date (from) (alias: effective_date_start)
-        date_to: Filter by policy effective date (to) (alias: effective_date_end)
-        search: Search by client name or policy number
-        policy_number: Filter/search by exact policy number (P2-027)
-        billing_cycle: Filter by billing frequency (P2-027)
-        lead_source: Filter by lead source (P2-027)
-        view: Scope - 'self', 'downlines', or 'all' (P2-027)
-        effective_date_sort: Sort direction - 'oldest' or 'newest' (P2-027)
-    """
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        user = get_user_context(request)
-        if not user:
+        """Get paginated book of business (deals)."""
+        user = self.get_user(request)
+
+        limit = min(
+            int(request.query_params.get('limit', PAGINATION["default_limit"])),
+            PAGINATION["max_limit"],
+        )
+
+        cursor_date = (
+            request.query_params.get('cursor_policy_effective_date') or
+            request.query_params.get('cursor_created_at')
+        )
+        cursor_policy_effective_date = self.parse_date(cursor_date)
+
+        cursor_id = request.query_params.get('cursor_id')
+        cursor_uuid = self.parse_uuid_optional(cursor_id)
+
+        # Parse filter params
+        carrier_id = self.parse_uuid_optional(request.query_params.get('carrier_id'))
+        product_id = self.parse_uuid_optional(request.query_params.get('product_id'))
+        agent_id = self.parse_uuid_optional(request.query_params.get('agent_id'))
+        client_id = self.parse_uuid_optional(request.query_params.get('client_id'))
+
+        status_filter = request.query_params.get('status')
+        status_standardized = request.query_params.get('status_standardized')
+
+        date_from = self.parse_date(
+            request.query_params.get('date_from') or
+            request.query_params.get('effective_date_start')
+        )
+        date_to = self.parse_date(
+            request.query_params.get('date_to') or
+            request.query_params.get('effective_date_end')
+        )
+
+        search_query = request.query_params.get('search', '').strip() or None
+        policy_number = request.query_params.get('policy_number', '').strip() or None
+        billing_cycle = request.query_params.get('billing_cycle', '').strip() or None
+        lead_source = request.query_params.get('lead_source', '').strip() or None
+        view = request.query_params.get('view', 'downlines')
+        effective_date_sort = request.query_params.get('effective_date_sort')
+
+        is_admin = user.is_admin or user.role == 'admin'
+
+        result = get_book_of_business(
+            user=user,
+            limit=limit,
+            cursor_policy_effective_date=cursor_policy_effective_date,
+            cursor_id=cursor_uuid,
+            carrier_id=carrier_id,
+            product_id=product_id,
+            agent_id=agent_id,
+            client_id=client_id,
+            status=status_filter,
+            status_standardized=status_standardized,
+            date_from=date_from,
+            date_to=date_to,
+            search_query=search_query,
+            policy_number=policy_number,
+            billing_cycle=billing_cycle,
+            lead_source=lead_source,
+            view=view,
+            effective_date_sort=effective_date_sort,
+            include_full_agency=is_admin,
+        )
+
+        return Response(result)
+
+    def post(self, request):
+        """Create a new deal (P1-012)."""
+        user = self.get_user(request)
+        data = request.data
+
+        agent_id = data.get('agent_id')
+        if not agent_id:
             return Response(
-                {'error': 'Unauthorized'},
-                status=status.HTTP_401_UNAUTHORIZED
+                {'error': 'agent_id is required'},
+                status=status.HTTP_400_BAD_REQUEST
             )
 
-        try:
-            # Parse query params
-            limit = int(request.query_params.get('limit', 50))
-            limit = min(limit, 100)  # Cap at 100
-
-            # Support alias for cursor (cursor_created_at -> cursor_policy_effective_date)
-            cursor_date = (
-                request.query_params.get('cursor_policy_effective_date') or
-                request.query_params.get('cursor_created_at')
-            )
-            cursor_id = request.query_params.get('cursor_id')
-
-            cursor_policy_effective_date = None
-            if cursor_date:
-                try:
-                    cursor_policy_effective_date = datetime.strptime(cursor_date, '%Y-%m-%d').date()
-                except ValueError:
-                    return Response(
-                        {'error': 'Invalid cursor_policy_effective_date format. Use YYYY-MM-DD.'},
-                        status=status.HTTP_400_BAD_REQUEST
-                    )
-
-            cursor_uuid = None
-            if cursor_id:
-                try:
-                    cursor_uuid = UUID(cursor_id)
-                except ValueError:
-                    return Response(
-                        {'error': 'Invalid cursor_id format.'},
-                        status=status.HTTP_400_BAD_REQUEST
-                    )
-
-            # Parse filter params
-            carrier_id = request.query_params.get('carrier_id')
-            if carrier_id:
-                try:
-                    carrier_id = UUID(carrier_id)
-                except ValueError:
-                    carrier_id = None
-
-            product_id = request.query_params.get('product_id')
-            if product_id:
-                try:
-                    product_id = UUID(product_id)
-                except ValueError:
-                    product_id = None
-
-            agent_id = request.query_params.get('agent_id')
-            if agent_id:
-                try:
-                    agent_id = UUID(agent_id)
-                except ValueError:
-                    agent_id = None
-
-            # New filter: client_id (P2-027)
-            client_id = request.query_params.get('client_id')
-            if client_id:
-                try:
-                    client_id = UUID(client_id)
-                except ValueError:
-                    client_id = None
-
-            status_filter = request.query_params.get('status')
-            status_standardized = request.query_params.get('status_standardized')
-
-            # Support aliases for date filters (effective_date_start/end)
-            date_from = (
-                request.query_params.get('date_from') or
-                request.query_params.get('effective_date_start')
-            )
-            if date_from:
-                try:
-                    date_from = datetime.strptime(date_from, '%Y-%m-%d').date()
-                except ValueError:
-                    date_from = None
-
-            date_to = (
-                request.query_params.get('date_to') or
-                request.query_params.get('effective_date_end')
-            )
-            if date_to:
-                try:
-                    date_to = datetime.strptime(date_to, '%Y-%m-%d').date()
-                except ValueError:
-                    date_to = None
-
-            search_query = request.query_params.get('search', '').strip() or None
-
-            # New filters (P2-027)
-            policy_number = request.query_params.get('policy_number', '').strip() or None
-            billing_cycle = request.query_params.get('billing_cycle', '').strip() or None
-            lead_source = request.query_params.get('lead_source', '').strip() or None
-            view = request.query_params.get('view', 'downlines')  # 'self', 'downlines', 'all'
-            effective_date_sort = request.query_params.get('effective_date_sort')  # 'oldest', 'newest'
-
-            is_admin = user.is_admin or user.role == 'admin'
-
-            # Get book of business
-            result = get_book_of_business(
-                user=user,
-                limit=limit,
-                cursor_policy_effective_date=cursor_policy_effective_date,
-                cursor_id=cursor_uuid,
-                carrier_id=carrier_id,
-                product_id=product_id,
-                agent_id=agent_id,
-                client_id=client_id,
-                status=status_filter,
-                status_standardized=status_standardized,
-                date_from=date_from,
-                date_to=date_to,
-                search_query=search_query,
-                policy_number=policy_number,
-                billing_cycle=billing_cycle,
-                lead_source=lead_source,
-                view=view,
-                effective_date_sort=effective_date_sort,
-                include_full_agency=is_admin,
-            )
-
-            return Response(result)
-
-        except Exception as e:
-            logger.error(f'Book of business failed: {e}')
+        agent_uuid = self.parse_uuid_optional(agent_id)
+        if not agent_uuid:
             return Response(
-                {'error': 'Failed to fetch deals', 'detail': str(e)},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                {'error': 'Invalid agent_id format'},
+                status=status.HTTP_400_BAD_REQUEST
             )
 
+        input_data = DealCreateInput(
+            agency_id=user.agency_id,
+            agent_id=agent_uuid,
+            client_id=self.parse_uuid_optional(data.get('client_id')),
+            carrier_id=self.parse_uuid_optional(data.get('carrier_id')),
+            product_id=self.parse_uuid_optional(data.get('product_id')),
+            policy_number=data.get('policy_number'),
+            status=data.get('status'),
+            status_standardized=data.get('status_standardized'),
+            annual_premium=Decimal(str(data['annual_premium'])) if data.get('annual_premium') else None,
+            monthly_premium=Decimal(str(data['monthly_premium'])) if data.get('monthly_premium') else None,
+            policy_effective_date=data.get('policy_effective_date'),
+            submission_date=data.get('submission_date'),
+            billing_cycle=data.get('billing_cycle'),
+            lead_source=data.get('lead_source'),
+        )
 
-class FilterOptionsView(APIView):
-    """
-    GET /api/deals/filter-options
+        deal = create_deal(user, input_data)
+        return Response(deal, status=status.HTTP_201_CREATED)
 
-    Get filter options for deals (carriers, products, statuses, agents).
-    """
+
+class DealDetailView(AuthenticatedAPIView, APIView):
+    """GET/PUT/PATCH/DELETE /api/deals/{id} - Deal CRUD operations."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, deal_id):
+        """Get deal details (P1-011)."""
+        user = self.get_user(request)
+        deal_uuid = self.parse_uuid(deal_id, "deal_id")
+
+        deal = get_deal_by_id(deal_uuid, user)
+        if not deal:
+            return Response(
+                {'error': 'Deal not found'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        return Response(deal)
+
+    def put(self, request, deal_id):
+        """Full update of a deal (P1-013)."""
+        return self._update_deal(request, deal_id)
+
+    def patch(self, request, deal_id):
+        """Partial update of a deal (P1-013)."""
+        return self._update_deal(request, deal_id)
+
+    def delete(self, request, deal_id):
+        """Delete a deal."""
+        user = self.get_user(request)
+        deal_uuid = self.parse_uuid(deal_id, "deal_id")
+
+        deleted = delete_deal(deal_uuid, user)
+        if not deleted:
+            return Response(
+                {'error': 'Deal not found'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        return Response({'success': True})
+
+    def _update_deal(self, request, deal_id):
+        """Update deal helper."""
+        user = self.get_user(request)
+        deal_uuid = self.parse_uuid(deal_id, "deal_id")
+        data = request.data
+
+        input_data = DealUpdateInput(
+            client_id=self.parse_uuid_optional(data.get('client_id')) if 'client_id' in data else None,
+            carrier_id=self.parse_uuid_optional(data.get('carrier_id')) if 'carrier_id' in data else None,
+            product_id=self.parse_uuid_optional(data.get('product_id')) if 'product_id' in data else None,
+            policy_number=data.get('policy_number') if 'policy_number' in data else None,
+            status=data.get('status') if 'status' in data else None,
+            status_standardized=data.get('status_standardized') if 'status_standardized' in data else None,
+            annual_premium=Decimal(str(data['annual_premium'])) if 'annual_premium' in data and data['annual_premium'] else None,
+            monthly_premium=Decimal(str(data['monthly_premium'])) if 'monthly_premium' in data and data['monthly_premium'] else None,
+            policy_effective_date=data.get('policy_effective_date') if 'policy_effective_date' in data else None,
+            submission_date=data.get('submission_date') if 'submission_date' in data else None,
+            billing_cycle=data.get('billing_cycle') if 'billing_cycle' in data else None,
+            lead_source=data.get('lead_source') if 'lead_source' in data else None,
+        )
+
+        deal = update_deal(deal_uuid, user, input_data)
+        if not deal:
+            return Response(
+                {'error': 'Deal not found'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        return Response(deal)
+
+
+class DealStatusView(AuthenticatedAPIView, APIView):
+    """POST /api/deals/{id}/status - Update deal status (P1-014)."""
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, deal_id):
+        """Update deal status."""
+        user = self.get_user(request)
+        deal_uuid = self.parse_uuid(deal_id, "deal_id")
+
+        new_status = request.data.get('status')
+        new_status_standardized = request.data.get('status_standardized')
+
+        if not new_status:
+            return Response(
+                {'error': 'status is required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        deal = update_deal_status(deal_uuid, user, new_status, new_status_standardized)
+        if not deal:
+            return Response(
+                {'error': 'Deal not found'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        return Response(deal)
+
+
+class BookOfBusinessView(AuthenticatedAPIView, APIView):
+    """GET /api/deals/book-of-business - Alias for GET /api/deals."""
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        user = get_user_context(request)
-        if not user:
-            return Response(
-                {'error': 'Unauthorized'},
-                status=status.HTTP_401_UNAUTHORIZED
-            )
+        view = DealsListCreateView()
+        view.request = request
+        return view.get(request)
 
-        try:
-            options = get_static_filter_options(user)
-            return Response(options)
 
-        except Exception as e:
-            logger.error(f'Filter options failed: {e}')
-            return Response(
-                {'error': 'Failed to fetch filter options', 'detail': str(e)},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
-            )
+class FilterOptionsView(AuthenticatedAPIView, APIView):
+    """GET /api/deals/filter-options - Get filter options for deals."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = self.get_user(request)
+        options = get_static_filter_options(user)
+        return Response(options)

@@ -815,6 +815,244 @@ class DraftMessage(models.Model):
 
 
 # =============================================================================
+# SMS Templates (P2-029)
+# =============================================================================
+
+class SmsTemplate(models.Model):
+    """
+    SMS message templates for automated messaging.
+    Maps to: public.sms_templates
+    """
+    TEMPLATE_TYPE_CHOICES = [
+        ('welcome', 'Welcome'),
+        ('billing_reminder', 'Billing Reminder'),
+        ('lapse_reminder', 'Lapse Reminder'),
+        ('birthday', 'Birthday'),
+        ('holiday', 'Holiday'),
+        ('quarterly', 'Quarterly Check-in'),
+        ('policy_packet', 'Policy Packet'),
+        ('custom', 'Custom'),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4)
+    agency = models.ForeignKey(
+        Agency,
+        on_delete=models.CASCADE,
+        related_name='sms_templates'
+    )
+    name = models.CharField(max_length=255)
+    template_type = models.CharField(
+        max_length=50,
+        choices=TEMPLATE_TYPE_CHOICES,
+        default='custom'
+    )
+    content = models.TextField(
+        help_text='Template content with placeholders: {{client_name}}, {{agent_name}}, {{policy_number}}'
+    )
+    is_active = models.BooleanField(default=True)
+    created_by = models.ForeignKey(
+        'User',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='created_sms_templates'
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        managed = False
+        db_table = 'sms_templates'
+        ordering = ['name']
+
+    def __str__(self):
+        return f"{self.name} ({self.template_type})"
+
+
+# =============================================================================
+# Dashboard Widgets (P2-032)
+# =============================================================================
+
+class DashboardWidget(models.Model):
+    """
+    Configurable dashboard widgets for users.
+    Maps to: public.dashboard_widgets
+    """
+    WIDGET_TYPE_CHOICES = [
+        ('stats_card', 'Stats Card'),
+        ('chart', 'Chart'),
+        ('table', 'Table'),
+        ('leaderboard', 'Leaderboard'),
+        ('calendar', 'Calendar'),
+        ('activity_feed', 'Activity Feed'),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4)
+    user = models.ForeignKey(
+        'User',
+        on_delete=models.CASCADE,
+        related_name='dashboard_widgets'
+    )
+    widget_type = models.CharField(
+        max_length=50,
+        choices=WIDGET_TYPE_CHOICES
+    )
+    title = models.CharField(max_length=255)
+    position = models.IntegerField(default=0)
+    config = models.JSONField(
+        default=dict,
+        help_text='Widget-specific configuration'
+    )
+    is_visible = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        managed = False
+        db_table = 'dashboard_widgets'
+        ordering = ['position']
+
+    def __str__(self):
+        return f"{self.title} ({self.widget_type})"
+
+
+# =============================================================================
+# Reports (P2-033, P2-034)
+# =============================================================================
+
+class Report(models.Model):
+    """
+    Generated reports.
+    Maps to: public.reports
+    """
+    REPORT_TYPE_CHOICES = [
+        ('production', 'Production Report'),
+        ('pipeline', 'Pipeline Report'),
+        ('team_performance', 'Team Performance'),
+        ('revenue', 'Revenue Report'),
+        ('commission', 'Commission Report'),
+    ]
+
+    STATUS_CHOICES = [
+        ('pending', 'Pending'),
+        ('generating', 'Generating'),
+        ('completed', 'Completed'),
+        ('failed', 'Failed'),
+    ]
+
+    FORMAT_CHOICES = [
+        ('csv', 'CSV'),
+        ('xlsx', 'Excel'),
+        ('pdf', 'PDF'),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4)
+    agency = models.ForeignKey(
+        Agency,
+        on_delete=models.CASCADE,
+        related_name='reports'
+    )
+    user = models.ForeignKey(
+        'User',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='reports'
+    )
+    report_type = models.CharField(
+        max_length=50,
+        choices=REPORT_TYPE_CHOICES
+    )
+    title = models.CharField(max_length=255)
+    parameters = models.JSONField(
+        default=dict,
+        help_text='Report parameters (date range, filters, etc.)'
+    )
+    format = models.CharField(
+        max_length=10,
+        choices=FORMAT_CHOICES,
+        default='csv'
+    )
+    status = models.CharField(
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default='pending'
+    )
+    file_url = models.TextField(null=True, blank=True)
+    error_message = models.TextField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        managed = False
+        db_table = 'reports'
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"{self.title} ({self.report_type}) - {self.status}"
+
+
+class ScheduledReport(models.Model):
+    """
+    Scheduled report configurations.
+    Maps to: public.scheduled_reports
+    """
+    FREQUENCY_CHOICES = [
+        ('daily', 'Daily'),
+        ('weekly', 'Weekly'),
+        ('monthly', 'Monthly'),
+        ('quarterly', 'Quarterly'),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4)
+    agency = models.ForeignKey(
+        Agency,
+        on_delete=models.CASCADE,
+        related_name='scheduled_reports'
+    )
+    user = models.ForeignKey(
+        'User',
+        on_delete=models.CASCADE,
+        related_name='scheduled_reports'
+    )
+    report_type = models.CharField(
+        max_length=50,
+        choices=Report.REPORT_TYPE_CHOICES
+    )
+    title = models.CharField(max_length=255)
+    parameters = models.JSONField(
+        default=dict,
+        help_text='Report parameters template'
+    )
+    format = models.CharField(
+        max_length=10,
+        choices=Report.FORMAT_CHOICES,
+        default='csv'
+    )
+    frequency = models.CharField(
+        max_length=20,
+        choices=FREQUENCY_CHOICES
+    )
+    email_recipients = models.JSONField(
+        default=list,
+        help_text='List of email addresses to send report to'
+    )
+    is_active = models.BooleanField(default=True)
+    last_run_at = models.DateTimeField(null=True, blank=True)
+    next_run_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        managed = False
+        db_table = 'scheduled_reports'
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"{self.title} ({self.frequency})"
+
+
+# =============================================================================
 # AI Chat Models (P1-015)
 # =============================================================================
 

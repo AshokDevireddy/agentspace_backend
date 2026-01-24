@@ -10,7 +10,7 @@ from uuid import UUID
 
 from django.db.models import Prefetch
 
-from apps.core.models import Carrier, Product
+from apps.core.models import Carrier, Product, StatusMapping
 
 
 def get_active_carriers() -> List[dict]:
@@ -182,3 +182,49 @@ def get_carrier_by_id(carrier_id: UUID) -> Optional[dict]:
         'created_at': carrier.created_at,
         'updated_at': carrier.updated_at,
     }
+
+
+# =============================================================================
+# Status Mappings (P1-020)
+# =============================================================================
+
+def get_status_mappings(carrier_id: Optional[UUID] = None) -> List[dict]:
+    """
+    Get status mappings (P1-020).
+
+    Returns carrier-specific status codes mapped to standardized statuses.
+
+    Args:
+        carrier_id: Optional carrier UUID to filter by
+
+    Returns:
+        List of status mapping dictionaries
+    """
+    qs = StatusMapping.objects.select_related('carrier').order_by('carrier__name', 'raw_status')
+
+    if carrier_id:
+        qs = qs.filter(carrier_id=carrier_id)
+
+    return [
+        {
+            'id': str(sm.id),
+            'carrier_id': str(sm.carrier_id),
+            'carrier_name': sm.carrier.name if sm.carrier else None,
+            'raw_status': sm.raw_status,
+            'standardized_status': sm.standardized_status,
+            'impact': sm.impact,
+            'created_at': sm.created_at.isoformat() if sm.created_at else None,
+            'updated_at': sm.updated_at.isoformat() if sm.updated_at else None,
+        }
+        for sm in qs
+    ]
+
+
+def get_standardized_statuses() -> List[dict]:
+    """
+    Get list of standardized status values (P1-020).
+
+    Returns static list of valid standardized statuses with their metadata.
+    """
+    from apps.core.constants import STANDARDIZED_STATUSES
+    return STANDARDIZED_STATUSES

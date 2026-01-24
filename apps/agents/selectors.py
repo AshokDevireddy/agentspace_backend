@@ -759,3 +759,264 @@ def get_agents_debt_production(
         ])
         columns = [col[0] for col in cursor.description]
         return [dict(zip(columns, row)) for row in cursor.fetchall()]
+
+
+def get_agent_detail(agent_id: UUID, requesting_user_id: UUID) -> Optional[dict]:
+    """
+    Get full agent details including profile, performance stats, and hierarchy info.
+    Implements P1-007: Agent Detail Endpoint.
+
+    Args:
+        agent_id: The agent to get details for
+        requesting_user_id: The requesting user's ID for permission checking
+
+    Returns:
+        Agent details dict or None if not found/not accessible
+    """
+    with connection.cursor() as cursor:
+        cursor.execute("""
+            WITH RECURSIVE
+            -- Get requesting user info for visibility check
+            requesting_user AS (
+                SELECT id, agency_id, is_admin, perm_level, role
+                FROM users
+                WHERE id = %s
+            ),
+            -- Get downline for visibility (if not admin)
+            downline AS (
+                SELECT id
+                FROM users
+                WHERE upline_id = (SELECT id FROM requesting_user)
+                UNION ALL
+                SELECT u.id
+                FROM users u
+                JOIN downline d ON u.upline_id = d.id
+            ),
+            -- Combined visibility
+            visible_agents AS (
+                SELECT id FROM requesting_user
+                UNION
+                SELECT id FROM downline
+                UNION
+                SELECT u.id FROM users u, requesting_user ru
+                WHERE ru.is_admin = TRUE AND u.agency_id = ru.agency_id
+            )
+            SELECT
+                u.id,
+                u.first_name,
+                u.last_name,
+                u.email,
+                u.phone,
+                u.status,
+                u.role,
+                u.perm_level,
+                u.is_admin,
+                u.is_active,
+                u.subscription_tier,
+                u.start_date,
+                u.annual_goal,
+                u.total_prod,
+                u.total_policies_sold,
+                u.theme_mode,
+                u.created_at,
+                u.updated_at,
+                u.position_id,
+                p.name as position_name,
+                p.level as position_level,
+                u.upline_id,
+                upline.first_name || ' ' || upline.last_name as upline_name,
+                u.agency_id,
+                a.name as agency_name,
+                (SELECT COUNT(*) FROM users WHERE upline_id = u.id) as direct_downline_count
+            FROM users u
+            JOIN visible_agents va ON va.id = u.id
+            LEFT JOIN positions p ON p.id = u.position_id
+            LEFT JOIN users upline ON upline.id = u.upline_id
+            LEFT JOIN agencies a ON a.id = u.agency_id
+            WHERE u.id = %s
+        """, [str(requesting_user_id), str(agent_id)])
+
+        row = cursor.fetchone()
+        if not row:
+            return None
+
+        columns = [col[0] for col in cursor.description]
+        agent = dict(zip(columns, row))
+
+        # Get performance metrics
+        cursor.execute("""
+            SELECT
+                COALESCE(COUNT(*), 0) as total_deals,
+                COALESCE(COUNT(*) FILTER (WHERE status_standardized = 'active'), 0) as active_deals,
+                COALESCE(COUNT(*) FILTER (WHERE status_standardized = 'pending'), 0) as pending_deals,
+                COALESCE(COUNT(*) FILTER (WHERE status_standardized IN ('cancelled', 'lapsed')), 0) as lost_deals,
+                COALESCE(SUM(annual_premium) FILTER (WHERE status_standardized = 'active'), 0) as total_premium,
+                COALESCE(AVG(annual_premium) FILTER (WHERE status_standardized = 'active'), 0) as avg_premium
+            FROM deals
+            WHERE agent_id = %s
+        """, [str(agent_id)])
+
+        perf_row = cursor.fetchone()
+        perf_columns = [col[0] for col in cursor.description]
+        performance = dict(zip(perf_columns, perf_row)) if perf_row else {}
+
+        # Get hierarchy depth
+        cursor.execute("""
+            WITH RECURSIVE upline_chain AS (
+                SELECT id, upline_id, 0 as depth
+                FROM users
+                WHERE id = %s
+                UNION ALL
+                SELECT u.id, u.upline_id, uc.depth + 1
+                FROM users u
+                JOIN upline_chain uc ON u.id = uc.upline_id
+                WHERE uc.depth < 20
+            )
+            SELECT MAX(depth) as hierarchy_depth
+            FROM upline_chain
+        """, [str(agent_id)])
+
+        depth_row = cursor.fetchone()
+        hierarchy_depth = depth_row[0] if depth_row and depth_row[0] else 0
+
+        return {
+            'id': str(agent['id']),
+            'first_name': agent['first_name'],
+            'last_name': agent['last_name'],
+            'email': agent['email'],
+            'phone': agent['phone'],
+            'status': agent['status'],
+            'role': agent['role'],
+            'perm_level': agent['perm_level'],
+            'is_admin': agent['is_admin'],
+            'is_active': agent['is_active'],
+            'subscription_tier': agent['subscription_tier'],
+            'start_date': str(agent['start_date']) if agent['start_date'] else None,
+            'annual_goal': float(agent['annual_goal']) if agent['annual_goal'] else None,
+            'total_prod': float(agent['total_prod']) if agent['total_prod'] else 0,
+            'total_policies_sold': agent['total_policies_sold'] or 0,
+            'theme_mode': agent['theme_mode'],
+            'created_at': agent['created_at'].isoformat() if agent['created_at'] else None,
+            'updated_at': agent['updated_at'].isoformat() if agent['updated_at'] else None,
+            'position': {
+                'id': str(agent['position_id']) if agent['position_id'] else None,
+                'name': agent['position_name'],
+                'level': agent['position_level'],
+            } if agent['position_id'] else None,
+            'upline': {
+                'id': str(agent['upline_id']) if agent['upline_id'] else None,
+                'name': agent['upline_name'],
+            } if agent['upline_id'] else None,
+            'agency': {
+                'id': str(agent['agency_id']) if agent['agency_id'] else None,
+                'name': agent['agency_name'],
+            },
+            'hierarchy': {
+                'depth': hierarchy_depth,
+                'direct_downline_count': agent['direct_downline_count'] or 0,
+            },
+            'performance': {
+                'total_deals': performance.get('total_deals', 0),
+                'active_deals': performance.get('active_deals', 0),
+                'pending_deals': performance.get('pending_deals', 0),
+                'lost_deals': performance.get('lost_deals', 0),
+                'total_premium': float(performance.get('total_premium', 0)),
+                'avg_premium': float(performance.get('avg_premium', 0)),
+            },
+        }
+
+
+def get_agent_downline_with_depth(
+    agent_id: UUID,
+    max_depth: Optional[int] = None,
+    include_self: bool = True,
+) -> List[dict]:
+    """
+    Get all agents in the downline hierarchy with optional depth limit.
+    Implements P1-008: Recursive Downline Endpoint.
+
+    Args:
+        agent_id: The root agent to get downline for
+        max_depth: Maximum depth to traverse (None for unlimited, max 20)
+        include_self: Whether to include the agent themselves
+
+    Returns:
+        List of agents in downline with depth level and details
+    """
+    effective_max_depth = min(max_depth or 20, 20)
+
+    with connection.cursor() as cursor:
+        cursor.execute("""
+            WITH RECURSIVE downline AS (
+                -- Anchor: the agent themselves at depth 0
+                SELECT
+                    id,
+                    first_name,
+                    last_name,
+                    email,
+                    phone,
+                    status,
+                    position_id,
+                    upline_id,
+                    0 as depth
+                FROM users
+                WHERE id = %s
+
+                UNION ALL
+
+                -- Recursive: get children, increment depth
+                SELECT
+                    u.id,
+                    u.first_name,
+                    u.last_name,
+                    u.email,
+                    u.phone,
+                    u.status,
+                    u.position_id,
+                    u.upline_id,
+                    d.depth + 1
+                FROM users u
+                JOIN downline d ON u.upline_id = d.id
+                WHERE d.depth < %s
+            )
+            SELECT
+                d.id,
+                d.first_name,
+                d.last_name,
+                d.email,
+                d.phone,
+                d.status,
+                d.depth,
+                d.position_id,
+                p.name as position_name,
+                p.level as position_level,
+                d.upline_id,
+                (SELECT COUNT(*) FROM users WHERE upline_id = d.id) as direct_downline_count
+            FROM downline d
+            LEFT JOIN positions p ON p.id = d.position_id
+            WHERE %s OR d.depth > 0
+            ORDER BY d.depth, d.last_name, d.first_name
+        """, [str(agent_id), effective_max_depth, include_self])
+
+        columns = [col[0] for col in cursor.description]
+        rows = cursor.fetchall()
+
+        return [
+            {
+                'id': str(row[columns.index('id')]),
+                'first_name': row[columns.index('first_name')],
+                'last_name': row[columns.index('last_name')],
+                'email': row[columns.index('email')],
+                'phone': row[columns.index('phone')],
+                'status': row[columns.index('status')],
+                'depth': row[columns.index('depth')],
+                'position': {
+                    'id': str(row[columns.index('position_id')]) if row[columns.index('position_id')] else None,
+                    'name': row[columns.index('position_name')],
+                    'level': row[columns.index('position_level')],
+                } if row[columns.index('position_id')] else None,
+                'upline_id': str(row[columns.index('upline_id')]) if row[columns.index('upline_id')] else None,
+                'direct_downline_count': row[columns.index('direct_downline_count')] or 0,
+            }
+            for row in rows
+        ]

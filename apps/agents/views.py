@@ -28,6 +28,8 @@ from .selectors import (
     get_agent_downlines_with_details,
     get_agents_debt_production,
     get_agent_upline_chain,
+    get_agent_detail,
+    get_agent_downline_with_depth,
 )
 from .services import assign_position_to_agent, update_agent_position
 
@@ -280,6 +282,109 @@ class AgentsListView(APIView):
             logger.error(f'Agents list failed: {e}')
             return Response(
                 {'error': 'Internal Server Error', 'detail': str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
+class AgentDetailView(APIView):
+    """
+    GET /api/agents/{id}
+
+    Get full agent details including profile, performance stats, and hierarchy info.
+    Implements P1-007.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, agent_id):
+        user = get_user_context(request)
+        if not user:
+            return Response(
+                {'error': 'Unauthorized'},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
+        try:
+            agent_uuid = UUID(agent_id)
+        except ValueError:
+            return Response(
+                {'error': 'Invalid agent_id format'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            agent = get_agent_detail(
+                agent_id=agent_uuid,
+                requesting_user_id=user.id,
+            )
+
+            if not agent:
+                return Response(
+                    {'error': 'Agent not found or not accessible'},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+
+            return Response(agent)
+
+        except Exception as e:
+            logger.error(f'Agent detail failed: {e}')
+            return Response(
+                {'error': 'Failed to fetch agent', 'detail': str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
+class AgentRecursiveDownlineView(APIView):
+    """
+    GET /api/agents/{id}/downline
+
+    Get recursive downline for an agent with optional depth limit.
+    Implements P1-008.
+
+    Query params:
+        depth: Maximum depth to traverse (default: unlimited, max: 20)
+        include_self: Include the agent themselves (default: true)
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, agent_id):
+        user = get_user_context(request)
+        if not user:
+            return Response(
+                {'error': 'Unauthorized'},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
+        try:
+            agent_uuid = UUID(agent_id)
+        except ValueError:
+            return Response(
+                {'error': 'Invalid agent_id format'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Parse query params
+        depth_param = request.query_params.get('depth')
+        max_depth = int(depth_param) if depth_param else None
+        include_self = request.query_params.get('include_self', 'true').lower() == 'true'
+
+        try:
+            downline = get_agent_downline_with_depth(
+                agent_id=agent_uuid,
+                max_depth=max_depth,
+                include_self=include_self,
+            )
+
+            return Response({
+                'agent_id': agent_id,
+                'downline': downline,
+                'count': len(downline),
+                'max_depth': max_depth,
+            })
+
+        except Exception as e:
+            logger.error(f'Agent recursive downline failed: {e}')
+            return Response(
+                {'error': 'Failed to fetch downline', 'detail': str(e)},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 

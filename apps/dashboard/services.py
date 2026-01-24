@@ -1,21 +1,25 @@
 """
-Dashboard Services
+Dashboard Services (P2-032, P2-033, P2-034, P2-035)
 
-Contains the business logic for retrieving dashboard metrics.
-Mirrors the logic of Supabase RPC functions:
-- get_dashboard_data_with_agency_id
-- get_scoreboard_data
-- get_agents_debt_production
+Contains the business logic for:
+- Dashboard metrics (get_dashboard_data_with_agency_id, get_scoreboard_data)
+- Widget management
+- Report generation and scheduling
+- Export (CSV/Excel/PDF)
 """
+import csv
+import io
 import logging
+import uuid
 from dataclasses import dataclass
-from datetime import date
-from decimal import Decimal
+from datetime import date, timedelta
 from typing import Optional
 from uuid import UUID
 
 from django.db import connection
+from django.utils import timezone
 
+from apps.core.constants import EXPORT
 from services.hierarchy_service import HierarchyService
 
 logger = logging.getLogger(__name__)
@@ -1103,3 +1107,715 @@ def get_production_data(
     except Exception as e:
         logger.error(f'Error getting production data: {e}')
         raise
+
+
+# =============================================================================
+# Dashboard Widgets (P2-032)
+# =============================================================================
+
+@dataclass
+class WidgetInput:
+    """Input for creating/updating a widget."""
+    widget_type: str
+    title: str
+    position: int = 0
+    config: dict = None
+    is_visible: bool = True
+
+
+def get_user_widgets(user_id: UUID) -> list[dict]:
+    """Get all widgets for a user."""
+    with connection.cursor() as cursor:
+        cursor.execute("""
+            SELECT id, widget_type, title, position, config, is_visible, created_at, updated_at
+            FROM public.dashboard_widgets
+            WHERE user_id = %s
+            ORDER BY position, created_at
+        """, [str(user_id)])
+        rows = cursor.fetchall()
+
+    return [
+        {
+            'id': str(row[0]),
+            'widget_type': row[1],
+            'title': row[2],
+            'position': row[3],
+            'config': row[4] or {},
+            'is_visible': row[5],
+            'created_at': row[6].isoformat() if row[6] else None,
+            'updated_at': row[7].isoformat() if row[7] else None,
+        }
+        for row in rows
+    ]
+
+
+def create_widget(user_id: UUID, data: WidgetInput) -> dict:
+    """Create a new dashboard widget."""
+    widget_id = uuid.uuid4()
+
+    with connection.cursor() as cursor:
+        cursor.execute("""
+            INSERT INTO public.dashboard_widgets (
+                id, user_id, widget_type, title, position, config, is_visible, created_at, updated_at
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
+            RETURNING id, created_at
+        """, [
+            str(widget_id),
+            str(user_id),
+            data.widget_type,
+            data.title,
+            data.position,
+            data.config or {},
+            data.is_visible,
+        ])
+
+    return get_widget_by_id(widget_id, user_id)
+
+
+def update_widget(widget_id: UUID, user_id: UUID, data: WidgetInput) -> Optional[dict]:
+    """Update an existing widget."""
+    with connection.cursor() as cursor:
+        cursor.execute("""
+            UPDATE public.dashboard_widgets
+            SET widget_type = %s, title = %s, position = %s, config = %s, is_visible = %s, updated_at = NOW()
+            WHERE id = %s AND user_id = %s
+            RETURNING id
+        """, [
+            data.widget_type,
+            data.title,
+            data.position,
+            data.config or {},
+            data.is_visible,
+            str(widget_id),
+            str(user_id),
+        ])
+        row = cursor.fetchone()
+
+    if not row:
+        return None
+
+    return get_widget_by_id(widget_id, user_id)
+
+
+def delete_widget(widget_id: UUID, user_id: UUID) -> bool:
+    """Delete a widget."""
+    with connection.cursor() as cursor:
+        cursor.execute("""
+            DELETE FROM public.dashboard_widgets
+            WHERE id = %s AND user_id = %s
+            RETURNING id
+        """, [str(widget_id), str(user_id)])
+        row = cursor.fetchone()
+
+    return row is not None
+
+
+def get_widget_by_id(widget_id: UUID, user_id: UUID) -> Optional[dict]:
+    """Get a single widget by ID."""
+    with connection.cursor() as cursor:
+        cursor.execute("""
+            SELECT id, widget_type, title, position, config, is_visible, created_at, updated_at
+            FROM public.dashboard_widgets
+            WHERE id = %s AND user_id = %s
+        """, [str(widget_id), str(user_id)])
+        row = cursor.fetchone()
+
+    if not row:
+        return None
+
+    return {
+        'id': str(row[0]),
+        'widget_type': row[1],
+        'title': row[2],
+        'position': row[3],
+        'config': row[4] or {},
+        'is_visible': row[5],
+        'created_at': row[6].isoformat() if row[6] else None,
+        'updated_at': row[7].isoformat() if row[7] else None,
+    }
+
+
+def reorder_widgets(user_id: UUID, widget_positions: list[dict]) -> list[dict]:
+    """Reorder widgets by updating their positions."""
+    with connection.cursor() as cursor:
+        for item in widget_positions:
+            cursor.execute("""
+                UPDATE public.dashboard_widgets
+                SET position = %s, updated_at = NOW()
+                WHERE id = %s AND user_id = %s
+            """, [item['position'], str(item['id']), str(user_id)])
+
+    return get_user_widgets(user_id)
+
+
+# =============================================================================
+# Report Generation (P2-033)
+# =============================================================================
+
+@dataclass
+class ReportInput:
+    """Input for creating a report."""
+    report_type: str
+    title: str
+    parameters: dict
+    format: str = 'csv'
+
+
+def create_report(user_ctx: UserContext, data: ReportInput) -> dict:
+    """Create a new report request."""
+    report_id = uuid.uuid4()
+
+    with connection.cursor() as cursor:
+        cursor.execute("""
+            INSERT INTO public.reports (
+                id, agency_id, user_id, report_type, title, parameters, format, status, created_at
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, 'pending', NOW())
+            RETURNING id, created_at
+        """, [
+            str(report_id),
+            str(user_ctx.agency_id),
+            str(user_ctx.internal_user_id),
+            data.report_type,
+            data.title,
+            data.parameters,
+            data.format,
+        ])
+
+    return get_report_by_id(report_id, user_ctx)
+
+
+def get_report_by_id(report_id: UUID, user_ctx: UserContext) -> Optional[dict]:
+    """Get a report by ID."""
+    with connection.cursor() as cursor:
+        cursor.execute("""
+            SELECT
+                r.id, r.report_type, r.title, r.parameters, r.format, r.status,
+                r.file_url, r.error_message, r.created_at, r.completed_at,
+                u.first_name, u.last_name
+            FROM public.reports r
+            LEFT JOIN public.users u ON u.id = r.user_id
+            WHERE r.id = %s AND r.agency_id = %s
+        """, [str(report_id), str(user_ctx.agency_id)])
+        row = cursor.fetchone()
+
+    if not row:
+        return None
+
+    return {
+        'id': str(row[0]),
+        'report_type': row[1],
+        'title': row[2],
+        'parameters': row[3],
+        'format': row[4],
+        'status': row[5],
+        'file_url': row[6],
+        'error_message': row[7],
+        'created_at': row[8].isoformat() if row[8] else None,
+        'completed_at': row[9].isoformat() if row[9] else None,
+        'created_by': f"{row[10] or ''} {row[11] or ''}".strip() or None,
+    }
+
+
+def list_reports(user_ctx: UserContext, limit: int = 50) -> list[dict]:
+    """List reports for the agency."""
+    with connection.cursor() as cursor:
+        cursor.execute("""
+            SELECT
+                r.id, r.report_type, r.title, r.parameters, r.format, r.status,
+                r.file_url, r.error_message, r.created_at, r.completed_at,
+                u.first_name, u.last_name
+            FROM public.reports r
+            LEFT JOIN public.users u ON u.id = r.user_id
+            WHERE r.agency_id = %s
+            ORDER BY r.created_at DESC
+            LIMIT %s
+        """, [str(user_ctx.agency_id), limit])
+        rows = cursor.fetchall()
+
+    return [
+        {
+            'id': str(row[0]),
+            'report_type': row[1],
+            'title': row[2],
+            'parameters': row[3],
+            'format': row[4],
+            'status': row[5],
+            'file_url': row[6],
+            'error_message': row[7],
+            'created_at': row[8].isoformat() if row[8] else None,
+            'completed_at': row[9].isoformat() if row[9] else None,
+            'created_by': f"{row[10] or ''} {row[11] or ''}".strip() or None,
+        }
+        for row in rows
+    ]
+
+
+def generate_report(report_id: UUID, user_ctx: UserContext) -> Optional[dict]:
+    """
+    Generate a report and return its data.
+
+    This is a synchronous implementation. For async, use Django Tasks.
+    """
+    report = get_report_by_id(report_id, user_ctx)
+    if not report:
+        return None
+
+    # Update status to generating
+    with connection.cursor() as cursor:
+        cursor.execute("""
+            UPDATE public.reports
+            SET status = 'generating'
+            WHERE id = %s
+        """, [str(report_id)])
+
+    try:
+        report_type = report['report_type']
+        params = report['parameters']
+        report_format = report['format']
+
+        # Generate report data based on type
+        if report_type == 'production':
+            data = _generate_production_report(user_ctx, params)
+        elif report_type == 'pipeline':
+            data = _generate_pipeline_report(user_ctx, params)
+        elif report_type == 'team_performance':
+            data = _generate_team_performance_report(user_ctx, params)
+        elif report_type == 'revenue':
+            data = _generate_revenue_report(user_ctx, params)
+        elif report_type == 'commission':
+            data = _generate_commission_report(user_ctx, params)
+        else:
+            raise ValueError(f"Unknown report type: {report_type}")
+
+        # Update status to completed
+        with connection.cursor() as cursor:
+            cursor.execute("""
+                UPDATE public.reports
+                SET status = 'completed', completed_at = NOW()
+                WHERE id = %s
+            """, [str(report_id)])
+
+        return {
+            'report': get_report_by_id(report_id, user_ctx),
+            'data': data,
+        }
+
+    except Exception as e:
+        logger.error(f"Report generation failed: {e}")
+        with connection.cursor() as cursor:
+            cursor.execute("""
+                UPDATE public.reports
+                SET status = 'failed', error_message = %s
+                WHERE id = %s
+            """, [str(e), str(report_id)])
+        return None
+
+
+def _generate_production_report(user_ctx: UserContext, params: dict) -> list[dict]:
+    """Generate production report data."""
+    start_date = params.get('start_date', (date.today() - timedelta(days=30)).isoformat())
+    end_date = params.get('end_date', date.today().isoformat())
+
+    with connection.cursor() as cursor:
+        cursor.execute("""
+            SELECT
+                d.id,
+                d.policy_number,
+                d.status,
+                d.annual_premium,
+                d.monthly_premium,
+                d.policy_effective_date,
+                d.submission_date,
+                u.first_name as agent_first_name,
+                u.last_name as agent_last_name,
+                c.first_name as client_first_name,
+                c.last_name as client_last_name,
+                ca.name as carrier_name,
+                p.name as product_name
+            FROM public.deals d
+            LEFT JOIN public.users u ON u.id = d.agent_id
+            LEFT JOIN public.clients c ON c.id = d.client_id
+            LEFT JOIN public.carriers ca ON ca.id = d.carrier_id
+            LEFT JOIN public.products p ON p.id = d.product_id
+            WHERE d.agency_id = %s
+                AND d.submission_date BETWEEN %s AND %s
+            ORDER BY d.submission_date DESC
+        """, [str(user_ctx.agency_id), start_date, end_date])
+
+        columns = [col[0] for col in cursor.description]
+        rows = cursor.fetchall()
+
+    return [dict(zip(columns, row)) for row in rows]
+
+
+def _generate_pipeline_report(user_ctx: UserContext, params: dict) -> list[dict]:
+    """Generate pipeline report data."""
+    with connection.cursor() as cursor:
+        cursor.execute("""
+            SELECT
+                d.status_standardized,
+                COUNT(*) as count,
+                SUM(d.annual_premium) as total_premium
+            FROM public.deals d
+            WHERE d.agency_id = %s
+                AND d.status_standardized IS NOT NULL
+            GROUP BY d.status_standardized
+            ORDER BY d.status_standardized
+        """, [str(user_ctx.agency_id)])
+
+        columns = [col[0] for col in cursor.description]
+        rows = cursor.fetchall()
+
+    return [dict(zip(columns, row)) for row in rows]
+
+
+def _generate_team_performance_report(user_ctx: UserContext, params: dict) -> list[dict]:
+    """Generate team performance report data."""
+    start_date = params.get('start_date', (date.today() - timedelta(days=30)).isoformat())
+    end_date = params.get('end_date', date.today().isoformat())
+
+    with connection.cursor() as cursor:
+        cursor.execute("""
+            SELECT
+                u.id as agent_id,
+                u.first_name,
+                u.last_name,
+                u.email,
+                COUNT(d.id) as deal_count,
+                COALESCE(SUM(d.annual_premium), 0) as total_premium,
+                COALESCE(AVG(d.annual_premium), 0) as avg_premium
+            FROM public.users u
+            LEFT JOIN public.deals d ON d.agent_id = u.id
+                AND d.submission_date BETWEEN %s AND %s
+            WHERE u.agency_id = %s
+                AND u.role != 'client'
+            GROUP BY u.id, u.first_name, u.last_name, u.email
+            ORDER BY total_premium DESC
+        """, [start_date, end_date, str(user_ctx.agency_id)])
+
+        columns = [col[0] for col in cursor.description]
+        rows = cursor.fetchall()
+
+    return [dict(zip(columns, row)) for row in rows]
+
+
+def _generate_revenue_report(user_ctx: UserContext, params: dict) -> list[dict]:
+    """Generate revenue report data."""
+    start_date = params.get('start_date', (date.today() - timedelta(days=365)).isoformat())
+    end_date = params.get('end_date', date.today().isoformat())
+
+    with connection.cursor() as cursor:
+        cursor.execute("""
+            SELECT
+                date_trunc('month', d.policy_effective_date)::date as month,
+                COUNT(*) as deal_count,
+                SUM(d.annual_premium) as total_annual_premium,
+                SUM(d.monthly_premium) as total_monthly_premium
+            FROM public.deals d
+            WHERE d.agency_id = %s
+                AND d.policy_effective_date BETWEEN %s AND %s
+            GROUP BY date_trunc('month', d.policy_effective_date)
+            ORDER BY month
+        """, [str(user_ctx.agency_id), start_date, end_date])
+
+        columns = [col[0] for col in cursor.description]
+        rows = cursor.fetchall()
+
+    return [dict(zip(columns, row)) for row in rows]
+
+
+def _generate_commission_report(user_ctx: UserContext, params: dict) -> list[dict]:
+    """Generate commission report data."""
+    start_date = params.get('start_date', (date.today() - timedelta(days=30)).isoformat())
+    end_date = params.get('end_date', date.today().isoformat())
+
+    with connection.cursor() as cursor:
+        cursor.execute("""
+            SELECT
+                dhs.agent_id,
+                u.first_name,
+                u.last_name,
+                dhs.hierarchy_level,
+                dhs.commission_percentage,
+                d.annual_premium,
+                (d.annual_premium * dhs.commission_percentage / 100) as commission_amount,
+                d.policy_number,
+                d.policy_effective_date
+            FROM public.deal_hierarchy_snapshots dhs
+            JOIN public.deals d ON d.id = dhs.deal_id
+            LEFT JOIN public.users u ON u.id = dhs.agent_id
+            WHERE d.agency_id = %s
+                AND d.policy_effective_date BETWEEN %s AND %s
+            ORDER BY d.policy_effective_date DESC, dhs.hierarchy_level
+        """, [str(user_ctx.agency_id), start_date, end_date])
+
+        columns = [col[0] for col in cursor.description]
+        rows = cursor.fetchall()
+
+    return [dict(zip(columns, row)) for row in rows]
+
+
+# =============================================================================
+# Export Functions (P2-035)
+# =============================================================================
+
+def export_to_csv(data: list[dict]) -> str:
+    """Export data to CSV format."""
+    if not data:
+        return ""
+
+    output = io.StringIO()
+    writer = csv.DictWriter(output, fieldnames=data[0].keys())
+    writer.writeheader()
+    writer.writerows(data)
+    return output.getvalue()
+
+
+def export_to_excel(data: list[dict], sheet_name: str = 'Report') -> bytes:
+    """Export data to Excel format."""
+    from openpyxl import Workbook
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = sheet_name
+
+    if not data:
+        return io.BytesIO()
+
+    # Write header
+    headers = list(data[0].keys())
+    ws.append(headers)
+
+    # Write data
+    for row in data:
+        ws.append([row.get(h) for h in headers])
+
+    # Save to bytes
+    output = io.BytesIO()
+    wb.save(output)
+    output.seek(0)
+    return output.getvalue()
+
+
+def export_to_pdf(data: list[dict], title: str = 'Report') -> bytes:
+    """Export data to PDF format."""
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import letter, landscape
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+
+    output = io.BytesIO()
+    doc = SimpleDocTemplate(output, pagesize=landscape(letter))
+    elements = []
+
+    # Add title
+    styles = getSampleStyleSheet()
+    elements.append(Paragraph(title, styles['Heading1']))
+    elements.append(Spacer(1, 12))
+
+    if not data:
+        elements.append(Paragraph("No data available", styles['Normal']))
+    else:
+        # Create table data
+        headers = list(data[0].keys())
+        table_data = [headers]
+        max_len = EXPORT["pdf_cell_max_length"]
+        for row in data:
+            table_data.append([str(row.get(h, ''))[:max_len] for h in headers])
+
+        # Create table
+        table = Table(table_data)
+        table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('FONTSIZE', (0, 0), (-1, 0), 10),
+            ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+            ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
+            ('TEXTCOLOR', (0, 1), (-1, -1), colors.black),
+            ('FONTNAME', (0, 1), (-1, -1), 'Helvetica'),
+            ('FONTSIZE', (0, 1), (-1, -1), 8),
+            ('GRID', (0, 0), (-1, -1), 1, colors.black),
+        ]))
+        elements.append(table)
+
+    doc.build(elements)
+    output.seek(0)
+    return output.getvalue()
+
+
+# =============================================================================
+# Scheduled Reports (P2-034)
+# =============================================================================
+
+@dataclass
+class ScheduledReportInput:
+    """Input for creating a scheduled report."""
+    report_type: str
+    title: str
+    parameters: dict
+    format: str
+    frequency: str
+    email_recipients: list[str]
+    is_active: bool = True
+
+
+def create_scheduled_report(user_ctx: UserContext, data: ScheduledReportInput) -> dict:
+    """Create a new scheduled report."""
+    report_id = uuid.uuid4()
+    next_run = _calculate_next_run(data.frequency)
+
+    with connection.cursor() as cursor:
+        cursor.execute("""
+            INSERT INTO public.scheduled_reports (
+                id, agency_id, user_id, report_type, title, parameters, format,
+                frequency, email_recipients, is_active, next_run_at, created_at, updated_at
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
+            RETURNING id
+        """, [
+            str(report_id),
+            str(user_ctx.agency_id),
+            str(user_ctx.internal_user_id),
+            data.report_type,
+            data.title,
+            data.parameters,
+            data.format,
+            data.frequency,
+            data.email_recipients,
+            data.is_active,
+            next_run,
+        ])
+
+    return get_scheduled_report_by_id(report_id, user_ctx)
+
+
+def get_scheduled_report_by_id(report_id: UUID, user_ctx: UserContext) -> Optional[dict]:
+    """Get a scheduled report by ID."""
+    with connection.cursor() as cursor:
+        cursor.execute("""
+            SELECT
+                id, report_type, title, parameters, format, frequency,
+                email_recipients, is_active, last_run_at, next_run_at, created_at, updated_at
+            FROM public.scheduled_reports
+            WHERE id = %s AND agency_id = %s
+        """, [str(report_id), str(user_ctx.agency_id)])
+        row = cursor.fetchone()
+
+    if not row:
+        return None
+
+    return {
+        'id': str(row[0]),
+        'report_type': row[1],
+        'title': row[2],
+        'parameters': row[3],
+        'format': row[4],
+        'frequency': row[5],
+        'email_recipients': row[6],
+        'is_active': row[7],
+        'last_run_at': row[8].isoformat() if row[8] else None,
+        'next_run_at': row[9].isoformat() if row[9] else None,
+        'created_at': row[10].isoformat() if row[10] else None,
+        'updated_at': row[11].isoformat() if row[11] else None,
+    }
+
+
+def list_scheduled_reports(user_ctx: UserContext) -> list[dict]:
+    """List scheduled reports for the agency."""
+    with connection.cursor() as cursor:
+        cursor.execute("""
+            SELECT
+                id, report_type, title, parameters, format, frequency,
+                email_recipients, is_active, last_run_at, next_run_at, created_at, updated_at
+            FROM public.scheduled_reports
+            WHERE agency_id = %s
+            ORDER BY created_at DESC
+        """, [str(user_ctx.agency_id)])
+        rows = cursor.fetchall()
+
+    return [
+        {
+            'id': str(row[0]),
+            'report_type': row[1],
+            'title': row[2],
+            'parameters': row[3],
+            'format': row[4],
+            'frequency': row[5],
+            'email_recipients': row[6],
+            'is_active': row[7],
+            'last_run_at': row[8].isoformat() if row[8] else None,
+            'next_run_at': row[9].isoformat() if row[9] else None,
+            'created_at': row[10].isoformat() if row[10] else None,
+            'updated_at': row[11].isoformat() if row[11] else None,
+        }
+        for row in rows
+    ]
+
+
+def update_scheduled_report(
+    report_id: UUID,
+    user_ctx: UserContext,
+    data: ScheduledReportInput
+) -> Optional[dict]:
+    """Update a scheduled report."""
+    next_run = _calculate_next_run(data.frequency)
+
+    with connection.cursor() as cursor:
+        cursor.execute("""
+            UPDATE public.scheduled_reports
+            SET report_type = %s, title = %s, parameters = %s, format = %s,
+                frequency = %s, email_recipients = %s, is_active = %s,
+                next_run_at = %s, updated_at = NOW()
+            WHERE id = %s AND agency_id = %s
+            RETURNING id
+        """, [
+            data.report_type,
+            data.title,
+            data.parameters,
+            data.format,
+            data.frequency,
+            data.email_recipients,
+            data.is_active,
+            next_run,
+            str(report_id),
+            str(user_ctx.agency_id),
+        ])
+        row = cursor.fetchone()
+
+    if not row:
+        return None
+
+    return get_scheduled_report_by_id(report_id, user_ctx)
+
+
+def delete_scheduled_report(report_id: UUID, user_ctx: UserContext) -> bool:
+    """Delete a scheduled report."""
+    with connection.cursor() as cursor:
+        cursor.execute("""
+            DELETE FROM public.scheduled_reports
+            WHERE id = %s AND agency_id = %s
+            RETURNING id
+        """, [str(report_id), str(user_ctx.agency_id)])
+        row = cursor.fetchone()
+
+    return row is not None
+
+
+def _calculate_next_run(frequency: str) -> datetime:
+    """Calculate the next run time based on frequency."""
+    now = timezone.now()
+
+    if frequency == 'daily':
+        return now + timedelta(days=1)
+    elif frequency == 'weekly':
+        return now + timedelta(weeks=1)
+    elif frequency == 'monthly':
+        return now + timedelta(days=30)
+    elif frequency == 'quarterly':
+        return now + timedelta(days=90)
+    else:
+        return now + timedelta(days=1)

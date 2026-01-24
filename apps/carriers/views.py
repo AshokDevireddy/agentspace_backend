@@ -19,6 +19,8 @@ from .selectors import (
     get_carrier_names,
     get_carriers_for_agency,
     get_carriers_with_products_for_agency,
+    get_status_mappings,
+    get_standardized_statuses,
 )
 
 logger = logging.getLogger(__name__)
@@ -160,5 +162,88 @@ class CarriersWithProductsView(APIView):
             logger.error(f'Carriers with products failed: {e}')
             return Response(
                 {'error': 'Failed to fetch carriers with products', 'detail': str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
+class StatusMappingsView(APIView):
+    """
+    GET /api/carriers/statuses (P1-020)
+
+    Get status mappings for all carriers or a specific carrier.
+
+    Query params:
+        carrier_id: Optional carrier UUID to filter by
+
+    Response (200):
+        {
+            "statuses": [
+                {
+                    "id": "uuid",
+                    "carrier_id": "uuid",
+                    "carrier_name": "Carrier Name",
+                    "raw_status": "ACTIVE",
+                    "standardized_status": "active",
+                    "impact": "positive"
+                }
+            ]
+        }
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from uuid import UUID
+
+        carrier_id = request.query_params.get('carrier_id')
+        carrier_uuid = None
+
+        if carrier_id:
+            try:
+                carrier_uuid = UUID(carrier_id)
+            except ValueError:
+                return Response(
+                    {'error': 'Invalid carrier_id format'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+        try:
+            statuses = get_status_mappings(carrier_uuid)
+            return Response({'statuses': statuses})
+        except Exception as e:
+            logger.error(f'Status mappings failed: {e}')
+            return Response(
+                {'error': 'Failed to fetch status mappings', 'detail': str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
+class StandardizedStatusesView(APIView):
+    """
+    GET /api/carriers/standardized-statuses (P1-020)
+
+    Get list of standardized status values.
+
+    Response (200):
+        {
+            "statuses": [
+                {
+                    "value": "active",
+                    "label": "Active",
+                    "impact": "positive",
+                    "description": "Policy is active and in force"
+                }
+            ]
+        }
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        try:
+            statuses = get_standardized_statuses()
+            return Response({'statuses': statuses})
+        except Exception as e:
+            logger.error(f'Standardized statuses failed: {e}')
+            return Response(
+                {'error': 'Failed to fetch standardized statuses', 'detail': str(e)},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
