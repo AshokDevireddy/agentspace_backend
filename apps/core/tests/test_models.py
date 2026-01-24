@@ -14,6 +14,9 @@ from apps.core.models import (
     DraftMessage, AIConversation, AIMessage, FeatureFlag,
 )
 
+# Import for proper Deal model setup
+from decimal import Decimal
+
 
 class AgencyModelTests(TestCase):
     """Tests for the Agency model."""
@@ -332,3 +335,335 @@ class FeatureFlagModelTests(TestCase):
         self.assertIn('use_django_auth', result)
         self.assertIn('Test Agency', result)
         self.assertIn('Disabled', result)
+
+
+# =============================================================================
+# Foreign Key Relationship Tests (P1-020)
+# =============================================================================
+
+class ForeignKeyRelationshipTests(TestCase):
+    """Tests for foreign key relationships between models."""
+
+    def test_user_belongs_to_agency(self):
+        """User has agency foreign key."""
+        agency = Agency(id=uuid.uuid4(), name='test_agency')
+        user = User(
+            id=uuid.uuid4(),
+            first_name='John',
+            last_name='Doe',
+            email='john@example.com',
+            agency=agency
+        )
+        self.assertEqual(user.agency, agency)
+
+    def test_user_has_upline_reference(self):
+        """User can have upline (self-referential FK)."""
+        upline = User(
+            id=uuid.uuid4(),
+            first_name='Manager',
+            last_name='Person',
+            email='manager@example.com'
+        )
+        user = User(
+            id=uuid.uuid4(),
+            first_name='John',
+            last_name='Doe',
+            email='john@example.com',
+            upline=upline
+        )
+        self.assertEqual(user.upline, upline)
+
+    def test_user_has_position_reference(self):
+        """User can have a position."""
+        agency = Agency(id=uuid.uuid4(), name='test_agency')
+        position = Position(id=uuid.uuid4(), name='Senior Agent', level=3, agency=agency)
+        user = User(
+            id=uuid.uuid4(),
+            first_name='John',
+            last_name='Doe',
+            email='john@example.com',
+            position=position
+        )
+        self.assertEqual(user.position, position)
+
+    def test_product_belongs_to_carrier(self):
+        """Product has carrier foreign key."""
+        carrier = Carrier(id=uuid.uuid4(), name='ABC Insurance')
+        product = Product(
+            id=uuid.uuid4(),
+            name='Life Plan',
+            carrier=carrier
+        )
+        self.assertEqual(product.carrier, carrier)
+
+    def test_deal_has_client_reference(self):
+        """Deal can have client reference."""
+        client = Client(
+            id=uuid.uuid4(),
+            first_name='Jane',
+            last_name='Smith'
+        )
+        deal = Deal(
+            id=uuid.uuid4(),
+            policy_number='POL123',
+            client=client
+        )
+        self.assertEqual(deal.client, client)
+
+    def test_deal_has_agent_reference(self):
+        """Deal can have agent reference."""
+        agent = User(
+            id=uuid.uuid4(),
+            first_name='John',
+            last_name='Agent',
+            email='agent@example.com'
+        )
+        deal = Deal(
+            id=uuid.uuid4(),
+            policy_number='POL123',
+            agent=agent
+        )
+        self.assertEqual(deal.agent, agent)
+
+    def test_deal_has_carrier_reference(self):
+        """Deal can have carrier reference."""
+        carrier = Carrier(id=uuid.uuid4(), name='ABC Insurance')
+        deal = Deal(
+            id=uuid.uuid4(),
+            policy_number='POL123',
+            carrier=carrier
+        )
+        self.assertEqual(deal.carrier, carrier)
+
+    def test_deal_has_product_reference(self):
+        """Deal can have product reference."""
+        product = Product(id=uuid.uuid4(), name='Life Plan')
+        deal = Deal(
+            id=uuid.uuid4(),
+            policy_number='POL123',
+            product=product
+        )
+        self.assertEqual(deal.product, product)
+
+    def test_conversation_has_client_reference(self):
+        """Conversation can have client reference."""
+        client = Client(
+            id=uuid.uuid4(),
+            first_name='Jane',
+            last_name='Smith'
+        )
+        conversation = Conversation(
+            id=uuid.uuid4(),
+            phone_number='+1234567890',
+            client=client
+        )
+        self.assertEqual(conversation.client, client)
+
+    def test_message_belongs_to_conversation(self):
+        """Message belongs to conversation."""
+        conversation = Conversation(id=uuid.uuid4(), phone_number='+1234567890')
+        message = Message(
+            id=uuid.uuid4(),
+            conversation=conversation,
+            content='Hello',
+            direction='outbound'
+        )
+        self.assertEqual(message.conversation, conversation)
+
+
+# =============================================================================
+# Default Value Tests (P1-020)
+# =============================================================================
+
+class DefaultValueTests(TestCase):
+    """Tests for model default values."""
+
+    def test_user_defaults(self):
+        """User model has correct defaults."""
+        user = User(
+            id=uuid.uuid4(),
+            email='test@example.com'
+        )
+        self.assertEqual(user.role, 'agent')
+        self.assertFalse(user.is_admin)
+        self.assertTrue(user.is_active)
+        self.assertEqual(user.status, 'invited')
+        self.assertEqual(user.total_prod, 0)
+        self.assertEqual(user.total_policies_sold, 0)
+        self.assertEqual(user.messages_sent_count, 0)
+        self.assertEqual(user.ai_requests_count, 0)
+
+    def test_agency_defaults(self):
+        """Agency model has correct defaults."""
+        agency = Agency(
+            id=uuid.uuid4(),
+            name='test_agency'
+        )
+        self.assertFalse(agency.sms_enabled)
+        self.assertTrue(agency.is_active)
+        self.assertFalse(agency.messaging_enabled)
+        self.assertFalse(agency.discord_notification_enabled)
+        self.assertFalse(agency.lapse_email_notifications_enabled)
+
+    def test_position_defaults(self):
+        """Position model has correct defaults."""
+        position = Position(
+            id=uuid.uuid4(),
+            name='Agent'
+        )
+        self.assertEqual(position.level, 0)
+        self.assertTrue(position.is_active)
+
+    def test_carrier_defaults(self):
+        """Carrier model has correct defaults."""
+        carrier = Carrier(
+            id=uuid.uuid4(),
+            name='ABC Insurance'
+        )
+        self.assertTrue(carrier.is_active)
+
+    def test_product_defaults(self):
+        """Product model has correct defaults."""
+        product = Product(
+            id=uuid.uuid4(),
+            name='Life Plan'
+        )
+        self.assertTrue(product.is_active)
+
+    def test_conversation_defaults(self):
+        """Conversation model has correct defaults."""
+        conversation = Conversation(
+            id=uuid.uuid4(),
+            phone_number='+1234567890'
+        )
+        self.assertEqual(conversation.unread_count, 0)
+        self.assertFalse(conversation.is_archived)
+        self.assertEqual(conversation.sms_opt_in_status, 'pending')
+
+    def test_message_defaults(self):
+        """Message model has correct defaults."""
+        conversation = Conversation(id=uuid.uuid4(), phone_number='+1234567890')
+        message = Message(
+            id=uuid.uuid4(),
+            conversation=conversation,
+            content='Hello',
+            direction='outbound'
+        )
+        self.assertEqual(message.status, 'pending')
+        self.assertFalse(message.is_read)
+
+    def test_draft_message_defaults(self):
+        """DraftMessage model has correct defaults."""
+        draft = DraftMessage(
+            id=uuid.uuid4(),
+            content='Draft message'
+        )
+        self.assertEqual(draft.status, 'pending')
+
+
+# =============================================================================
+# Property Tests (P1-020)
+# =============================================================================
+
+class ModelPropertyTests(TestCase):
+    """Tests for model computed properties."""
+
+    def test_client_full_name_property(self):
+        """Client full_name property returns formatted name."""
+        client = Client(
+            id=uuid.uuid4(),
+            first_name='Jane',
+            last_name='Smith',
+            email='jane@example.com'
+        )
+        self.assertEqual(client.full_name, 'Jane Smith')
+
+    def test_client_full_name_handles_empty_names(self):
+        """Client full_name handles missing names."""
+        client = Client(
+            id=uuid.uuid4(),
+            first_name='',
+            last_name='',
+            email='jane@example.com'
+        )
+        self.assertEqual(client.full_name, 'jane@example.com')
+
+    def test_deal_client_name_property(self):
+        """Deal client_name returns client's full name."""
+        client = Client(
+            id=uuid.uuid4(),
+            first_name='Jane',
+            last_name='Smith'
+        )
+        deal = Deal(
+            id=uuid.uuid4(),
+            policy_number='POL123',
+            client=client
+        )
+        self.assertEqual(deal.client_name, 'Jane Smith')
+
+    def test_deal_client_name_without_client(self):
+        """Deal client_name returns empty string without client."""
+        deal = Deal(
+            id=uuid.uuid4(),
+            policy_number='POL123',
+            client=None
+        )
+        self.assertEqual(deal.client_name, '')
+
+
+# =============================================================================
+# Status Mapping Tests (P1-020)
+# =============================================================================
+
+class StatusMappingTests(TestCase):
+    """Tests for StatusMapping model."""
+
+    def test_status_mapping_impact_choices(self):
+        """StatusMapping has correct impact choices."""
+        choices = [choice[0] for choice in StatusMapping.IMPACT_CHOICES]
+        self.assertIn('positive', choices)
+        self.assertIn('negative', choices)
+        self.assertIn('neutral', choices)
+
+    def test_status_mapping_default_impact(self):
+        """StatusMapping default impact is neutral."""
+        carrier = Carrier(id=uuid.uuid4(), name='ABC Insurance')
+        mapping = StatusMapping(
+            id=uuid.uuid4(),
+            carrier=carrier,
+            raw_status='ACTIVE',
+            standardized_status='active'
+        )
+        self.assertEqual(mapping.impact, 'neutral')
+
+
+# =============================================================================
+# AI Message Tests (P1-020)
+# =============================================================================
+
+class AIMessageTests(TestCase):
+    """Tests for AIMessage model."""
+
+    def test_ai_message_role_choices(self):
+        """AIMessage has correct role choices."""
+        choices = [choice[0] for choice in AIMessage.ROLE_CHOICES]
+        self.assertIn('user', choices)
+        self.assertIn('assistant', choices)
+        self.assertIn('system', choices)
+
+    def test_ai_message_token_fields(self):
+        """AIMessage has token tracking fields."""
+        conversation = AIConversation(id=uuid.uuid4(), title='Test Chat')
+        message = AIMessage(
+            id=uuid.uuid4(),
+            conversation=conversation,
+            role='assistant',
+            content='Hello',
+            input_tokens=10,
+            output_tokens=5,
+            tokens_used=15
+        )
+        self.assertEqual(message.input_tokens, 10)
+        self.assertEqual(message.output_tokens, 5)
+        self.assertEqual(message.tokens_used, 15)

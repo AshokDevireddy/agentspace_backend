@@ -203,6 +203,8 @@ def get_sms_messages(
                 'status': msg.status,
                 'is_read': msg.is_read or False,
                 'created_at': msg.created_at.isoformat() if msg.created_at else None,
+                'sent_at': msg.sent_at.isoformat() if msg.sent_at else None,
+                'external_id': msg.external_id,
                 'sent_by': {
                     'id': str(msg.sent_by.id) if msg.sent_by else None,
                     'name': f"{msg.sent_by.first_name or ''} {msg.sent_by.last_name or ''}".strip() if msg.sent_by else '',
@@ -274,9 +276,9 @@ def get_draft_messages(
             # User sees only their own drafts
             qs = qs.filter(agent_id=user.id)
 
-        # Optimize with select_related
+        # Optimize with select_related (include deal via conversation)
         qs = (
-            qs.select_related('agent', 'conversation', 'conversation__client')
+            qs.select_related('agent', 'conversation', 'conversation__client', 'conversation__deal')
             .order_by('-created_at')
         )
 
@@ -293,11 +295,21 @@ def get_draft_messages(
             # Build recipient name from conversation's client
             client_name = ''
             phone_number = None
+            deal_info = None
             if draft.conversation:
                 phone_number = draft.conversation.phone_number
                 if draft.conversation.client:
                     client = draft.conversation.client
                     client_name = f"{client.first_name or ''} {client.last_name or ''}".strip()
+                # Include deal association info
+                if draft.conversation.deal:
+                    deal = draft.conversation.deal
+                    deal_info = {
+                        'id': str(deal.id),
+                        'policy_number': deal.policy_number,
+                        'status': deal.status,
+                        'status_standardized': deal.status_standardized,
+                    }
 
             drafts.append({
                 'id': str(draft.id),
@@ -310,6 +322,8 @@ def get_draft_messages(
                     'name': f"{draft.agent.first_name or ''} {draft.agent.last_name or ''}".strip() if draft.agent else '',
                 } if draft.agent else None,
                 'conversation_id': str(draft.conversation.id) if draft.conversation else None,
+                'phone_number': phone_number,
+                'deal': deal_info,
             })
 
         total_pages = paginator.num_pages

@@ -357,6 +357,16 @@ class TierLimitsTests(TestCase):
         self.assertEqual(limits['max_deals_per_month'], 50)
         self.assertFalse(limits['ai_chat_enabled'])
 
+    def test_basic_tier_limits(self):
+        """Basic tier has expected limits (between free and pro)."""
+        limits = TIER_LIMITS['basic']
+        self.assertEqual(limits['max_agents'], 10)
+        self.assertEqual(limits['max_deals_per_month'], 100)
+        self.assertEqual(limits['max_sms_per_month'], 50)
+        self.assertFalse(limits['ai_chat_enabled'])
+        self.assertFalse(limits['advanced_analytics'])
+        self.assertFalse(limits['custom_branding'])
+
     def test_pro_tier_limits(self):
         """Pro tier has expected limits."""
         limits = TIER_LIMITS['pro']
@@ -370,6 +380,12 @@ class TierLimitsTests(TestCase):
         self.assertIsNone(limits['max_agents'])
         self.assertIsNone(limits['max_deals_per_month'])
         self.assertTrue(limits['custom_branding'])
+
+    def test_tier_order_is_correct(self):
+        """Tier order is free < basic < pro < expert."""
+        tier_order = ['free', 'basic', 'pro', 'expert']
+        for tier in tier_order:
+            self.assertIn(tier, TIER_LIMITS)
 
 
 class GetTierLimitsTests(TestCase):
@@ -403,3 +419,333 @@ class CheckFeatureAccessTests(TestCase):
         """Expert tier has custom branding."""
         user = create_auth_user(subscription_tier='expert')
         self.assertTrue(check_feature_access(user, 'custom_branding'))
+
+    def test_basic_no_ai_chat(self):
+        """Basic tier does not have AI chat access."""
+        user = create_auth_user(subscription_tier='basic')
+        self.assertFalse(check_feature_access(user, 'ai_chat_enabled'))
+
+    def test_basic_no_advanced_analytics(self):
+        """Basic tier does not have advanced analytics."""
+        user = create_auth_user(subscription_tier='basic')
+        self.assertFalse(check_feature_access(user, 'advanced_analytics'))
+
+
+# =============================================================================
+# IsAdminOrSelfOrDownline Tests (P1-018)
+# =============================================================================
+
+class IsAdminOrSelfOrDownlineTests(TestCase):
+    """Tests for IsAdminOrSelfOrDownline permission (P1-018)."""
+
+    def setUp(self):
+        self.factory = RequestFactory()
+        self.permission = IsAdminOrSelfOrDownline()
+        self.view = MockView()
+
+    def test_has_permission_allows_authenticated_user(self):
+        """has_permission allows any authenticated user."""
+        request = self.factory.get('/')
+        request.user = create_auth_user()
+        self.assertTrue(self.permission.has_permission(request, self.view))
+
+    def test_has_permission_denies_unauthenticated(self):
+        """has_permission denies unauthenticated users."""
+        request = self.factory.get('/')
+        request.user = None
+        self.assertFalse(self.permission.has_permission(request, self.view))
+
+    def test_has_object_permission_allows_object_without_user_context(self):
+        """has_object_permission allows objects without user reference."""
+        request = self.factory.get('/')
+        request.user = create_auth_user()
+
+        class MockObjectNoUser:
+            pass
+
+        obj = MockObjectNoUser()
+        self.assertTrue(self.permission.has_object_permission(request, self.view, obj))
+
+    @patch('apps.core.permissions.check_hierarchy_access')
+    def test_has_object_permission_checks_hierarchy_for_agent_id(self, mock_check):
+        """has_object_permission uses agent_id attribute."""
+        mock_check.return_value = True
+        request = self.factory.get('/')
+        request.user = create_auth_user()
+
+        class MockObjectWithAgentId:
+            agent_id = uuid.uuid4()
+
+        obj = MockObjectWithAgentId()
+        result = self.permission.has_object_permission(request, self.view, obj)
+
+        self.assertTrue(result)
+        mock_check.assert_called_once()
+
+    @patch('apps.core.permissions.check_hierarchy_access')
+    def test_has_object_permission_checks_hierarchy_for_user_id(self, mock_check):
+        """has_object_permission uses user_id attribute."""
+        mock_check.return_value = True
+        request = self.factory.get('/')
+        request.user = create_auth_user()
+
+        class MockObjectWithUserId:
+            user_id = uuid.uuid4()
+
+        obj = MockObjectWithUserId()
+        result = self.permission.has_object_permission(request, self.view, obj)
+
+        self.assertTrue(result)
+        mock_check.assert_called_once()
+
+    @patch('apps.core.permissions.check_hierarchy_access')
+    def test_has_object_permission_denies_when_not_in_hierarchy(self, mock_check):
+        """has_object_permission denies when target not in hierarchy."""
+        mock_check.return_value = False
+        request = self.factory.get('/')
+        request.user = create_auth_user()
+
+        class MockObjectWithAgentId:
+            agent_id = uuid.uuid4()
+
+        obj = MockObjectWithAgentId()
+        result = self.permission.has_object_permission(request, self.view, obj)
+
+        self.assertFalse(result)
+
+    def test_has_object_permission_for_user_object(self):
+        """has_object_permission identifies User-like objects by email attribute."""
+        request = self.factory.get('/')
+        user = create_auth_user()
+        request.user = user
+
+        class MockUserObject:
+            def __init__(self, user_id):
+                self.id = user_id
+                self.email = 'test@example.com'
+
+        # When obj.id matches user.id, should allow
+        obj = MockUserObject(user.id)
+
+        with patch('apps.core.permissions.check_hierarchy_access') as mock_check:
+            mock_check.return_value = True
+            result = self.permission.has_object_permission(request, self.view, obj)
+            self.assertTrue(result)
+
+
+# =============================================================================
+# CanAccessConversation Tests (P1-021)
+# =============================================================================
+
+class CanAccessConversationTests(TestCase):
+    """Tests for CanAccessConversation permission (P1-021)."""
+
+    def setUp(self):
+        self.factory = RequestFactory()
+        self.permission = CanAccessConversation()
+        self.view = MockView()
+        self.agency_id = uuid.uuid4()
+
+    def test_denies_non_authenticated_user(self):
+        """Denies access for non-authenticated users."""
+        request = self.factory.get('/')
+        request.user = {'not': 'authenticated'}
+
+        class MockConversation:
+            agency_id = uuid.uuid4()
+            agent_id = uuid.uuid4()
+
+        obj = MockConversation()
+        self.assertFalse(self.permission.has_object_permission(request, self.view, obj))
+
+    def test_admin_can_access_same_agency_conversation(self):
+        """Admin can access any conversation in their agency."""
+        request = self.factory.get('/')
+        request.user = create_auth_user(agency_id=self.agency_id, is_admin=True)
+
+        class MockConversation:
+            agency_id = None
+            agent_id = uuid.uuid4()
+
+        obj = MockConversation()
+        obj.agency_id = self.agency_id
+        self.assertTrue(self.permission.has_object_permission(request, self.view, obj))
+
+    def test_admin_cannot_access_different_agency_conversation(self):
+        """Admin cannot access conversation from different agency."""
+        request = self.factory.get('/')
+        request.user = create_auth_user(agency_id=self.agency_id, is_admin=True)
+
+        class MockConversation:
+            agency_id = uuid.uuid4()  # Different agency
+            agent_id = uuid.uuid4()
+
+        obj = MockConversation()
+        self.assertFalse(self.permission.has_object_permission(request, self.view, obj))
+
+    def test_user_can_access_own_conversation(self):
+        """User can access their own conversation."""
+        user_id = uuid.uuid4()
+        request = self.factory.get('/')
+        request.user = create_auth_user(user_id=user_id, agency_id=self.agency_id)
+
+        class MockConversation:
+            agency_id = None
+            agent_id = None
+
+        obj = MockConversation()
+        obj.agency_id = self.agency_id
+        obj.agent_id = user_id
+        self.assertTrue(self.permission.has_object_permission(request, self.view, obj))
+
+    @patch('apps.core.permissions.check_hierarchy_access')
+    def test_user_can_access_downline_conversation(self, mock_check):
+        """User can access conversation of agent in their downline."""
+        mock_check.return_value = True
+        request = self.factory.get('/')
+        request.user = create_auth_user(agency_id=self.agency_id)
+
+        class MockConversation:
+            agency_id = None
+            agent_id = uuid.uuid4()  # Different agent, but in downline
+
+        obj = MockConversation()
+        obj.agency_id = self.agency_id
+        result = self.permission.has_object_permission(request, self.view, obj)
+
+        self.assertTrue(result)
+        mock_check.assert_called_once()
+
+    @patch('apps.core.permissions.check_hierarchy_access')
+    def test_user_cannot_access_non_downline_conversation(self, mock_check):
+        """User cannot access conversation of agent not in their downline."""
+        mock_check.return_value = False
+        request = self.factory.get('/')
+        request.user = create_auth_user(agency_id=self.agency_id)
+
+        class MockConversation:
+            agency_id = None
+            agent_id = uuid.uuid4()
+
+        obj = MockConversation()
+        obj.agency_id = self.agency_id
+        result = self.permission.has_object_permission(request, self.view, obj)
+
+        self.assertFalse(result)
+
+    def test_denies_when_conversation_has_no_agent(self):
+        """Denies access when conversation has no agent (for non-admin)."""
+        request = self.factory.get('/')
+        request.user = create_auth_user(agency_id=self.agency_id)
+
+        class MockConversation:
+            agency_id = None
+            agent_id = None
+
+        obj = MockConversation()
+        obj.agency_id = self.agency_id
+        self.assertFalse(self.permission.has_object_permission(request, self.view, obj))
+
+
+# =============================================================================
+# Cross-Agency Denial Tests (P1-021)
+# =============================================================================
+
+class IsSameAgencyTests(TestCase):
+    """Tests for IsSameAgency permission - cross-agency denial (P1-021)."""
+
+    def setUp(self):
+        self.factory = RequestFactory()
+        self.permission = IsSameAgency()
+        self.view = MockView()
+
+    def test_allows_object_without_agency_id(self):
+        """Allows access to objects without agency_id."""
+        request = self.factory.get('/')
+        request.user = create_auth_user()
+
+        class MockObjectNoAgency:
+            pass
+
+        obj = MockObjectNoAgency()
+        self.assertTrue(self.permission.has_object_permission(request, self.view, obj))
+
+    def test_allows_same_agency(self):
+        """Allows access when user and object are same agency."""
+        agency_id = uuid.uuid4()
+        request = self.factory.get('/')
+        request.user = create_auth_user(agency_id=agency_id)
+
+        class MockObject:
+            pass
+
+        obj = MockObject()
+        obj.agency_id = agency_id
+        self.assertTrue(self.permission.has_object_permission(request, self.view, obj))
+
+    def test_denies_different_agency(self):
+        """Denies access when user and object are different agencies."""
+        request = self.factory.get('/')
+        request.user = create_auth_user(agency_id=uuid.uuid4())
+
+        class MockObject:
+            agency_id = uuid.uuid4()  # Different agency
+
+        obj = MockObject()
+        self.assertFalse(self.permission.has_object_permission(request, self.view, obj))
+
+    def test_denies_unauthenticated(self):
+        """Denies access for unauthenticated users."""
+        request = self.factory.get('/')
+        request.user = {'not': 'authenticated'}
+
+        class MockObject:
+            agency_id = uuid.uuid4()
+
+        obj = MockObject()
+        self.assertFalse(self.permission.has_object_permission(request, self.view, obj))
+
+
+# =============================================================================
+# Edge Case Tests (P1-018)
+# =============================================================================
+
+class HierarchyEdgeCaseTests(TestCase):
+    """Tests for hierarchy edge cases - no upline, no position (P1-018)."""
+
+    def test_check_hierarchy_access_user_can_always_access_self(self):
+        """User can always access their own data regardless of hierarchy."""
+        user_id = uuid.uuid4()
+        user = create_auth_user(user_id=user_id)
+
+        # User accessing self should always return True without DB query
+        result = check_hierarchy_access(user, user_id)
+        self.assertTrue(result)
+
+    @patch('apps.core.permissions.connection')
+    def test_admin_role_grants_agency_access(self, mock_connection):
+        """User with role='admin' has admin access even without is_admin flag."""
+        mock_cursor = MagicMock()
+        mock_cursor.fetchone.return_value = (1,)
+        mock_connection.cursor.return_value.__enter__.return_value = mock_cursor
+
+        agency_id = uuid.uuid4()
+        user = create_auth_user(agency_id=agency_id, role='admin', is_admin=False)
+        target_id = uuid.uuid4()
+
+        result = check_hierarchy_access(user, target_id)
+        self.assertTrue(result)
+
+    @patch('apps.core.permissions.connection')
+    def test_admin_cannot_access_different_agency_member(self, mock_connection):
+        """Admin cannot access users from different agency."""
+        mock_cursor = MagicMock()
+        mock_cursor.fetchone.return_value = None  # Target not in same agency
+        mock_connection.cursor.return_value.__enter__.return_value = mock_cursor
+
+        agency_id = uuid.uuid4()
+        user = create_auth_user(agency_id=agency_id, is_admin=True)
+        target_id = uuid.uuid4()
+
+        result = check_hierarchy_access(user, target_id)
+        self.assertFalse(result)

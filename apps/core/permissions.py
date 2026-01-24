@@ -27,6 +27,14 @@ TIER_LIMITS = {
         'advanced_analytics': False,
         'custom_branding': False,
     },
+    'basic': {
+        'max_agents': 10,
+        'max_deals_per_month': 100,
+        'max_sms_per_month': 50,
+        'ai_chat_enabled': False,
+        'advanced_analytics': False,
+        'custom_branding': False,
+    },
     'pro': {
         'max_agents': 25,
         'max_deals_per_month': 500,
@@ -324,7 +332,7 @@ class SubscriptionTierPermission(permissions.BasePermission):
         # Check minimum tier
         required_tier = getattr(view, 'required_tier', None)
         if required_tier:
-            tier_order = ['free', 'pro', 'expert']
+            tier_order = ['free', 'basic', 'pro', 'expert']
             user_tier_index = tier_order.index(user_tier) if user_tier in tier_order else 0
             required_tier_index = tier_order.index(required_tier) if required_tier in tier_order else 0
             if user_tier_index < required_tier_index:
