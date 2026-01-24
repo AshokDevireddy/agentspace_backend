@@ -174,24 +174,47 @@ class User(models.Model):
         Returns:
             List of user IDs in the downline (excludes self)
         """
-        depth_clause = f"AND depth < {max_depth}" if max_depth else ""
+        # Validate max_depth to prevent SQL injection - must be positive integer or None
+        if max_depth is not None:
+            max_depth = int(max_depth)  # Ensure it's an integer
+            if max_depth < 1:
+                max_depth = None
 
         with connection.cursor() as cursor:
-            cursor.execute(f"""
-                WITH RECURSIVE downline AS (
-                    SELECT id, 1 as depth
-                    FROM public.users
-                    WHERE upline_id = %s AND agency_id = %s
+            if max_depth is not None:
+                # Use parameterized query with depth limit
+                cursor.execute("""
+                    WITH RECURSIVE downline AS (
+                        SELECT id, 1 as depth
+                        FROM public.users
+                        WHERE upline_id = %s AND agency_id = %s
 
-                    UNION ALL
+                        UNION ALL
 
-                    SELECT u.id, d.depth + 1
-                    FROM public.users u
-                    JOIN downline d ON u.upline_id = d.id
-                    WHERE u.agency_id = %s {depth_clause}
-                )
-                SELECT id FROM downline
-            """, [str(self.id), str(self.agency_id), str(self.agency_id)])
+                        SELECT u.id, d.depth + 1
+                        FROM public.users u
+                        JOIN downline d ON u.upline_id = d.id
+                        WHERE u.agency_id = %s AND d.depth < %s
+                    )
+                    SELECT id FROM downline
+                """, [str(self.id), str(self.agency_id), str(self.agency_id), max_depth])
+            else:
+                # No depth limit
+                cursor.execute("""
+                    WITH RECURSIVE downline AS (
+                        SELECT id, 1 as depth
+                        FROM public.users
+                        WHERE upline_id = %s AND agency_id = %s
+
+                        UNION ALL
+
+                        SELECT u.id, d.depth + 1
+                        FROM public.users u
+                        JOIN downline d ON u.upline_id = d.id
+                        WHERE u.agency_id = %s
+                    )
+                    SELECT id FROM downline
+                """, [str(self.id), str(self.agency_id), str(self.agency_id)])
             return [row[0] for row in cursor.fetchall()]
 
     def get_upline_chain(self) -> list['UUID']:
@@ -903,3 +926,23 @@ class FeatureFlag(models.Model):
     def __str__(self):
         scope = f"Agency: {self.agency.name}" if self.agency else "Global"
         return f"{self.name} ({scope}) - {'Enabled' if self.is_enabled else 'Disabled'}"
+
+
+# =============================================================================
+# Custom Managers (imported at end to avoid circular imports)
+# =============================================================================
+
+# Import and assign managers after all models are defined
+from apps.core.managers.user import UserManager
+from apps.core.managers.deal import DealManager
+from apps.core.managers.conversation import ConversationManager
+
+# Assign custom managers to models
+User.objects = UserManager()
+User.objects.model = User
+
+Deal.objects = DealManager()
+Deal.objects.model = Deal
+
+Conversation.objects = ConversationManager()
+Conversation.objects.model = Conversation

@@ -33,37 +33,36 @@ def get_user_context_from_auth_id(auth_user_id: UUID) -> Optional[UserContext]:
     """
     Get user context from auth_user_id.
 
+    Uses Django ORM for the lookup.
+
     Args:
         auth_user_id: The Supabase auth user ID (from JWT sub claim)
 
     Returns:
         UserContext if found, None otherwise
     """
+    from apps.core.models import User
+
     try:
-        with connection.cursor() as cursor:
-            cursor.execute("""
-                SELECT
-                    u.id,
-                    u.auth_user_id,
-                    u.agency_id,
-                    u.email,
-                    COALESCE(u.is_admin, false) OR u.perm_level = 'admin' OR u.role = 'admin'
-                FROM users u
-                WHERE u.auth_user_id = %s
-                LIMIT 1
-            """, [str(auth_user_id)])
-            row = cursor.fetchone()
+        user = User.objects.filter(auth_user_id=auth_user_id).first()
 
-            if not row:
-                return None
+        if not user:
+            return None
 
-            return UserContext(
-                internal_user_id=row[0],
-                auth_user_id=row[1],
-                agency_id=row[2],
-                email=row[3] or '',
-                is_admin=row[4] or False,
-            )
+        # Determine if user is admin (checking multiple fields for compatibility)
+        is_admin = (
+            (user.is_admin or False) or
+            user.perm_level == 'admin' or
+            user.role == 'admin'
+        )
+
+        return UserContext(
+            internal_user_id=user.id,
+            auth_user_id=user.auth_user_id,
+            agency_id=user.agency_id,
+            email=user.email or '',
+            is_admin=is_admin,
+        )
     except Exception as e:
         logger.error(f'Error getting user context: {e}')
         return None

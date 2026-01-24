@@ -58,7 +58,8 @@ def get_expected_payouts(
     if not visible_ids:
         return {'payouts': [], 'total_expected': 0, 'total_premium': 0, 'deal_count': 0, 'summary': {}}
 
-    visible_ids_str = ','.join(f"'{str(vid)}'" for vid in visible_ids)
+    # Convert visible_ids to list of strings for PostgreSQL array parameter (safe from SQL injection)
+    visible_ids_list = [str(vid) for vid in visible_ids]
 
     # Build WHERE clauses for deals
     params = [str(user.agency_id)]
@@ -85,6 +86,9 @@ def get_expected_payouts(
     elif production_type == 'downline':
         hierarchy_level_filter = "AND dhs.hierarchy_level > 0"
 
+    # Add visible_ids_list to params for the first use in query
+    params.append(visible_ids_list)
+
     query = f"""
         WITH
         -- Get deals where any of our visible agents are in the hierarchy
@@ -102,7 +106,7 @@ def get_expected_payouts(
             FROM public.deals d
             INNER JOIN public.deal_hierarchy_snapshots dhs ON dhs.deal_id = d.id
             WHERE {where_sql}
-              AND dhs.agent_id IN ({visible_ids_str})
+              AND dhs.agent_id = ANY(%s::uuid[])
               AND d.annual_premium IS NOT NULL
               AND d.annual_premium > 0
         ),
@@ -167,7 +171,7 @@ def get_expected_payouts(
             LEFT JOIN public.products pr ON pr.id = fd.product_id
             LEFT JOIN public.users u ON u.id = dhs.agent_id
             LEFT JOIN public.positions po ON po.id = dhs.position_id
-            WHERE dhs.agent_id IN ({visible_ids_str})
+            WHERE dhs.agent_id = ANY(%s::uuid[])
               AND dhs.commission_percentage IS NOT NULL
               {hierarchy_level_filter}
         )
@@ -194,6 +198,9 @@ def get_expected_payouts(
         FROM agent_payouts
         ORDER BY policy_effective_date DESC NULLS LAST, deal_id DESC, hierarchy_level ASC
     """
+
+    # Add visible_ids_list again for the second usage in agent_payouts CTE
+    params.append(visible_ids_list)
 
     try:
         with connection.cursor() as cursor:
@@ -304,6 +311,8 @@ def get_agent_debt(
     """
     Get agent debt (negative balance from chargebacks, lapses, etc.).
 
+    Uses Django ORM with select_related for optimized queries.
+
     Args:
         user: The authenticated user
         agent_id: Filter by specific agent (defaults to user)
@@ -311,6 +320,8 @@ def get_agent_debt(
     Returns:
         Dictionary with debt information
     """
+    from apps.core.models import Deal
+
     target_agent_id = agent_id or user.id
 
     # Verify access
@@ -320,52 +331,44 @@ def get_agent_debt(
         if target_agent_id not in visible_ids:
             return {'debt': 0, 'deals': []}
 
-    query = """
-        SELECT
-            d.id as deal_id,
-            d.policy_number,
-            d.annual_premium,
-            d.status,
-            d.status_standardized,
-            cl.first_name as client_first_name,
-            cl.last_name as client_last_name,
-            ca.name as carrier_name,
-            d.policy_effective_date
-        FROM public.deals d
-        LEFT JOIN public.clients cl ON cl.id = d.client_id
-        LEFT JOIN public.carriers ca ON ca.id = d.carrier_id
-        WHERE d.agent_id = %s
-          AND d.agency_id = %s
-          AND d.status_standardized IN ('lapsed', 'cancelled', 'terminated')
-          AND d.annual_premium IS NOT NULL
-        ORDER BY d.policy_effective_date DESC
-    """
-
     try:
-        with connection.cursor() as cursor:
-            cursor.execute(query, [str(target_agent_id), str(user.agency_id)])
-            columns = [col[0] for col in cursor.description]
-            rows = cursor.fetchall()
+        # Use Django ORM with select_related to prevent N+1 queries
+        deals_qs = (
+            Deal.objects
+            .filter(
+                agent_id=target_agent_id,
+                agency_id=user.agency_id,
+                status_standardized__in=['lapsed', 'cancelled', 'terminated'],
+                annual_premium__isnull=False
+            )
+            .select_related('client', 'carrier')
+            .order_by('-policy_effective_date')
+        )
 
         total_debt = 0
         deals = []
 
-        for row in rows:
-            deal = dict(zip(columns, row))
-            premium = float(deal['annual_premium']) if deal['annual_premium'] else 0
+        for deal in deals_qs:
+            premium = float(deal.annual_premium) if deal.annual_premium else 0
             debt_amount = premium * DEFAULT_CHARGEBACK_RATE
 
             total_debt += debt_amount
+
+            # Build client name
+            client_name = ''
+            if deal.client:
+                client_name = f"{deal.client.first_name or ''} {deal.client.last_name or ''}".strip()
+
             deals.append({
-                'deal_id': str(deal['deal_id']),
-                'policy_number': deal['policy_number'],
-                'client_name': f"{deal['client_first_name'] or ''} {deal['client_last_name'] or ''}".strip(),
-                'carrier_name': deal['carrier_name'],
+                'deal_id': str(deal.id),
+                'policy_number': deal.policy_number,
+                'client_name': client_name,
+                'carrier_name': deal.carrier.name if deal.carrier else None,
                 'premium': premium,
                 'debt_amount': round(debt_amount, 2),
-                'status': deal['status'],
-                'status_standardized': deal['status_standardized'],
-                'policy_effective_date': deal['policy_effective_date'].isoformat() if deal['policy_effective_date'] else None,
+                'status': deal.status,
+                'status_standardized': deal.status_standardized,
+                'policy_effective_date': deal.policy_effective_date.isoformat() if deal.policy_effective_date else None,
             })
 
         return {

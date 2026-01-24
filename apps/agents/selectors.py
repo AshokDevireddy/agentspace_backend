@@ -3,11 +3,16 @@ Agent Selectors
 
 Query functions for agent data following the selector pattern.
 Translates Supabase RPC functions to Django queries.
+
+Uses django-cte 2.0 for recursive CTE support where needed.
 """
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
 from django.db import connection
+from django.db.models import F, Value, IntegerField, CharField
+from django.db.models.functions import Concat
+from django_cte import With
 
 
 def get_agent_downline(agent_id: UUID) -> List[dict]:
@@ -15,7 +20,7 @@ def get_agent_downline(agent_id: UUID) -> List[dict]:
     Get all agents in the downline hierarchy of a given agent.
     Translated from Supabase RPC: get_agent_downline
 
-    Uses recursive CTE to traverse downward from agent_id.
+    Uses django-cte for recursive traversal.
 
     Args:
         agent_id: The root agent to get downline for
@@ -23,24 +28,46 @@ def get_agent_downline(agent_id: UUID) -> List[dict]:
     Returns:
         List of agents in downline including self with depth level
     """
-    with connection.cursor() as cursor:
-        cursor.execute("""
-            WITH RECURSIVE downline AS (
-                SELECT u.id, u.first_name, u.last_name, u.email, 0 as depth
-                FROM users u
-                WHERE u.id = %s
-                UNION ALL
-                SELECT u.id, u.first_name, u.last_name, u.email, d.depth + 1
-                FROM users u
-                JOIN downline d ON u.upline_id = d.id
-                WHERE d.depth < 20  -- Safety limit to prevent infinite loops
-            )
-            SELECT d.id, d.first_name, d.last_name, d.email, d.depth as level
-            FROM downline d
-            ORDER BY d.depth, d.last_name, d.first_name
-        """, [str(agent_id)])
-        columns = [col[0] for col in cursor.description]
-        return [dict(zip(columns, row)) for row in cursor.fetchall()]
+    from apps.core.models import User
+
+    def make_downline_cte(cte):
+        # Anchor: the agent themselves at depth 0
+        anchor = (
+            User.objects.filter(id=agent_id)
+            .annotate(depth=Value(0, output_field=IntegerField()))
+            .values('id', 'first_name', 'last_name', 'email', 'depth')
+        )
+
+        # Recursive: get children, increment depth (limit to 20)
+        recursive = (
+            cte.join(User, upline_id=cte.col.id)
+            .annotate(depth=cte.col.depth + 1)
+            .filter(depth__lt=20)
+            .values('id', 'first_name', 'last_name', 'email', 'depth')
+        )
+
+        return anchor.union(recursive, all=True)
+
+    cte = With.recursive(make_downline_cte)
+
+    # Query the CTE results
+    results = (
+        cte.queryset()
+        .with_cte(cte)
+        .annotate(level=F('depth'))
+        .order_by('depth', 'last_name', 'first_name')
+    )
+
+    return [
+        {
+            'id': r['id'],
+            'first_name': r['first_name'],
+            'last_name': r['last_name'],
+            'email': r['email'],
+            'level': r['depth'],
+        }
+        for r in results.values('id', 'first_name', 'last_name', 'email', 'depth')
+    ]
 
 
 def get_agent_upline_chain(agent_id: UUID) -> List[dict]:
@@ -48,36 +75,58 @@ def get_agent_upline_chain(agent_id: UUID) -> List[dict]:
     Get the complete upline chain from an agent to the top of hierarchy.
     Translated from Supabase RPC: get_agent_upline_chain
 
+    Uses django-cte for recursive traversal.
+
     Args:
         agent_id: The agent to get upline chain for
 
     Returns:
         Upline chain from self to top
     """
-    with connection.cursor() as cursor:
-        cursor.execute("""
-            WITH RECURSIVE upline_chain AS (
-                SELECT u.id AS agent_id, u.upline_id, 0 AS depth
-                FROM users u
-                WHERE u.id = %s
-                UNION ALL
-                SELECT u.id AS agent_id, u.upline_id, uc.depth + 1 AS depth
-                FROM users u
-                INNER JOIN upline_chain uc ON u.id = uc.upline_id
-                WHERE uc.upline_id IS NOT NULL AND uc.depth < 20
-            )
-            SELECT uc.agent_id, uc.upline_id, uc.depth
-            FROM upline_chain uc
-            ORDER BY uc.depth ASC
-        """, [str(agent_id)])
-        columns = [col[0] for col in cursor.description]
-        return [dict(zip(columns, row)) for row in cursor.fetchall()]
+    from apps.core.models import User
+
+    def make_upline_cte(cte):
+        # Anchor: the agent themselves
+        anchor = (
+            User.objects.filter(id=agent_id)
+            .annotate(depth=Value(0, output_field=IntegerField()))
+            .values('id', 'upline_id', 'depth')
+        )
+
+        # Recursive: follow upline_id chain (limit to 20)
+        recursive = (
+            cte.join(User, id=cte.col.upline_id)
+            .annotate(depth=cte.col.depth + 1)
+            .filter(depth__lt=20)
+            .values('id', 'upline_id', 'depth')
+        )
+
+        return anchor.union(recursive, all=True)
+
+    cte = With.recursive(make_upline_cte)
+
+    results = (
+        cte.queryset()
+        .with_cte(cte)
+        .order_by('depth')
+    )
+
+    return [
+        {
+            'agent_id': r['id'],
+            'upline_id': r['upline_id'],
+            'depth': r['depth'],
+        }
+        for r in results.values('id', 'upline_id', 'depth')
+    ]
 
 
 def get_agent_options(user_id: UUID, include_full_agency: bool = False) -> List[dict]:
     """
     Get agent options for dropdown/select components.
     Translated from Supabase RPC: get_agent_options
+
+    Uses ORM for full agency, django-cte for downline mode.
 
     Args:
         user_id: The requesting user's ID
@@ -86,50 +135,69 @@ def get_agent_options(user_id: UUID, include_full_agency: bool = False) -> List[
     Returns:
         List of agent options with agent_id and display_name
     """
-    with connection.cursor() as cursor:
-        if include_full_agency:
-            # Get all agents in user's agency
-            cursor.execute("""
-                WITH current_usr AS (
-                    SELECT id, agency_id FROM users WHERE id = %s LIMIT 1
-                )
-                SELECT
-                    u.id as agent_id,
-                    CONCAT(u.last_name, ', ', u.first_name) as display_name
-                FROM users u
-                JOIN current_usr cu ON cu.agency_id = u.agency_id
-                WHERE u.role <> 'client'
-                    AND u.is_active = true
-                ORDER BY u.last_name, u.first_name
-            """, [str(user_id)])
-        else:
-            # Get only user's downline
-            cursor.execute("""
-                WITH RECURSIVE downline AS (
-                    SELECT u.id, u.first_name, u.last_name
-                    FROM users u
-                    WHERE u.id = %s
-                    UNION ALL
-                    SELECT u.id, u.first_name, u.last_name
-                    FROM users u
-                    JOIN downline d ON u.upline_id = d.id
-                    WHERE d.id <> u.id  -- Prevent cycles
-                )
-                SELECT
-                    d.id as agent_id,
-                    CONCAT(d.last_name, ', ', d.first_name) as display_name
-                FROM downline d
-                ORDER BY d.last_name, d.first_name
-            """, [str(user_id)])
+    from apps.core.models import User
 
-        columns = [col[0] for col in cursor.description]
-        return [dict(zip(columns, row)) for row in cursor.fetchall()]
+    if include_full_agency:
+        # Get user's agency first
+        user = User.objects.filter(id=user_id).values('agency_id').first()
+        if not user:
+            return []
+
+        # Get all active agents in the agency using ORM
+        agents = (
+            User.objects.filter(
+                agency_id=user['agency_id'],
+                is_active=True
+            )
+            .exclude(role='client')
+            .order_by('last_name', 'first_name')
+        )
+
+        return [
+            {
+                'agent_id': a.id,
+                'display_name': f"{a.last_name or ''}, {a.first_name or ''}".strip(', '),
+            }
+            for a in agents
+        ]
+    else:
+        # Use django-cte for recursive downline
+        def make_downline_cte(cte):
+            anchor = (
+                User.objects.filter(id=user_id)
+                .values('id', 'first_name', 'last_name')
+            )
+
+            recursive = (
+                cte.join(User, upline_id=cte.col.id)
+                .values('id', 'first_name', 'last_name')
+            )
+
+            return anchor.union(recursive, all=True)
+
+        cte = With.recursive(make_downline_cte)
+
+        results = (
+            cte.queryset()
+            .with_cte(cte)
+            .order_by('last_name', 'first_name')
+        )
+
+        return [
+            {
+                'agent_id': r['id'],
+                'display_name': f"{r['last_name'] or ''}, {r['first_name'] or ''}".strip(', '),
+            }
+            for r in results.values('id', 'first_name', 'last_name')
+        ]
 
 
 def get_agents_hierarchy_nodes(user_id: UUID, include_full_agency: bool = False) -> List[dict]:
     """
     Get hierarchy nodes for building tree view.
     Translated from Supabase RPC: get_agents_hierarchy_nodes
+
+    Uses ORM with select_related for full agency, django-cte for downline.
 
     Args:
         user_id: The requesting user's ID
@@ -138,58 +206,75 @@ def get_agents_hierarchy_nodes(user_id: UUID, include_full_agency: bool = False)
     Returns:
         List of agents with hierarchy info for tree building
     """
-    with connection.cursor() as cursor:
-        if include_full_agency:
-            cursor.execute("""
-                WITH current_usr AS (
-                    SELECT id, agency_id FROM users WHERE id = %s LIMIT 1
-                )
-                SELECT
-                    u.id as agent_id,
-                    u.first_name,
-                    u.last_name,
-                    u.perm_level,
-                    u.upline_id,
-                    u.position_id,
-                    p.name as position_name,
-                    p.level as position_level
-                FROM users u
-                JOIN current_usr cu ON cu.agency_id = u.agency_id
-                LEFT JOIN positions p ON p.id = u.position_id
-                WHERE u.role <> 'client'
-                    AND u.is_active = true
-                ORDER BY u.last_name, u.first_name
-            """, [str(user_id)])
-        else:
-            cursor.execute("""
-                WITH RECURSIVE downline AS (
-                    SELECT u.id
-                    FROM users u
-                    WHERE u.id = %s
-                    UNION ALL
-                    SELECT u.id
-                    FROM users u
-                    JOIN downline d ON u.upline_id = d.id
-                )
-                SELECT
-                    u.id as agent_id,
-                    u.first_name,
-                    u.last_name,
-                    u.perm_level,
-                    u.upline_id,
-                    u.position_id,
-                    p.name as position_name,
-                    p.level as position_level
-                FROM users u
-                JOIN downline d ON d.id = u.id
-                LEFT JOIN positions p ON p.id = u.position_id
-                WHERE u.role <> 'client'
-                    AND u.is_active = true
-                ORDER BY u.last_name, u.first_name
-            """, [str(user_id)])
+    from apps.core.models import User
 
-        columns = [col[0] for col in cursor.description]
-        return [dict(zip(columns, row)) for row in cursor.fetchall()]
+    if include_full_agency:
+        # Get user's agency
+        user = User.objects.filter(id=user_id).values('agency_id').first()
+        if not user:
+            return []
+
+        # Get all active agents with position info using ORM
+        agents = (
+            User.objects.filter(
+                agency_id=user['agency_id'],
+                is_active=True
+            )
+            .exclude(role='client')
+            .select_related('position')
+            .order_by('last_name', 'first_name')
+        )
+
+        return [
+            {
+                'agent_id': a.id,
+                'first_name': a.first_name,
+                'last_name': a.last_name,
+                'perm_level': a.perm_level,
+                'upline_id': a.upline_id,
+                'position_id': a.position_id,
+                'position_name': a.position.name if a.position else None,
+                'position_level': a.position.level if a.position else None,
+            }
+            for a in agents
+        ]
+    else:
+        # Use django-cte for recursive downline, then join with full user data
+        def make_downline_cte(cte):
+            anchor = User.objects.filter(id=user_id).values('id')
+            recursive = cte.join(User, upline_id=cte.col.id).values('id')
+            return anchor.union(recursive, all=True)
+
+        cte = With.recursive(make_downline_cte)
+
+        # Get downline IDs
+        downline_ids = list(
+            cte.queryset()
+            .with_cte(cte)
+            .values_list('id', flat=True)
+        )
+
+        # Fetch full user data with positions using ORM
+        agents = (
+            User.objects.filter(id__in=downline_ids, is_active=True)
+            .exclude(role='client')
+            .select_related('position')
+            .order_by('last_name', 'first_name')
+        )
+
+        return [
+            {
+                'agent_id': a.id,
+                'first_name': a.first_name,
+                'last_name': a.last_name,
+                'perm_level': a.perm_level,
+                'upline_id': a.upline_id,
+                'position_id': a.position_id,
+                'position_name': a.position.name if a.position else None,
+                'position_level': a.position.level if a.position else None,
+            }
+            for a in agents
+        ]
 
 
 def get_agents_table(
@@ -202,6 +287,9 @@ def get_agents_table(
     """
     Get paginated agent table data with filtering.
     Translated from Supabase RPC: get_agents_table
+
+    Note: Kept as raw SQL due to complex dynamic filtering requirements.
+    This is a P3 function - partial ORM conversion planned.
 
     Args:
         user_id: The requesting user's ID
@@ -285,7 +373,6 @@ def get_agents_table(
             if direct_upline == '':
                 where_clauses.append("u.upline_id IS NULL")
             else:
-                # Find upline by name
                 where_clauses.append("""
                     u.upline_id IN (
                         SELECT id FROM users
@@ -294,9 +381,19 @@ def get_agents_table(
                 """)
                 params.append(f'%{direct_upline.lower()}%')
 
-        where_clause = " AND ".join(where_clauses)
+        # Direct downline filter
+        if direct_downline is not None and direct_downline != 'all':
+            where_clauses.append("""
+                u.id IN (
+                    SELECT upline_id FROM users
+                    WHERE LOWER(CONCAT(first_name, ' ', last_name)) LIKE %s
+                )
+            """)
+            params.append(f'%{direct_downline.lower()}%')
 
-        # Full query with pagination and counts
+        where_sql = " AND ".join(where_clauses)
+
+        # Main query
         query = f"""
             {base_cte}
             SELECT
@@ -304,27 +401,21 @@ def get_agents_table(
                 u.first_name,
                 u.last_name,
                 u.email,
-                u.perm_level,
-                u.upline_id,
-                upline.first_name || ' ' || upline.last_name as upline_name,
-                u.created_at,
+                u.phone as phone_number,
                 u.status,
-                COALESCE(u.total_prod, 0) as total_prod,
-                COALESCE(u.total_policies_sold, 0) as total_policies_sold,
-                (
-                    SELECT COUNT(*)
-                    FROM users du
-                    WHERE du.upline_id = u.id AND du.is_active = true
-                ) as downline_count,
+                u.perm_level,
                 u.position_id,
                 p.name as position_name,
                 p.level as position_level,
+                u.upline_id,
+                upline.first_name || ' ' || upline.last_name as upline_name,
+                u.created_at,
                 COUNT(*) OVER() as total_count
             FROM users u
             JOIN visible_agents va ON va.id = u.id
-            LEFT JOIN users upline ON upline.id = u.upline_id
             LEFT JOIN positions p ON p.id = u.position_id
-            WHERE {where_clause}
+            LEFT JOIN users upline ON upline.id = u.upline_id
+            WHERE {where_sql}
             ORDER BY u.last_name, u.first_name
             LIMIT %s OFFSET %s
         """
@@ -340,65 +431,84 @@ def get_agents_without_positions(user_id: UUID) -> List[dict]:
     Get agents who don't have a position assigned.
     Translated from Supabase RPC: get_agents_without_positions
 
+    Uses django-cte for downline visibility, ORM for final query.
+
     Args:
         user_id: The requesting user's ID
 
     Returns:
         List of agents without positions
     """
-    with connection.cursor() as cursor:
-        cursor.execute("""
-            WITH current_usr AS (
-                SELECT id, agency_id, is_admin, perm_level, role
-                FROM users WHERE id = %s LIMIT 1
-            ),
-            is_admin_user AS (
-                SELECT
-                    CASE WHEN is_admin OR perm_level = 'admin' OR role = 'admin'
-                    THEN true ELSE false END as is_admin
-                FROM current_usr
-            ),
-            RECURSIVE downline AS (
-                SELECT u.id
-                FROM users u
-                WHERE u.id = (SELECT id FROM current_usr)
-                UNION ALL
-                SELECT u.id
-                FROM users u
-                JOIN downline d ON u.upline_id = d.id
-            ),
-            visible_agents AS (
-                SELECT u.id
-                FROM users u
-                JOIN current_usr cu ON cu.agency_id = u.agency_id
-                WHERE (SELECT is_admin FROM is_admin_user)
-                UNION
-                SELECT id FROM downline
+    from apps.core.models import User
+
+    # Get user info to determine visibility
+    user = User.objects.filter(id=user_id).values(
+        'id', 'agency_id', 'is_admin', 'perm_level', 'role'
+    ).first()
+
+    if not user:
+        return []
+
+    is_admin = user['is_admin'] or user['perm_level'] == 'admin' or user['role'] == 'admin'
+
+    if is_admin:
+        # Admin sees all agency agents without positions
+        agents = (
+            User.objects.filter(
+                agency_id=user['agency_id'],
+                position_id__isnull=True,
+                is_active=True
             )
-            SELECT
-                u.id as agent_id,
-                u.first_name,
-                u.last_name,
-                u.email,
-                u.phone as phone_number,
-                u.role,
-                upline.first_name || ' ' || upline.last_name as upline_name,
-                u.created_at
-            FROM users u
-            JOIN visible_agents va ON va.id = u.id
-            LEFT JOIN users upline ON upline.id = u.upline_id
-            WHERE u.position_id IS NULL
-                AND u.role <> 'client'
-                AND u.is_active = true
-            ORDER BY u.last_name, u.first_name
-        """, [str(user_id)])
-        columns = [col[0] for col in cursor.description]
-        return [dict(zip(columns, row)) for row in cursor.fetchall()]
+            .exclude(role='client')
+            .select_related('upline')
+            .order_by('last_name', 'first_name')
+        )
+    else:
+        # Use django-cte to get downline IDs
+        def make_downline_cte(cte):
+            anchor = User.objects.filter(id=user_id).values('id')
+            recursive = cte.join(User, upline_id=cte.col.id).values('id')
+            return anchor.union(recursive, all=True)
+
+        cte = With.recursive(make_downline_cte)
+        downline_ids = list(
+            cte.queryset()
+            .with_cte(cte)
+            .values_list('id', flat=True)
+        )
+
+        # Filter to agents without positions in downline
+        agents = (
+            User.objects.filter(
+                id__in=downline_ids,
+                position_id__isnull=True,
+                is_active=True
+            )
+            .exclude(role='client')
+            .select_related('upline')
+            .order_by('last_name', 'first_name')
+        )
+
+    return [
+        {
+            'agent_id': a.id,
+            'first_name': a.first_name,
+            'last_name': a.last_name,
+            'email': a.email,
+            'phone_number': a.phone,
+            'role': a.role,
+            'upline_name': f"{a.upline.first_name or ''} {a.upline.last_name or ''}".strip() if a.upline else None,
+            'created_at': a.created_at,
+        }
+        for a in agents
+    ]
 
 
 def get_agent_downlines_with_details(agent_id: UUID) -> List[dict]:
     """
     Get direct downlines with position details and metrics.
+
+    Uses Django ORM with select_related to prevent N+1 queries.
 
     Args:
         agent_id: The parent agent ID
@@ -406,25 +516,27 @@ def get_agent_downlines_with_details(agent_id: UUID) -> List[dict]:
     Returns:
         List of downline agents with details
     """
-    with connection.cursor() as cursor:
-        cursor.execute("""
-            SELECT
-                u.id,
-                u.first_name,
-                u.last_name,
-                u.position_id,
-                u.status,
-                u.created_at,
-                p.name as position_name,
-                p.level as position_level
-            FROM users u
-            LEFT JOIN positions p ON p.id = u.position_id
-            WHERE u.upline_id = %s
-                AND u.is_active = true
-            ORDER BY u.created_at DESC
-        """, [str(agent_id)])
-        columns = [col[0] for col in cursor.description]
-        return [dict(zip(columns, row)) for row in cursor.fetchall()]
+    from apps.core.models import User
+
+    downlines = (
+        User.objects.filter(upline_id=agent_id, is_active=True)
+        .select_related('position')
+        .order_by('-created_at')
+    )
+
+    return [
+        {
+            'id': u.id,
+            'first_name': u.first_name,
+            'last_name': u.last_name,
+            'position_id': u.position_id,
+            'status': u.status,
+            'created_at': u.created_at,
+            'position_name': u.position.name if u.position else None,
+            'position_level': u.position.level if u.position else None,
+        }
+        for u in downlines
+    ]
 
 
 def check_agent_upline_positions(agent_id: UUID) -> dict:
@@ -432,8 +544,7 @@ def check_agent_upline_positions(agent_id: UUID) -> dict:
     Check if all agents in the upline chain have positions assigned.
     Translated from Supabase RPC: check_agent_upline_positions
 
-    Traverses from the given agent up to the top of hierarchy,
-    checking if each agent has a position assigned.
+    Uses django-cte for upline traversal.
 
     Args:
         agent_id: The agent to start checking from
@@ -444,69 +555,53 @@ def check_agent_upline_positions(agent_id: UUID) -> dict:
         - missing_positions: list of agents without positions
         - total_checked: count of checked agents
     """
-    with connection.cursor() as cursor:
-        cursor.execute("""
-            WITH RECURSIVE upline_chain AS (
-                -- Start with the given agent
-                SELECT
-                    u.id,
-                    u.first_name,
-                    u.last_name,
-                    u.email,
-                    u.position_id,
-                    u.upline_id,
-                    0 as depth
-                FROM users u
-                WHERE u.id = %s
+    from apps.core.models import User
 
-                UNION ALL
+    def make_upline_cte(cte):
+        # Anchor: start with the given agent
+        anchor = (
+            User.objects.filter(id=agent_id)
+            .annotate(depth=Value(0, output_field=IntegerField()))
+            .values('id', 'first_name', 'last_name', 'email', 'position_id', 'upline_id', 'depth')
+        )
 
-                -- Traverse up the hierarchy
-                SELECT
-                    u.id,
-                    u.first_name,
-                    u.last_name,
-                    u.email,
-                    u.position_id,
-                    u.upline_id,
-                    uc.depth + 1
-                FROM users u
-                JOIN upline_chain uc ON u.id = uc.upline_id
-                WHERE uc.upline_id IS NOT NULL
-                    AND uc.depth < 50  -- Safety limit
-            )
-            SELECT
-                id as agent_id,
-                first_name,
-                last_name,
-                email,
-                position_id,
-                upline_id IS NULL as is_top_of_hierarchy
-            FROM upline_chain
-            ORDER BY depth ASC
-        """, [str(agent_id)])
+        # Recursive: follow upline chain (limit to 50)
+        recursive = (
+            cte.join(User, id=cte.col.upline_id)
+            .annotate(depth=cte.col.depth + 1)
+            .filter(depth__lt=50)
+            .values('id', 'first_name', 'last_name', 'email', 'position_id', 'upline_id', 'depth')
+        )
 
-        columns = [col[0] for col in cursor.description]
-        rows = [dict(zip(columns, row)) for row in cursor.fetchall()]
+        return anchor.union(recursive, all=True)
+
+    cte = With.recursive(make_upline_cte)
+
+    results = list(
+        cte.queryset()
+        .with_cte(cte)
+        .order_by('depth')
+        .values('id', 'first_name', 'last_name', 'email', 'position_id', 'upline_id')
+    )
 
     all_have_positions = True
     missing_positions = []
 
-    for row in rows:
+    for row in results:
         if row['position_id'] is None:
             all_have_positions = False
             missing_positions.append({
-                'agent_id': str(row['agent_id']),
+                'agent_id': str(row['id']),
                 'first_name': row['first_name'],
                 'last_name': row['last_name'],
                 'email': row['email'],
-                'is_top_of_hierarchy': row['is_top_of_hierarchy'],
+                'is_top_of_hierarchy': row['upline_id'] is None,
             })
 
     return {
         'has_all_positions': all_have_positions,
         'missing_positions': missing_positions,
-        'total_checked': len(rows),
+        'total_checked': len(results),
     }
 
 
@@ -519,6 +614,9 @@ def get_agents_debt_production(
     """
     Calculate debt and production metrics for agents.
     Translated from Supabase RPC: get_agents_debt_production
+
+    Note: Kept as raw SQL due to complex multi-CTE aggregations.
+    This is a P4 function - too complex for ORM conversion.
 
     Args:
         user_id: The requesting user's ID
@@ -559,13 +657,13 @@ def get_agents_debt_production(
                     dhs.agent_id,
                     COALESCE(SUM(COALESCE(d.annual_premium, 0)), 0) as hierarchy_production,
                     COUNT(*) as hierarchy_production_count
-                FROM deal_hierarchy_snapshot dhs
+                FROM deal_hierarchy_snapshots dhs
                 JOIN deals d ON d.id = dhs.deal_id
                 JOIN agent_list al ON al.agent_id = dhs.agent_id
                 WHERE d.policy_effective_date >= %s::date
                     AND d.policy_effective_date < %s::date
                     AND d.status_standardized NOT IN ('cancelled', 'lapsed', 'terminated')
-                    AND dhs.agent_id <> d.agent_id  -- Exclude self (counted in individual)
+                    AND dhs.agent_id <> d.agent_id
                 GROUP BY dhs.agent_id
             ),
             -- Individual debt (lapsed deals where agent is writing agent)
@@ -602,7 +700,7 @@ def get_agents_debt_production(
                     COUNT(*) FILTER (
                         WHERE d.status_standardized IN ('lapsed', 'cancelled', 'terminated')
                     ) as hierarchy_debt_count
-                FROM deal_hierarchy_snapshot dhs
+                FROM deal_hierarchy_snapshots dhs
                 JOIN deals d ON d.id = dhs.deal_id
                 JOIN agent_list al ON al.agent_id = dhs.agent_id
                 WHERE d.policy_effective_date >= %s::date

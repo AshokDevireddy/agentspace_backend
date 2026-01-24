@@ -2,12 +2,15 @@
 SMS Selectors (P2-033 to P2-035)
 
 Complex queries for SMS conversations, messages, and drafts.
+Converted to Django ORM for improved maintainability and N+1 prevention.
 """
 import logging
 from typing import Optional, Literal
 from uuid import UUID
 
 from django.db import connection
+from django.db.models import Q, Subquery, OuterRef, Count
+from django.core.paginator import Paginator
 
 from apps.core.permissions import get_visible_agent_ids
 from apps.core.authentication import AuthenticatedUser
@@ -27,6 +30,8 @@ def get_sms_conversations(
     """
     Get SMS conversations based on view mode.
 
+    Uses Django ORM with select_related for N+1 prevention.
+
     Args:
         user: The authenticated user
         view_mode: 'all' (admin), 'self', or 'downlines'
@@ -37,120 +42,85 @@ def get_sms_conversations(
     Returns:
         Dictionary with conversations and pagination
     """
+    from apps.core.models import Conversation, Message
+
     is_admin = user.is_admin or user.role == 'admin'
-    offset = (page - 1) * limit
-
-    # Build agent filter based on view mode
-    if view_mode == 'all' and is_admin:
-        # Admin sees all agency conversations
-        agent_filter = "c.agency_id = %s"
-        agent_params = [str(user.agency_id)]
-    elif view_mode == 'downlines':
-        # User sees downline conversations
-        visible_ids = get_visible_agent_ids(user, include_full_agency=False)
-        # Exclude self for 'downlines' mode
-        visible_ids = [str(vid) for vid in visible_ids if str(vid) != str(user.id)]
-        if not visible_ids:
-            return {'conversations': [], 'pagination': _empty_pagination(page, limit)}
-        agent_filter = "c.agency_id = %s AND c.agent_id = ANY(%s::uuid[])"
-        agent_params = [str(user.agency_id), visible_ids]
-    else:  # 'self'
-        # User sees only their own conversations
-        agent_filter = "c.agency_id = %s AND c.agent_id = %s"
-        agent_params = [str(user.agency_id), str(user.id)]
-
-    # Build search filter
-    search_filter = ""
-    search_params = []
-    if search_query:
-        search_filter = """
-            AND (c.phone_number ILIKE %s
-                 OR cl.first_name ILIKE %s
-                 OR cl.last_name ILIKE %s
-                 OR CONCAT(cl.first_name, ' ', cl.last_name) ILIKE %s)
-        """
-        search_pattern = f"%{search_query}%"
-        search_params = [search_pattern] * 4
-
-    # Count query
-    count_query = f"""
-        SELECT COUNT(*)
-        FROM public.conversations c
-        LEFT JOIN public.clients cl ON cl.id = c.client_id
-        WHERE {agent_filter} {search_filter}
-    """
-
-    # Main query
-    main_query = f"""
-        SELECT
-            c.id,
-            c.phone_number,
-            c.last_message_at,
-            c.unread_count,
-            c.is_archived,
-            c.created_at,
-            cl.id as client_id,
-            cl.first_name as client_first_name,
-            cl.last_name as client_last_name,
-            cl.email as client_email,
-            u.id as agent_id,
-            u.first_name as agent_first_name,
-            u.last_name as agent_last_name,
-            (
-                SELECT m.content
-                FROM public.messages m
-                WHERE m.conversation_id = c.id
-                ORDER BY m.created_at DESC
-                LIMIT 1
-            ) as last_message
-        FROM public.conversations c
-        LEFT JOIN public.clients cl ON cl.id = c.client_id
-        LEFT JOIN public.users u ON u.id = c.agent_id
-        WHERE {agent_filter} {search_filter}
-        ORDER BY c.last_message_at DESC NULLS LAST, c.id DESC
-        LIMIT %s OFFSET %s
-    """
 
     try:
-        params = agent_params + search_params
+        # Start with base queryset
+        qs = Conversation.objects.filter(agency_id=user.agency_id)
 
-        with connection.cursor() as cursor:
-            # Get total count
-            cursor.execute(count_query, params)
-            total_count = cursor.fetchone()[0]
+        # Apply view mode filter
+        if view_mode == 'all' and is_admin:
+            # Admin sees all agency conversations
+            pass
+        elif view_mode == 'downlines':
+            # User sees downline conversations (excluding self)
+            visible_ids = get_visible_agent_ids(user, include_full_agency=False)
+            visible_ids = [vid for vid in visible_ids if str(vid) != str(user.id)]
+            if not visible_ids:
+                return {'conversations': [], 'pagination': _empty_pagination(page, limit)}
+            qs = qs.filter(agent_id__in=visible_ids)
+        else:  # 'self'
+            # User sees only their own conversations
+            qs = qs.filter(agent_id=user.id)
 
-            # Get conversations
-            cursor.execute(main_query, params + [limit, offset])
-            columns = [col[0] for col in cursor.description]
-            rows = cursor.fetchall()
+        # Apply search filter
+        if search_query:
+            qs = qs.filter(
+                Q(phone_number__icontains=search_query) |
+                Q(client__first_name__icontains=search_query) |
+                Q(client__last_name__icontains=search_query)
+            )
 
+        # Add last message content via subquery
+        last_message_subquery = (
+            Message.objects.filter(conversation_id=OuterRef('id'))
+            .order_by('-created_at')
+            .values('content')[:1]
+        )
+
+        # Optimize with select_related and annotate
+        qs = (
+            qs.select_related('client', 'agent')
+            .annotate(last_message_content=Subquery(last_message_subquery))
+            .order_by('-last_message_at', '-id')
+        )
+
+        # Get total count before pagination
+        total_count = qs.count()
+
+        # Apply pagination
+        paginator = Paginator(qs, limit)
+        page_obj = paginator.get_page(page)
+
+        # Format results
         conversations = []
-        for row in rows:
-            conv = dict(zip(columns, row))
+        for conv in page_obj:
             conversations.append({
-                'id': str(conv['id']),
-                'phone_number': conv['phone_number'],
-                'last_message_at': conv['last_message_at'].isoformat() if conv['last_message_at'] else None,
-                'unread_count': conv['unread_count'] or 0,
-                'is_archived': conv['is_archived'] or False,
-                'created_at': conv['created_at'].isoformat() if conv['created_at'] else None,
-                'last_message': conv['last_message'],
+                'id': str(conv.id),
+                'phone_number': conv.phone_number,
+                'last_message_at': conv.last_message_at.isoformat() if conv.last_message_at else None,
+                'unread_count': conv.unread_count or 0,
+                'is_archived': conv.is_archived or False,
+                'created_at': conv.created_at.isoformat() if conv.created_at else None,
+                'last_message': conv.last_message_content,
                 'client': {
-                    'id': str(conv['client_id']) if conv['client_id'] else None,
-                    'first_name': conv['client_first_name'],
-                    'last_name': conv['client_last_name'],
-                    'email': conv['client_email'],
-                    'name': f"{conv['client_first_name'] or ''} {conv['client_last_name'] or ''}".strip(),
-                } if conv['client_id'] else None,
+                    'id': str(conv.client.id) if conv.client else None,
+                    'first_name': conv.client.first_name if conv.client else None,
+                    'last_name': conv.client.last_name if conv.client else None,
+                    'email': conv.client.email if conv.client else None,
+                    'name': f"{conv.client.first_name or ''} {conv.client.last_name or ''}".strip() if conv.client else '',
+                } if conv.client else None,
                 'agent': {
-                    'id': str(conv['agent_id']) if conv['agent_id'] else None,
-                    'first_name': conv['agent_first_name'],
-                    'last_name': conv['agent_last_name'],
-                    'name': f"{conv['agent_first_name'] or ''} {conv['agent_last_name'] or ''}".strip(),
-                } if conv['agent_id'] else None,
+                    'id': str(conv.agent.id) if conv.agent else None,
+                    'first_name': conv.agent.first_name if conv.agent else None,
+                    'last_name': conv.agent.last_name if conv.agent else None,
+                    'name': f"{conv.agent.first_name or ''} {conv.agent.last_name or ''}".strip() if conv.agent else '',
+                } if conv.agent else None,
             })
 
-        total_pages = (total_count + limit - 1) // limit if limit > 0 else 0
+        total_pages = paginator.num_pages
 
         return {
             'conversations': conversations,
@@ -178,6 +148,8 @@ def get_sms_messages(
     """
     Get messages for a conversation.
 
+    Uses Django ORM with select_related for N+1 prevention.
+
     Args:
         user: The authenticated user
         conversation_id: The conversation ID
@@ -187,84 +159,57 @@ def get_sms_messages(
     Returns:
         Dictionary with messages and pagination
     """
-    offset = (page - 1) * limit
-
-    # Verify access to conversation
-    with connection.cursor() as cursor:
-        cursor.execute("""
-            SELECT agent_id, agency_id
-            FROM public.conversations
-            WHERE id = %s
-        """, [str(conversation_id)])
-        row = cursor.fetchone()
-
-    if not row:
-        return {'messages': [], 'pagination': _empty_pagination(page, limit)}
-
-    agent_id, agency_id = row
-
-    # Check access
-    if str(agency_id) != str(user.agency_id):
-        return {'messages': [], 'pagination': _empty_pagination(page, limit)}
-
-    is_admin = user.is_admin or user.role == 'admin'
-    if not is_admin and agent_id:
-        visible_ids = get_visible_agent_ids(user, include_full_agency=False)
-        if agent_id not in visible_ids:
-            return {'messages': [], 'pagination': _empty_pagination(page, limit)}
-
-    # Get messages
-    count_query = """
-        SELECT COUNT(*)
-        FROM public.messages
-        WHERE conversation_id = %s
-    """
-
-    main_query = """
-        SELECT
-            m.id,
-            m.content,
-            m.direction,
-            m.status,
-            m.external_id,
-            m.is_read,
-            m.created_at,
-            u.id as sent_by_id,
-            u.first_name as sent_by_first_name,
-            u.last_name as sent_by_last_name
-        FROM public.messages m
-        LEFT JOIN public.users u ON u.id = m.sent_by
-        WHERE m.conversation_id = %s
-        ORDER BY m.created_at ASC
-        LIMIT %s OFFSET %s
-    """
+    from apps.core.models import Conversation, Message
 
     try:
-        with connection.cursor() as cursor:
-            cursor.execute(count_query, [str(conversation_id)])
-            total_count = cursor.fetchone()[0]
+        # Verify access to conversation
+        try:
+            conversation = Conversation.objects.get(id=conversation_id)
+        except Conversation.DoesNotExist:
+            return {'messages': [], 'pagination': _empty_pagination(page, limit)}
 
-            cursor.execute(main_query, [str(conversation_id), limit, offset])
-            columns = [col[0] for col in cursor.description]
-            rows = cursor.fetchall()
+        # Check agency access
+        if str(conversation.agency_id) != str(user.agency_id):
+            return {'messages': [], 'pagination': _empty_pagination(page, limit)}
 
+        # Check hierarchy access
+        is_admin = user.is_admin or user.role == 'admin'
+        if not is_admin and conversation.agent_id:
+            visible_ids = get_visible_agent_ids(user, include_full_agency=False)
+            if conversation.agent_id not in visible_ids:
+                return {'messages': [], 'pagination': _empty_pagination(page, limit)}
+
+        # Get messages with optimized query
+        qs = (
+            Message.objects.filter(conversation_id=conversation_id)
+            .select_related('sent_by')
+            .order_by('created_at')
+        )
+
+        # Get total count
+        total_count = qs.count()
+
+        # Apply pagination
+        paginator = Paginator(qs, limit)
+        page_obj = paginator.get_page(page)
+
+        # Format results
         messages = []
-        for row in rows:
-            msg = dict(zip(columns, row))
+        for msg in page_obj:
             messages.append({
-                'id': str(msg['id']),
-                'content': msg['content'],
-                'direction': msg['direction'],
-                'status': msg['status'],
-                'is_read': msg['is_read'] or False,
-                'created_at': msg['created_at'].isoformat() if msg['created_at'] else None,
+                'id': str(msg.id),
+                'content': msg.content,
+                'direction': msg.direction,
+                'status': msg.status,
+                'is_read': msg.is_read or False,
+                'created_at': msg.created_at.isoformat() if msg.created_at else None,
                 'sent_by': {
-                    'id': str(msg['sent_by_id']) if msg['sent_by_id'] else None,
-                    'name': f"{msg['sent_by_first_name'] or ''} {msg['sent_by_last_name'] or ''}".strip(),
-                } if msg['sent_by_id'] else None,
+                    'id': str(msg.sent_by.id) if msg.sent_by else None,
+                    'name': f"{msg.sent_by.first_name or ''} {msg.sent_by.last_name or ''}".strip() if msg.sent_by else '',
+                } if msg.sent_by else None,
             })
 
-        total_pages = (total_count + limit - 1) // limit if limit > 0 else 0
+        total_pages = paginator.num_pages
 
         return {
             'messages': messages,
@@ -292,6 +237,8 @@ def get_draft_messages(
     """
     Get draft messages based on view mode.
 
+    Uses Django ORM with select_related for N+1 prevention.
+
     Args:
         user: The authenticated user
         view_mode: 'all' (admin), 'self', or 'downlines'
@@ -301,82 +248,71 @@ def get_draft_messages(
     Returns:
         Dictionary with drafts and pagination
     """
+    from apps.core.models import DraftMessage
+
     is_admin = user.is_admin or user.role == 'admin'
-    offset = (page - 1) * limit
-
-    # Build agent filter based on view mode
-    if view_mode == 'all' and is_admin:
-        agent_filter = "d.agency_id = %s"
-        agent_params = [str(user.agency_id)]
-    elif view_mode == 'downlines':
-        visible_ids = get_visible_agent_ids(user, include_full_agency=False)
-        visible_ids = [str(vid) for vid in visible_ids if str(vid) != str(user.id)]
-        if not visible_ids:
-            return {'drafts': [], 'pagination': _empty_pagination(page, limit)}
-        agent_filter = "d.agency_id = %s AND d.agent_id = ANY(%s::uuid[])"
-        agent_params = [str(user.agency_id), visible_ids]
-    else:  # 'self'
-        agent_filter = "d.agency_id = %s AND d.agent_id = %s"
-        agent_params = [str(user.agency_id), str(user.id)]
-
-    # Count query
-    count_query = f"""
-        SELECT COUNT(*)
-        FROM public.draft_messages d
-        WHERE {agent_filter} AND d.status = 'pending'
-    """
-
-    # Main query
-    main_query = f"""
-        SELECT
-            d.id,
-            d.content,
-            d.status,
-            d.created_at,
-            d.rejection_reason,
-            u.id as agent_id,
-            u.first_name as agent_first_name,
-            u.last_name as agent_last_name,
-            c.id as conversation_id,
-            c.phone_number,
-            cl.first_name as client_first_name,
-            cl.last_name as client_last_name
-        FROM public.draft_messages d
-        LEFT JOIN public.users u ON u.id = d.agent_id
-        LEFT JOIN public.conversations c ON c.id = d.conversation_id
-        LEFT JOIN public.clients cl ON cl.id = c.client_id
-        WHERE {agent_filter} AND d.status = 'pending'
-        ORDER BY d.created_at DESC
-        LIMIT %s OFFSET %s
-    """
 
     try:
-        with connection.cursor() as cursor:
-            cursor.execute(count_query, agent_params)
-            total_count = cursor.fetchone()[0]
+        # Start with base queryset - only pending drafts
+        qs = DraftMessage.objects.filter(
+            agency_id=user.agency_id,
+            status='pending'
+        )
 
-            cursor.execute(main_query, agent_params + [limit, offset])
-            columns = [col[0] for col in cursor.description]
-            rows = cursor.fetchall()
+        # Apply view mode filter
+        if view_mode == 'all' and is_admin:
+            # Admin sees all agency drafts
+            pass
+        elif view_mode == 'downlines':
+            # User sees downline drafts (excluding self)
+            visible_ids = get_visible_agent_ids(user, include_full_agency=False)
+            visible_ids = [vid for vid in visible_ids if str(vid) != str(user.id)]
+            if not visible_ids:
+                return {'drafts': [], 'pagination': _empty_pagination(page, limit)}
+            qs = qs.filter(agent_id__in=visible_ids)
+        else:  # 'self'
+            # User sees only their own drafts
+            qs = qs.filter(agent_id=user.id)
 
+        # Optimize with select_related
+        qs = (
+            qs.select_related('agent', 'conversation', 'conversation__client')
+            .order_by('-created_at')
+        )
+
+        # Get total count
+        total_count = qs.count()
+
+        # Apply pagination
+        paginator = Paginator(qs, limit)
+        page_obj = paginator.get_page(page)
+
+        # Format results
         drafts = []
-        for row in rows:
-            draft = dict(zip(columns, row))
-            client_name = f"{draft['client_first_name'] or ''} {draft['client_last_name'] or ''}".strip()
+        for draft in page_obj:
+            # Build recipient name from conversation's client
+            client_name = ''
+            phone_number = None
+            if draft.conversation:
+                phone_number = draft.conversation.phone_number
+                if draft.conversation.client:
+                    client = draft.conversation.client
+                    client_name = f"{client.first_name or ''} {client.last_name or ''}".strip()
+
             drafts.append({
-                'id': str(draft['id']),
-                'content': draft['content'],
-                'status': draft['status'],
-                'created_at': draft['created_at'].isoformat() if draft['created_at'] else None,
-                'recipient_name': client_name or draft['phone_number'],
+                'id': str(draft.id),
+                'content': draft.content,
+                'status': draft.status,
+                'created_at': draft.created_at.isoformat() if draft.created_at else None,
+                'recipient_name': client_name or phone_number or '',
                 'agent': {
-                    'id': str(draft['agent_id']) if draft['agent_id'] else None,
-                    'name': f"{draft['agent_first_name'] or ''} {draft['agent_last_name'] or ''}".strip(),
-                } if draft['agent_id'] else None,
-                'conversation_id': str(draft['conversation_id']) if draft['conversation_id'] else None,
+                    'id': str(draft.agent.id) if draft.agent else None,
+                    'name': f"{draft.agent.first_name or ''} {draft.agent.last_name or ''}".strip() if draft.agent else '',
+                } if draft.agent else None,
+                'conversation_id': str(draft.conversation.id) if draft.conversation else None,
             })
 
-        total_pages = (total_count + limit - 1) // limit if limit > 0 else 0
+        total_pages = paginator.num_pages
 
         return {
             'drafts': drafts,
@@ -401,63 +337,64 @@ def get_unread_message_count(
 ) -> int:
     """
     Get count of unread inbound messages.
-    Translated from Supabase RPC: get_unread_message_count
 
-    Args:
-        user: The authenticated user
-        view_mode: 'all' (admin), 'self', or 'downlines'
-
-    Returns:
-        Count of unread messages
+    Uses Django ORM with django-cte for downlines.
     """
+    from apps.core.models import Message, User
+    from django.db.models import Value, IntegerField
+    from django_cte import With
+
     is_admin = user.is_admin or user.role == 'admin'
 
-    with connection.cursor() as cursor:
+    try:
         if view_mode == 'all' and is_admin:
-            # Admin: count all unread messages in agency
-            cursor.execute("""
-                SELECT COUNT(*)::INTEGER
-                FROM messages m
-                JOIN conversations c ON m.conversation_id = c.id
-                JOIN users u ON c.agent_id = u.id
-                WHERE u.agency_id = %s
-                    AND m.direction = 'inbound'
-                    AND m.read_at IS NULL
-            """, [str(user.agency_id)])
+            return (
+                Message.objects.filter(
+                    conversation__agent__agency_id=user.agency_id,
+                    direction='inbound',
+                    is_read=False
+                )
+                .count()
+            )
 
         elif view_mode == 'self':
-            # Self: count unread messages for user's own conversations
-            cursor.execute("""
-                SELECT COUNT(*)::INTEGER
-                FROM messages m
-                JOIN conversations c ON m.conversation_id = c.id
-                WHERE c.agent_id = %s
-                    AND m.direction = 'inbound'
-                    AND m.read_at IS NULL
-            """, [str(user.id)])
-
-        else:  # 'downlines'
-            # Downlines: count unread messages for user and their downlines
-            cursor.execute("""
-                WITH RECURSIVE downline AS (
-                    SELECT id FROM users WHERE id = %s
-                    UNION ALL
-                    SELECT u.id
-                    FROM users u
-                    JOIN downline d ON u.upline_id = d.id
-                    WHERE d.id <> u.id  -- Prevent cycles
+            return (
+                Message.objects.filter(
+                    conversation__agent_id=user.id,
+                    direction='inbound',
+                    is_read=False
                 )
-                SELECT COUNT(*)::INTEGER
-                FROM messages m
-                JOIN conversations c ON m.conversation_id = c.id
-                WHERE c.agent_id IN (SELECT id FROM downline)
-                    AND m.direction = 'inbound'
-                    AND m.read_at IS NULL
-            """, [str(user.id)])
+                .count()
+            )
 
-        count = cursor.fetchone()[0]
+        else:
+            def make_cte(cte):
+                base = User.objects.filter(id=user.id).values('id')
+                recursive = (
+                    cte.join(User, upline_id=cte.col.id)
+                    .values('id')
+                )
+                return base.union(recursive, all=True)
 
-    return count or 0
+            cte = With.recursive(make_cte)
+            downline_ids = list(
+                cte.queryset()
+                .with_cte(cte)
+                .values_list('id', flat=True)
+            )
+
+            return (
+                Message.objects.filter(
+                    conversation__agent_id__in=downline_ids,
+                    direction='inbound',
+                    is_read=False
+                )
+                .count()
+            )
+
+    except Exception as e:
+        logger.error(f'Error getting unread message count: {e}')
+        return 0
 
 
 def _empty_pagination(page: int, limit: int) -> dict:

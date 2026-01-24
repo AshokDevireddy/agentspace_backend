@@ -13,6 +13,8 @@ from typing import Any, Optional
 from uuid import UUID
 
 from django.db import connection
+from django.db.models import Sum, Q, F, Value, Exists, OuterRef
+from django_cte import With
 
 from apps.core.authentication import AuthenticatedUser
 
@@ -26,102 +28,71 @@ def get_downline_production_distribution(
 ) -> list[dict]:
     """
     Get production distribution for direct downlines.
-    Translated from Supabase RPC: get_downline_production_distribution
-
-    Args:
-        agent_id: The agent to get downline production for
-        start_date: Optional start date filter
-        end_date: Optional end date filter
-
-    Returns:
-        List of downline agents with their production totals
+    Uses django-cte for hierarchy traversal, ORM for aggregation.
     """
-    with connection.cursor() as cursor:
-        cursor.execute("""
-            WITH direct_downline_deals AS (
-                -- Get all deals for direct downlines with status mapping
-                SELECT
-                    dhs.agent_id as downline_agent_id,
-                    d.id as deal_id,
-                    d.annual_premium,
-                    d.policy_effective_date,
-                    sm.impact
-                FROM deal_hierarchy_snapshot dhs
-                INNER JOIN deals d ON dhs.deal_id = d.id
-                LEFT JOIN status_mapping sm ON d.carrier_id = sm.carrier_id AND d.status = sm.raw_status
-                WHERE dhs.upline_id = %s
-                    AND sm.impact = 'positive'
-                    AND (%s IS NULL OR d.policy_effective_date >= %s)
-                    AND (%s IS NULL OR d.policy_effective_date <= %s)
-            ),
-            downline_production_summary AS (
-                -- Sum production for each direct downline agent
-                SELECT
-                    ddd.downline_agent_id,
-                    SUM(ddd.annual_premium) as total_prod
-                FROM direct_downline_deals ddd
-                GROUP BY ddd.downline_agent_id
-            ),
-            current_downline_agents AS (
-                -- Get all agents currently in the downline hierarchy (for clickability check)
-                WITH RECURSIVE downline_tree AS (
-                    -- Base case: direct reports
-                    SELECT
-                        u.id as tree_agent_id,
-                        u.upline_id as tree_upline_id
-                    FROM users u
-                    WHERE u.upline_id = %s
+    from apps.core.models import User, Deal, DealHierarchySnapshot, StatusMapping
 
-                    UNION
+    def make_downline_cte(cte):
+        base = User.objects.filter(upline_id=agent_id).values('id')
+        recursive = cte.join(User, upline_id=cte.col.id).values('id')
+        return base.union(recursive, all=True)
 
-                    -- Recursive case: reports of reports
-                    SELECT
-                        u2.id as tree_agent_id,
-                        u2.upline_id as tree_upline_id
-                    FROM users u2
-                    INNER JOIN downline_tree dt ON u2.upline_id = dt.tree_agent_id
-                )
-                SELECT dt.tree_agent_id as current_agent_id
-                FROM downline_tree dt
-            )
-            SELECT
-                dps.downline_agent_id as agent_id,
-                (u.first_name || ' ' || u.last_name) as agent_name,
-                dps.total_prod as total_production,
-                -- Agent is clickable if they are currently in the downline
-                EXISTS(
-                    SELECT 1
-                    FROM current_downline_agents cda
-                    WHERE cda.current_agent_id = dps.downline_agent_id
-                ) as is_clickable,
-                -- Agent has downlines if anyone has them as upline_id in users table
-                EXISTS(
-                    SELECT 1
-                    FROM users u2
-                    WHERE u2.upline_id = dps.downline_agent_id
-                ) as has_downlines
-            FROM downline_production_summary dps
-            INNER JOIN users u ON dps.downline_agent_id = u.id
-            ORDER BY dps.total_prod DESC
-        """, [
-            str(agent_id),
-            start_date, start_date,
-            end_date, end_date,
-            str(agent_id),
-        ])
+    cte = With.recursive(make_downline_cte)
+    current_downline_ids = set(
+        cte.queryset()
+        .with_cte(cte)
+        .values_list('id', flat=True)
+    )
 
-        columns = [col[0] for col in cursor.description]
-        rows = cursor.fetchall()
+    snapshot_qs = DealHierarchySnapshot.objects.filter(upline_id=agent_id)
+
+    deal_filter = Q()
+    if start_date:
+        deal_filter &= Q(deal__policy_effective_date__gte=start_date)
+    if end_date:
+        deal_filter &= Q(deal__policy_effective_date__lte=end_date)
+
+    positive_status_subq = StatusMapping.objects.filter(
+        carrier_id=OuterRef('deal__carrier_id'),
+        raw_status=OuterRef('deal__status'),
+        impact='positive'
+    )
+
+    snapshot_qs = (
+        snapshot_qs
+        .filter(deal_filter)
+        .filter(Exists(positive_status_subq))
+        .filter(deal__annual_premium__isnull=False, deal__annual_premium__gt=0)
+    )
+
+    production_by_agent = (
+        snapshot_qs
+        .values('agent_id')
+        .annotate(total_production=Sum('deal__annual_premium'))
+        .order_by('-total_production')
+    )
+
+    agent_ids = [p['agent_id'] for p in production_by_agent]
+    agents = {
+        u.id: u for u in
+        User.objects.filter(id__in=agent_ids).select_related()
+    }
+
+    agents_with_downlines = set(
+        User.objects.filter(upline_id__in=agent_ids).values_list('upline_id', flat=True).distinct()
+    )
 
     result = []
-    for row in rows:
-        row_dict = dict(zip(columns, row))
+    for prod in production_by_agent:
+        agent = agents.get(prod['agent_id'])
+        if not agent:
+            continue
         result.append({
-            'agent_id': str(row_dict['agent_id']),
-            'agent_name': row_dict['agent_name'],
-            'total_production': float(row_dict['total_production'] or 0),
-            'is_clickable': row_dict['is_clickable'],
-            'has_downlines': row_dict['has_downlines'],
+            'agent_id': str(prod['agent_id']),
+            'agent_name': f"{agent.first_name or ''} {agent.last_name or ''}".strip(),
+            'total_production': float(prod['total_production'] or 0),
+            'is_clickable': prod['agent_id'] in current_downline_ids,
+            'has_downlines': prod['agent_id'] in agents_with_downlines,
         })
 
     return result

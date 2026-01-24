@@ -86,14 +86,16 @@ def get_book_of_business(
     if not visible_ids:
         return {'deals': [], 'has_more': False, 'next_cursor': None}
 
-    # Build query parameters
-    params = [str(user.agency_id)]
-    visible_ids_str = ','.join(f"'{str(vid)}'" for vid in visible_ids)
+    # Convert visible_ids to list of strings for PostgreSQL array parameter (safe from SQL injection)
+    visible_ids_list = [str(vid) for vid in visible_ids]
+
+    # Build query parameters - visible_ids_list is added as second parameter for ANY(%s::uuid[])
+    params = [str(user.agency_id), visible_ids_list]
 
     # Build WHERE clauses
     where_clauses = [
         "d.agency_id = %s",
-        f"d.agent_id IN ({visible_ids_str})",
+        "d.agent_id = ANY(%s::uuid[])",
     ]
 
     if carrier_id:
@@ -284,6 +286,8 @@ def get_static_filter_options(user: AuthenticatedUser) -> dict:
     """
     Get static filter options for deals (P2-028).
 
+    Uses Django ORM for all queries - optimized with select_related.
+
     Returns carriers, products, statuses, and agents available for filtering.
 
     Args:
@@ -292,81 +296,79 @@ def get_static_filter_options(user: AuthenticatedUser) -> dict:
     Returns:
         Dictionary with filter options
     """
+    from apps.core.models import Deal, Carrier, Product, User
+
     is_admin = user.is_admin or user.role == 'admin'
 
     try:
-        with connection.cursor() as cursor:
-            # Get carriers for agency
-            cursor.execute("""
-                SELECT DISTINCT c.id, c.name
-                FROM public.carriers c
-                JOIN public.deals d ON d.carrier_id = c.id
-                WHERE d.agency_id = %s
-                ORDER BY c.name
-            """, [str(user.agency_id)])
-            carriers = [{'id': str(row[0]), 'name': row[1]} for row in cursor.fetchall()]
+        # Get carriers that have deals in this agency
+        carrier_ids = (
+            Deal.objects.filter(agency_id=user.agency_id, carrier_id__isnull=False)
+            .values_list('carrier_id', flat=True)
+            .distinct()
+        )
+        carriers = [
+            {'id': str(c.id), 'name': c.name}
+            for c in Carrier.objects.filter(id__in=carrier_ids).order_by('name')
+        ]
 
-            # Get products for agency
-            cursor.execute("""
-                SELECT DISTINCT p.id, p.name, c.name as carrier_name
-                FROM public.products p
-                JOIN public.carriers c ON c.id = p.carrier_id
-                JOIN public.deals d ON d.product_id = p.id
-                WHERE d.agency_id = %s
-                ORDER BY p.name
-            """, [str(user.agency_id)])
-            products = [
-                {'id': str(row[0]), 'name': row[1], 'carrier_name': row[2]}
-                for row in cursor.fetchall()
+        # Get products that have deals in this agency (with carrier info)
+        product_ids = (
+            Deal.objects.filter(agency_id=user.agency_id, product_id__isnull=False)
+            .values_list('product_id', flat=True)
+            .distinct()
+        )
+        products = [
+            {'id': str(p.id), 'name': p.name, 'carrier_name': p.carrier.name if p.carrier else None}
+            for p in Product.objects.filter(id__in=product_ids).select_related('carrier').order_by('name')
+        ]
+
+        # Get distinct statuses
+        statuses = list(
+            Deal.objects.filter(agency_id=user.agency_id, status__isnull=False)
+            .values_list('status', flat=True)
+            .distinct()
+            .order_by('status')
+        )
+
+        # Get distinct standardized statuses
+        statuses_standardized = list(
+            Deal.objects.filter(agency_id=user.agency_id, status_standardized__isnull=False)
+            .values_list('status_standardized', flat=True)
+            .distinct()
+            .order_by('status_standardized')
+        )
+
+        # Get agents (visible based on hierarchy) who have deals
+        visible_ids = get_visible_agent_ids(user, include_full_agency=is_admin)
+        if visible_ids:
+            # Get agent IDs that have deals in this agency and are visible
+            agent_ids_with_deals = (
+                Deal.objects.filter(
+                    agency_id=user.agency_id,
+                    agent_id__in=visible_ids
+                )
+                .values_list('agent_id', flat=True)
+                .distinct()
+            )
+            agents = [
+                {
+                    'id': str(u.id),
+                    'name': f"{u.first_name or ''} {u.last_name or ''}".strip() or u.email,
+                    'email': u.email,
+                }
+                for u in User.objects.filter(id__in=agent_ids_with_deals).order_by('first_name', 'last_name')
             ]
+        else:
+            agents = []
 
-            # Get distinct statuses
-            cursor.execute("""
-                SELECT DISTINCT status
-                FROM public.deals
-                WHERE agency_id = %s AND status IS NOT NULL
-                ORDER BY status
-            """, [str(user.agency_id)])
-            statuses = [row[0] for row in cursor.fetchall()]
-
-            # Get distinct standardized statuses
-            cursor.execute("""
-                SELECT DISTINCT status_standardized
-                FROM public.deals
-                WHERE agency_id = %s AND status_standardized IS NOT NULL
-                ORDER BY status_standardized
-            """, [str(user.agency_id)])
-            statuses_standardized = [row[0] for row in cursor.fetchall()]
-
-            # Get agents (visible based on hierarchy)
-            visible_ids = get_visible_agent_ids(user, include_full_agency=is_admin)
-            if visible_ids:
-                visible_ids_str = ','.join(f"'{str(vid)}'" for vid in visible_ids)
-                cursor.execute(f"""
-                    SELECT DISTINCT u.id, u.first_name, u.last_name, u.email
-                    FROM public.users u
-                    JOIN public.deals d ON d.agent_id = u.id
-                    WHERE d.agency_id = %s AND u.id IN ({visible_ids_str})
-                    ORDER BY u.first_name, u.last_name
-                """, [str(user.agency_id)])
-                agents = [
-                    {
-                        'id': str(row[0]),
-                        'name': f"{row[1] or ''} {row[2] or ''}".strip() or row[3],
-                        'email': row[3],
-                    }
-                    for row in cursor.fetchall()
-                ]
-            else:
-                agents = []
-
-            return {
-                'carriers': carriers,
-                'products': products,
-                'statuses': statuses,
-                'statuses_standardized': statuses_standardized,
-                'agents': agents,
-            }
+        return {
+            'carriers': carriers,
+            'products': products,
+            'statuses': statuses,
+            'statuses_standardized': statuses_standardized,
+            'agents': agents,
+        }
 
     except Exception as e:
         logger.error(f'Error getting filter options: {e}')
