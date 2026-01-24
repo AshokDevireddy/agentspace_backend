@@ -1,0 +1,85 @@
+[build-system]
+requires = ["setuptools>=77.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agentspace-backend"
+version = "0.1.0"
+description = "AgentSpace Backend API"
+requires-python = ">=3.12"
+dependencies = [
+    # Django Framework
+    "Django>=6.0.1",
+    "djangorestframework>=3.16.0",
+
+    # Database
+    "psycopg2-binary>=2.9.11",
+    "django-cte>=1.3.3",
+
+    # Authentication
+    "PyJWT>=2.10.1",
+    "python-jose[cryptography]>=3.5.0",
+
+    # CORS
+    "django-cors-headers>=4.9.0",
+
+    # Configuration
+    "python-decouple>=3.8",
+
+    # Production server
+    "gunicorn>=24.1.1",
+    "uvicorn[standard]>=0.40.0",
+
+    # Rate limiting
+    "django-ratelimit>=4.1.0",
+
+    # HTTP requests
+    "httpx>=0.28.1",
+
+    # AI/LLM Integration
+    "openai>=2.15.0",
+
+    # SMS Provider
+    "twilio>=9.9.1",
+
+    # Export (CSV/Excel/PDF)
+    "openpyxl>=3.1.5",
+    "reportlab>=4.4.9",
+
+    # Utilities
+    "python-dateutil>=2.9.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "ruff>=0.14.14",
+    "mypy>=1.19.1",
+    "bandit>=1.9.3",
+    "pytest>=9.0.2",
+    "pytest-django>=4.9.0",
+    "pytest-cov>=7.0.0",
+    "pytest-asyncio>=1.3.0",
+    "factory-boy>=3.3.3",
+    "faker>=37.0.0",
+    "locust>=2.35.0",
+]
+
+[tool.setuptools]
+packages = []
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.pytest.ini_options]
+DJANGO_SETTINGS_MODULE = "config.settings"
+python_files = ["test_*.py", "*_test.py"]
+asyncio_mode = "auto"
+
+[tool.mypy]
+python_version = "3.12"
+plugins = ["mypy_django_plugin.main"]
+ignore_missing_imports = true
