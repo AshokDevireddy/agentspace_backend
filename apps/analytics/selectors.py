@@ -354,11 +354,18 @@ def get_analytics_split_view(
             },
         }
 
-    your_summary = row[0] or {}
-    downline_summary = row[1] or {}
-    your_carriers = row[2] or []
-    downline_carriers = row[3] or []
-    metadata = row[4] or {}
+    (
+        your_summary_raw,
+        downline_summary_raw,
+        your_carriers,
+        downline_carriers,
+        metadata_raw,
+    ) = row
+    your_summary = your_summary_raw or {}
+    downline_summary = downline_summary_raw or {}
+    your_carriers = your_carriers or []
+    downline_carriers = downline_carriers or []
+    metadata = metadata_raw or {}
 
     # Calculate persistency rates
     your_total = (your_summary.get('active_count', 0) or 0) + (your_summary.get('inactive_count', 0) or 0)
@@ -534,10 +541,11 @@ def get_analytics_from_deals(
             },
         }
 
-    summary = row[0] or {}
-    carriers = row[1] or []
-    states = row[2] or []
-    monthly_trend = row[3] or []
+    summary_raw, carriers, states, monthly_trend = row
+    summary = summary_raw or {}
+    carriers = carriers or []
+    states = states or []
+    monthly_trend = monthly_trend or []
 
     # Calculate persistency rate
     total = (summary.get('active_count', 0) or 0) + (summary.get('inactive_count', 0) or 0)

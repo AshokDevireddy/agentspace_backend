@@ -20,6 +20,7 @@ from .services import (
     get_dashboard_summary,
     get_scoreboard_data,
     get_scoreboard_lapsed_deals,
+    get_scoreboard_with_billing_cycle,
     get_production_data,
 )
 
@@ -350,6 +351,105 @@ class ScoreboardLapsedView(APIView):
             return Response(data)
         except Exception as e:
             logger.error(f'Scoreboard lapsed failed: {e}')
+            return Response(
+                {'success': False, 'error': 'Failed to get scoreboard data'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
+class ScoreboardBillingCycleView(APIView):
+    """
+    GET /api/dashboard/scoreboard-billing-cycle
+
+    Get scoreboard data with billing cycle payment calculation.
+
+    This endpoint mirrors the frontend /api/scoreboard logic, calculating
+    recurring payments based on billing_cycle (monthly, quarterly, etc.)
+    and aggregating by payment date rather than deal date.
+
+    Query params:
+        start_date: Required date (YYYY-MM-DD)
+        end_date: Required date (YYYY-MM-DD)
+        scope: Optional 'agency' or 'downline' (default: 'agency')
+
+    Response (200):
+        {
+            "success": true,
+            "data": {
+                "leaderboard": [
+                    {
+                        "rank": 1,
+                        "agent_id": "uuid",
+                        "name": "John Doe",
+                        "total": 12345.67,
+                        "dailyBreakdown": { "2024-01-15": 500.00 },
+                        "dealCount": 5
+                    }
+                ],
+                "stats": {
+                    "totalProduction": 50000.00,
+                    "totalDeals": 25,
+                    "activeAgents": 10
+                },
+                "dateRange": {
+                    "startDate": "2024-01-01",
+                    "endDate": "2024-01-31"
+                }
+            }
+        }
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = get_user_context(request)
+        if not user:
+            return Response(
+                {'error': 'Unauthorized', 'message': 'Authentication required'},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
+        # Get user context from auth_user_id
+        user_ctx = get_user_context_from_auth_id(user.auth_user_id)
+        if not user_ctx:
+            return Response(
+                {'success': False, 'error': 'User not associated with an agency'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        # Parse required date parameters
+        start_date_str = request.query_params.get('start_date')
+        end_date_str = request.query_params.get('end_date')
+
+        if not start_date_str or not end_date_str:
+            return Response(
+                {'success': False, 'error': 'start_date and end_date are required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        start_date = parse_date(start_date_str)
+        end_date = parse_date(end_date_str)
+
+        if not start_date or not end_date:
+            return Response(
+                {'success': False, 'error': 'Invalid date format. Use YYYY-MM-DD'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Parse optional scope parameter
+        scope = request.query_params.get('scope', 'agency')
+        if scope not in ('agency', 'downline'):
+            scope = 'agency'
+
+        try:
+            data = get_scoreboard_with_billing_cycle(
+                user_ctx,
+                start_date,
+                end_date,
+                scope=scope,
+            )
+            return Response(data)
+        except Exception as e:
+            logger.error(f'Scoreboard billing cycle failed: {e}')
             return Response(
                 {'success': False, 'error': 'Failed to get scoreboard data'},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR

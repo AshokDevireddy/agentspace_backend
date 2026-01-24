@@ -49,12 +49,11 @@ def get_sms_conversations(
         # User sees downline conversations
         visible_ids = get_visible_agent_ids(user, include_full_agency=False)
         # Exclude self for 'downlines' mode
-        visible_ids = [vid for vid in visible_ids if str(vid) != str(user.id)]
+        visible_ids = [str(vid) for vid in visible_ids if str(vid) != str(user.id)]
         if not visible_ids:
             return {'conversations': [], 'pagination': _empty_pagination(page, limit)}
-        visible_ids_str = ','.join(f"'{str(vid)}'" for vid in visible_ids)
-        agent_filter = f"c.agency_id = %s AND c.agent_id IN ({visible_ids_str})"
-        agent_params = [str(user.agency_id)]
+        agent_filter = "c.agency_id = %s AND c.agent_id = ANY(%s::uuid[])"
+        agent_params = [str(user.agency_id), visible_ids]
     else:  # 'self'
         # User sees only their own conversations
         agent_filter = "c.agency_id = %s AND c.agent_id = %s"
@@ -311,12 +310,11 @@ def get_draft_messages(
         agent_params = [str(user.agency_id)]
     elif view_mode == 'downlines':
         visible_ids = get_visible_agent_ids(user, include_full_agency=False)
-        visible_ids = [vid for vid in visible_ids if str(vid) != str(user.id)]
+        visible_ids = [str(vid) for vid in visible_ids if str(vid) != str(user.id)]
         if not visible_ids:
             return {'drafts': [], 'pagination': _empty_pagination(page, limit)}
-        visible_ids_str = ','.join(f"'{str(vid)}'" for vid in visible_ids)
-        agent_filter = f"d.agency_id = %s AND d.agent_id IN ({visible_ids_str})"
-        agent_params = [str(user.agency_id)]
+        agent_filter = "d.agency_id = %s AND d.agent_id = ANY(%s::uuid[])"
+        agent_params = [str(user.agency_id), visible_ids]
     else:  # 'self'
         agent_filter = "d.agency_id = %s AND d.agent_id = %s"
         agent_params = [str(user.agency_id), str(user.id)]

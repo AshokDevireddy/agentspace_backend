@@ -6,7 +6,8 @@ Provides payout-related endpoints:
 - GET /api/expected-payouts/debt - Get agent debt
 """
 import logging
-from datetime import datetime
+from datetime import date, datetime
+from typing import Optional
 from uuid import UUID
 
 from rest_framework import status
@@ -20,17 +21,39 @@ from .selectors import get_expected_payouts, get_agent_debt
 logger = logging.getLogger(__name__)
 
 
+def parse_date_param(value: Optional[str]) -> Optional[date]:
+    """Parse a YYYY-MM-DD date string, returning None if invalid."""
+    if not value:
+        return None
+    try:
+        return datetime.strptime(value, '%Y-%m-%d').date()
+    except ValueError:
+        return None
+
+
+def parse_uuid_param(value: Optional[str]) -> Optional[UUID]:
+    """Parse a UUID string, returning None if invalid."""
+    if not value:
+        return None
+    try:
+        return UUID(value)
+    except ValueError:
+        return None
+
+
 class ExpectedPayoutsView(APIView):
     """
     GET /api/expected-payouts
 
-    Get expected commission payouts based on deals and commission rates.
+    Get expected commission payouts using historical hierarchy snapshots.
+    Formula: annual_premium * 0.75 * (agent_commission_% / hierarchy_total_%)
 
     Query params:
         start_date: Filter by policy effective date (from, YYYY-MM-DD)
         end_date: Filter by policy effective date (to, YYYY-MM-DD)
         agent_id: Filter by specific agent
         carrier_id: Filter by carrier
+        production_type: 'personal' (own deals), 'downline' (override commissions), or omit for all
     """
     permission_classes = [IsAuthenticated]
 
@@ -43,40 +66,14 @@ class ExpectedPayoutsView(APIView):
             )
 
         try:
-            # Parse query params
-            start_date = request.query_params.get('start_date')
-            if start_date:
-                try:
-                    start_date = datetime.strptime(start_date, '%Y-%m-%d').date()
-                except ValueError:
-                    return Response(
-                        {'error': 'Invalid start_date format. Use YYYY-MM-DD.'},
-                        status=status.HTTP_400_BAD_REQUEST
-                    )
+            start_date = parse_date_param(request.query_params.get('start_date'))
+            end_date = parse_date_param(request.query_params.get('end_date'))
+            agent_id = parse_uuid_param(request.query_params.get('agent_id'))
+            carrier_id = parse_uuid_param(request.query_params.get('carrier_id'))
 
-            end_date = request.query_params.get('end_date')
-            if end_date:
-                try:
-                    end_date = datetime.strptime(end_date, '%Y-%m-%d').date()
-                except ValueError:
-                    return Response(
-                        {'error': 'Invalid end_date format. Use YYYY-MM-DD.'},
-                        status=status.HTTP_400_BAD_REQUEST
-                    )
-
-            agent_id = request.query_params.get('agent_id')
-            if agent_id:
-                try:
-                    agent_id = UUID(agent_id)
-                except ValueError:
-                    agent_id = None
-
-            carrier_id = request.query_params.get('carrier_id')
-            if carrier_id:
-                try:
-                    carrier_id = UUID(carrier_id)
-                except ValueError:
-                    carrier_id = None
+            production_type = request.query_params.get('production_type')
+            if production_type and production_type not in ('personal', 'downline'):
+                production_type = None
 
             is_admin = user.is_admin or user.role == 'admin'
 
@@ -87,6 +84,7 @@ class ExpectedPayoutsView(APIView):
                 agent_id=agent_id,
                 carrier_id=carrier_id,
                 include_full_agency=is_admin,
+                production_type=production_type,
             )
 
             return Response(result)
@@ -119,15 +117,8 @@ class AgentDebtView(APIView):
             )
 
         try:
-            agent_id = request.query_params.get('agent_id')
-            if agent_id:
-                try:
-                    agent_id = UUID(agent_id)
-                except ValueError:
-                    agent_id = None
-
+            agent_id = parse_uuid_param(request.query_params.get('agent_id'))
             result = get_agent_debt(user=user, agent_id=agent_id)
-
             return Response(result)
 
         except Exception as e:

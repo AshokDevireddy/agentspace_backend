@@ -29,6 +29,43 @@ class Agency(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
+    # Core fields (P1-010)
+    code = models.TextField(null=True, blank=True)
+    is_active = models.BooleanField(default=True)
+    phone_number = models.TextField(null=True, blank=True)
+    lead_sources = models.JSONField(default=list, blank=True)
+    messaging_enabled = models.BooleanField(default=False)
+
+    # Discord integration
+    discord_webhook_url = models.TextField(null=True, blank=True)
+    discord_notification_enabled = models.BooleanField(default=False)
+    discord_notification_template = models.TextField(null=True, blank=True)
+
+    # Display settings
+    theme_mode = models.TextField(null=True, blank=True)
+    default_scoreboard_start_date = models.DateField(null=True, blank=True)
+
+    # Lapse email notifications
+    lapse_email_notifications_enabled = models.BooleanField(default=False)
+    lapse_email_subject = models.TextField(null=True, blank=True)
+    lapse_email_body = models.TextField(null=True, blank=True)
+
+    # SMS templates (P1-010)
+    sms_welcome_enabled = models.BooleanField(default=False)
+    sms_welcome_template = models.TextField(null=True, blank=True)
+    sms_billing_reminder_enabled = models.BooleanField(default=False)
+    sms_billing_reminder_template = models.TextField(null=True, blank=True)
+    sms_lapse_reminder_enabled = models.BooleanField(default=False)
+    sms_lapse_reminder_template = models.TextField(null=True, blank=True)
+    sms_birthday_enabled = models.BooleanField(default=False)
+    sms_birthday_template = models.TextField(null=True, blank=True)
+    sms_holiday_enabled = models.BooleanField(default=False)
+    sms_holiday_template = models.TextField(null=True, blank=True)
+    sms_quarterly_enabled = models.BooleanField(default=False)
+    sms_quarterly_template = models.TextField(null=True, blank=True)
+    sms_policy_packet_enabled = models.BooleanField(default=False)
+    sms_policy_packet_template = models.TextField(null=True, blank=True)
+
     class Meta:
         managed = False  # Don't create migrations
         db_table = 'agencies'
@@ -101,6 +138,14 @@ class User(models.Model):
     theme_mode = models.CharField(max_length=20, null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+
+    # Billing cycle fields (P1-009)
+    billing_cycle_start = models.DateTimeField(null=True, blank=True)
+    billing_cycle_end = models.DateTimeField(null=True, blank=True)
+
+    # Usage tracking (P1-009)
+    messages_sent_count = models.IntegerField(default=0)
+    ai_requests_count = models.IntegerField(default=0)
 
     class Meta:
         managed = False
@@ -380,6 +425,13 @@ class Deal(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
+    # Additional deal fields (P2-027)
+    billing_cycle = models.CharField(
+        max_length=50, null=True, blank=True,
+        help_text='Billing frequency: monthly, quarterly, semi-annually, annually'
+    )
+    lead_source = models.CharField(max_length=100, null=True, blank=True)
+
     class Meta:
         managed = False
         db_table = 'deals'
@@ -561,6 +613,12 @@ class Conversation(models.Model):
     SMS conversation thread.
     Maps to: public.conversations
     """
+    SMS_OPT_IN_CHOICES = [
+        ('opted_in', 'Opted In'),
+        ('opted_out', 'Opted Out'),
+        ('pending', 'Pending'),
+    ]
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4)
     agency = models.ForeignKey(
         Agency,
@@ -594,6 +652,17 @@ class Conversation(models.Model):
     is_archived = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+
+    # SMS opt-in tracking (P1-014)
+    sms_opt_in_status = models.CharField(
+        max_length=20,
+        choices=SMS_OPT_IN_CHOICES,
+        default='pending',
+        null=True,
+        blank=True
+    )
+    opted_in_at = models.DateTimeField(null=True, blank=True)
+    opted_out_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         managed = False
@@ -652,6 +721,9 @@ class Message(models.Model):
     is_read = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+
+    # Delivery tracking (P1-014)
+    sent_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         managed = False
@@ -776,6 +848,15 @@ class AIMessage(models.Model):
     tool_calls = models.JSONField(null=True, blank=True)
     tool_results = models.JSONField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
+
+    # Token tracking (P1-015)
+    input_tokens = models.IntegerField(null=True, blank=True)
+    output_tokens = models.IntegerField(null=True, blank=True)
+    tokens_used = models.IntegerField(null=True, blank=True)
+
+    # Chart generation (P1-015)
+    chart_code = models.TextField(null=True, blank=True)
+    chart_data = models.JSONField(null=True, blank=True)
 
     class Meta:
         managed = False

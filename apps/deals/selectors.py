@@ -24,11 +24,17 @@ def get_book_of_business(
     carrier_id: Optional[UUID] = None,
     product_id: Optional[UUID] = None,
     agent_id: Optional[UUID] = None,
+    client_id: Optional[UUID] = None,
     status: Optional[str] = None,
     status_standardized: Optional[str] = None,
     date_from: Optional[date] = None,
     date_to: Optional[date] = None,
     search_query: Optional[str] = None,
+    policy_number: Optional[str] = None,
+    billing_cycle: Optional[str] = None,
+    lead_source: Optional[str] = None,
+    view: Optional[str] = 'downlines',
+    effective_date_sort: Optional[str] = None,
     include_full_agency: bool = False,
 ) -> dict:
     """
@@ -45,11 +51,17 @@ def get_book_of_business(
         carrier_id: Filter by carrier
         product_id: Filter by product
         agent_id: Filter by specific agent
+        client_id: Filter by specific client (P2-027)
         status: Filter by raw status
         status_standardized: Filter by standardized status
         date_from: Filter by policy effective date (from)
         date_to: Filter by policy effective date (to)
         search_query: Search by client name or policy number
+        policy_number: Filter by exact policy number (P2-027)
+        billing_cycle: Filter by billing frequency (P2-027)
+        lead_source: Filter by lead source (P2-027)
+        view: Scope - 'self', 'downlines', 'all' (P2-027)
+        effective_date_sort: Sort direction - 'oldest', 'newest' (P2-027)
         include_full_agency: If True and user is admin, include all agency deals
 
     Returns:
@@ -57,11 +69,18 @@ def get_book_of_business(
     """
     is_admin = user.is_admin or user.role == 'admin'
 
-    # Build visible agent filter
+    # Build visible agent filter based on view scope (P2-027)
     if agent_id:
         # Specific agent requested - verify access
         visible_ids = [agent_id]
+    elif view == 'self':
+        # Only user's own deals
+        visible_ids = [user.id]
+    elif view == 'all' and is_admin:
+        # Admin viewing all agency deals
+        visible_ids = get_visible_agent_ids(user, include_full_agency=True)
     else:
+        # Default: user + downlines
         visible_ids = get_visible_agent_ids(user, include_full_agency=include_full_agency and is_admin)
 
     if not visible_ids:
@@ -85,6 +104,11 @@ def get_book_of_business(
         where_clauses.append("d.product_id = %s")
         params.append(str(product_id))
 
+    # New filter: client_id (P2-027)
+    if client_id:
+        where_clauses.append("d.client_id = %s")
+        params.append(str(client_id))
+
     if status:
         where_clauses.append("d.status = %s")
         params.append(status)
@@ -101,6 +125,21 @@ def get_book_of_business(
         where_clauses.append("d.policy_effective_date <= %s")
         params.append(date_to.isoformat())
 
+    # New filter: policy_number exact match (P2-027)
+    if policy_number:
+        where_clauses.append("d.policy_number ILIKE %s")
+        params.append(f"%{policy_number}%")
+
+    # New filter: billing_cycle (P2-027)
+    if billing_cycle:
+        where_clauses.append("d.billing_cycle = %s")
+        params.append(billing_cycle)
+
+    # New filter: lead_source (P2-027)
+    if lead_source:
+        where_clauses.append("d.lead_source = %s")
+        params.append(lead_source)
+
     if search_query:
         where_clauses.append("""
             (d.policy_number ILIKE %s
@@ -111,10 +150,18 @@ def get_book_of_business(
         search_pattern = f"%{search_query}%"
         params.extend([search_pattern, search_pattern, search_pattern, search_pattern])
 
+    # Determine sort order (P2-027)
+    if effective_date_sort == 'oldest':
+        order_direction = 'ASC'
+        cursor_comparison = '>'
+    else:
+        order_direction = 'DESC'
+        cursor_comparison = '<'
+
     # Keyset pagination
     if cursor_policy_effective_date and cursor_id:
-        where_clauses.append("""
-            (d.policy_effective_date, d.id) < (%s, %s)
+        where_clauses.append(f"""
+            (d.policy_effective_date, d.id) {cursor_comparison} (%s, %s)
         """)
         params.extend([cursor_policy_effective_date.isoformat(), str(cursor_id)])
 
@@ -134,6 +181,8 @@ def get_book_of_business(
             d.monthly_premium,
             d.policy_effective_date,
             d.submission_date,
+            d.billing_cycle,
+            d.lead_source,
             d.created_at,
             d.updated_at,
             cl.id as client_id,
@@ -155,7 +204,7 @@ def get_book_of_business(
         LEFT JOIN public.products p ON p.id = d.product_id
         LEFT JOIN public.users u ON u.id = d.agent_id
         WHERE {where_sql}
-        ORDER BY d.policy_effective_date DESC NULLS LAST, d.id DESC
+        ORDER BY d.policy_effective_date {order_direction} NULLS LAST, d.id {order_direction}
         LIMIT %s
     """
 
@@ -183,6 +232,8 @@ def get_book_of_business(
                 'monthly_premium': float(deal['monthly_premium']) if deal['monthly_premium'] else None,
                 'policy_effective_date': deal['policy_effective_date'].isoformat() if deal['policy_effective_date'] else None,
                 'submission_date': deal['submission_date'].isoformat() if deal['submission_date'] else None,
+                'billing_cycle': deal.get('billing_cycle'),  # P2-027
+                'lead_source': deal.get('lead_source'),  # P2-027
                 'created_at': deal['created_at'].isoformat() if deal['created_at'] else None,
                 'client': {
                     'id': str(deal['client_id']) if deal['client_id'] else None,

@@ -492,47 +492,35 @@ def get_scoreboard_lapsed_deals(
     """
     internal_id = str(user_ctx.internal_user_id)
     agency_id = str(user_ctx.agency_id)
-    assumed_months = max(assumed_months_till_lapse or 0, 0)
 
     try:
         with connection.cursor() as cursor:
-            # Build scope filter for agents and deals
+            # Build scope filter - use CTE reference for downline scope
             if scope == 'agency':
+                downline_cte = ""
                 agent_scope_filter = ""
                 deal_scope_filter = ""
             else:  # 'downline'
+                downline_cte = """
+                user_downline AS (
+                    SELECT id FROM users WHERE id = %(internal_id)s::uuid
+                    UNION ALL
+                    SELECT u2.id FROM users u2 JOIN user_downline d ON u2.upline_id = d.id
+                ),
+                """
                 agent_scope_filter = """
-                    AND (
-                        u.id = %(internal_id)s
-                        OR u.id IN (
-                            WITH RECURSIVE downline AS (
-                                SELECT id FROM users WHERE id = %(internal_id)s::uuid
-                                UNION ALL
-                                SELECT u2.id FROM users u2 JOIN downline d ON u2.upline_id = d.id
-                            )
-                            SELECT id FROM downline WHERE id != %(internal_id)s::uuid
-                        )
-                    )
+                    AND u.id IN (SELECT id FROM user_downline)
                 """
                 deal_scope_filter = """
-                    AND (
-                        d.agent_id = %(internal_id)s::uuid
-                        OR d.agent_id IN (
-                            WITH RECURSIVE downline AS (
-                                SELECT id FROM users WHERE id = %(internal_id)s::uuid
-                                UNION ALL
-                                SELECT u2.id FROM users u2 JOIN downline d ON u2.upline_id = d.id
-                            )
-                            SELECT id FROM downline WHERE id != %(internal_id)s::uuid
-                        )
-                    )
+                    AND d.agent_id IN (SELECT id FROM user_downline)
                 """
 
             # Build date field selection based on submitted flag
             date_field = "d.submission_date" if submitted else "COALESCE(d.policy_effective_date, d.submission_date)"
 
             query = f"""
-                WITH
+                WITH RECURSIVE
+                {downline_cte}
                 agency_agents AS (
                     SELECT
                         u.id AS agent_id,
@@ -723,6 +711,280 @@ def get_scoreboard_lapsed_deals(
 
     except Exception as e:
         logger.error(f'Error getting scoreboard lapsed deals data: {e}')
+        return {
+            'success': False,
+            'error': str(e),
+        }
+
+
+def get_scoreboard_with_billing_cycle(
+    user_ctx: UserContext,
+    start_date: date,
+    end_date: date,
+    scope: str = 'agency',
+) -> dict:
+    """
+    Get scoreboard data with billing cycle payment calculation.
+
+    This function calculates recurring payments based on billing_cycle,
+    mirroring the frontend logic in /api/scoreboard/route.ts.
+
+    For each deal, payment dates are generated based on billing_cycle:
+    - monthly: every 1 month from effective date
+    - quarterly: every 3 months
+    - semi-annually: every 6 months
+    - annually: every 12 months
+
+    Only payments falling within the date range (and not in the future) are counted.
+
+    Args:
+        user_ctx: User context
+        start_date: Start date for calculations
+        end_date: End date for calculations
+        scope: 'agency' for all agency or 'downline' for user's downline only
+
+    Returns:
+        {
+            'success': True,
+            'data': {
+                'leaderboard': [...],
+                'stats': { totalProduction, totalDeals, activeAgents },
+                'dateRange': { startDate, endDate }
+            }
+        }
+    """
+    internal_id = str(user_ctx.internal_user_id)
+    agency_id = str(user_ctx.agency_id)
+
+    try:
+        with connection.cursor() as cursor:
+            # Build scope filter - use CTE reference for downline scope
+            if scope == 'agency':
+                downline_cte = ""
+                agent_scope_filter = ""
+                deal_scope_filter = ""
+            else:  # 'downline'
+                downline_cte = """
+                user_downline AS (
+                    SELECT id FROM users WHERE id = %(internal_id)s::uuid
+                    UNION ALL
+                    SELECT u2.id FROM users u2 JOIN user_downline d ON u2.upline_id = d.id
+                ),
+                """
+                agent_scope_filter = """
+                    AND u.id IN (SELECT id FROM user_downline)
+                """
+                deal_scope_filter = """
+                    AND d.agent_id IN (SELECT id FROM user_downline)
+                """
+
+            query = f"""
+                WITH RECURSIVE
+                {downline_cte}
+                agency_agents AS (
+                    SELECT
+                        u.id AS agent_id,
+                        CONCAT(u.first_name, ' ', u.last_name) AS name
+                    FROM users u
+                    WHERE u.agency_id = %(agency_id)s
+                        AND u.role <> 'client'
+                        AND u.is_active = true
+                        {agent_scope_filter}
+                ),
+
+                -- Get deals going back 12 months to capture recurring payments
+                lookback_deals AS (
+                    SELECT
+                        d.id AS deal_id,
+                        d.agent_id,
+                        d.carrier_id,
+                        d.status,
+                        d.annual_premium,
+                        COALESCE(LOWER(d.billing_cycle), 'monthly') AS billing_cycle,
+                        COALESCE(d.policy_effective_date, d.submission_date) AS effective_date
+                    FROM deals d
+                    JOIN users u ON u.id = d.agent_id AND u.is_active = true
+                    WHERE d.agency_id = %(agency_id)s
+                        AND COALESCE(d.policy_effective_date, d.submission_date) IS NOT NULL
+                        AND COALESCE(d.policy_effective_date, d.submission_date) >= (%(start_date)s::date - INTERVAL '1 year')
+                        AND COALESCE(d.policy_effective_date, d.submission_date) <= %(end_date)s::date
+                        AND d.annual_premium IS NOT NULL
+                        AND d.annual_premium > 0
+                        {deal_scope_filter}
+                ),
+
+                -- Filter to positive impact only
+                positive_deals AS (
+                    SELECT
+                        ld.deal_id,
+                        ld.agent_id,
+                        ld.annual_premium,
+                        ld.billing_cycle,
+                        ld.effective_date
+                    FROM lookback_deals ld
+                    LEFT JOIN status_mapping sm
+                        ON sm.carrier_id = ld.carrier_id
+                        AND sm.raw_status = ld.status
+                    WHERE COALESCE(sm.impact, 'neutral') = 'positive'
+                ),
+
+                -- Calculate payment amount and interval based on billing cycle
+                deals_with_payments AS (
+                    SELECT
+                        pd.deal_id,
+                        pd.agent_id,
+                        pd.annual_premium,
+                        pd.effective_date,
+                        CASE pd.billing_cycle
+                            WHEN 'monthly' THEN pd.annual_premium / 12
+                            WHEN 'quarterly' THEN pd.annual_premium / 4
+                            WHEN 'semi-annually' THEN pd.annual_premium / 2
+                            WHEN 'annually' THEN pd.annual_premium
+                            ELSE pd.annual_premium / 12
+                        END AS payment_amount,
+                        CASE pd.billing_cycle
+                            WHEN 'monthly' THEN 1
+                            WHEN 'quarterly' THEN 3
+                            WHEN 'semi-annually' THEN 6
+                            WHEN 'annually' THEN 12
+                            ELSE 1
+                        END AS months_interval
+                    FROM positive_deals pd
+                ),
+
+                -- Generate payment dates (up to 12 payments per deal)
+                payment_dates AS (
+                    SELECT
+                        dwp.deal_id,
+                        dwp.agent_id,
+                        dwp.payment_amount,
+                        (dwp.effective_date + (gs.n * dwp.months_interval * INTERVAL '1 month'))::date AS payment_date
+                    FROM deals_with_payments dwp
+                    CROSS JOIN generate_series(0, 11) AS gs(n)
+                    WHERE (dwp.effective_date + (gs.n * dwp.months_interval * INTERVAL '1 month'))::date
+                        BETWEEN %(start_date)s::date AND LEAST(%(end_date)s::date, CURRENT_DATE)
+                ),
+
+                -- Aggregate by agent and payment date for daily breakdown
+                agent_daily_breakdown AS (
+                    SELECT
+                        pd.agent_id,
+                        jsonb_object_agg(
+                            pd.payment_date::text,
+                            ROUND(pd.daily_total::numeric, 2)
+                        ) AS daily_breakdown
+                    FROM (
+                        SELECT
+                            agent_id,
+                            payment_date,
+                            SUM(payment_amount) AS daily_total
+                        FROM payment_dates
+                        GROUP BY agent_id, payment_date
+                    ) pd
+                    GROUP BY pd.agent_id
+                ),
+
+                -- Agent totals
+                agent_totals AS (
+                    SELECT
+                        agent_id,
+                        SUM(payment_amount) AS total_production,
+                        COUNT(DISTINCT deal_id) AS deal_count
+                    FROM payment_dates
+                    GROUP BY agent_id
+                ),
+
+                -- Agents with payments in range
+                active_agents_list AS (
+                    SELECT DISTINCT agent_id FROM payment_dates
+                ),
+
+                leaderboard_data AS (
+                    SELECT
+                        aa.agent_id,
+                        aa.name,
+                        COALESCE(at.total_production, 0) AS total,
+                        COALESCE(adb.daily_breakdown, '{{}}'::jsonb) AS daily_breakdown,
+                        COALESCE(at.deal_count, 0) AS deal_count
+                    FROM agency_agents aa
+                    JOIN active_agents_list aal ON aal.agent_id = aa.agent_id
+                    LEFT JOIN agent_totals at ON at.agent_id = aa.agent_id
+                    LEFT JOIN agent_daily_breakdown adb ON adb.agent_id = aa.agent_id
+                    WHERE COALESCE(at.deal_count, 0) > 0
+                    ORDER BY total DESC
+                ),
+
+                ranked_leaderboard AS (
+                    SELECT
+                        ROW_NUMBER() OVER (ORDER BY total DESC) AS rank,
+                        agent_id,
+                        name,
+                        total,
+                        daily_breakdown,
+                        deal_count
+                    FROM leaderboard_data
+                ),
+
+                overall_stats AS (
+                    SELECT
+                        COALESCE(SUM(total), 0) AS total_production,
+                        COALESCE(SUM(deal_count), 0) AS total_deals,
+                        COUNT(*) AS active_agents
+                    FROM leaderboard_data
+                )
+
+                SELECT
+                    COALESCE(
+                        (SELECT jsonb_agg(
+                            jsonb_build_object(
+                                'rank', rank,
+                                'agent_id', agent_id,
+                                'name', name,
+                                'total', ROUND(total::numeric, 2),
+                                'dailyBreakdown', daily_breakdown,
+                                'dealCount', deal_count
+                            )
+                        ) FROM ranked_leaderboard),
+                        '[]'::jsonb
+                    ) AS leaderboard,
+                    (SELECT jsonb_build_object(
+                        'totalProduction', ROUND(total_production::numeric, 2),
+                        'totalDeals', total_deals,
+                        'activeAgents', active_agents
+                    ) FROM overall_stats) AS stats
+            """
+
+            params = {
+                'agency_id': agency_id,
+                'internal_id': internal_id,
+                'start_date': start_date.isoformat(),
+                'end_date': end_date.isoformat(),
+            }
+
+            cursor.execute(query, params)
+            row = cursor.fetchone()
+
+            leaderboard = row[0] if row and row[0] else []
+            stats = row[1] if row and row[1] else {
+                'totalProduction': 0,
+                'totalDeals': 0,
+                'activeAgents': 0,
+            }
+
+            return {
+                'success': True,
+                'data': {
+                    'leaderboard': leaderboard,
+                    'stats': stats,
+                    'dateRange': {
+                        'startDate': start_date.isoformat(),
+                        'endDate': end_date.isoformat(),
+                    },
+                },
+            }
+
+    except Exception as e:
+        logger.error(f'Error getting scoreboard with billing cycle: {e}')
         return {
             'success': False,
             'error': str(e),

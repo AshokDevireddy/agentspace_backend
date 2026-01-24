@@ -48,6 +48,35 @@ class AgencySerializer(serializers.ModelSerializer):
             'sms_enabled',
             'created_at',
             'updated_at',
+            # New fields (P1-010)
+            'code',
+            'is_active',
+            'phone_number',
+            'lead_sources',
+            'messaging_enabled',
+            'discord_webhook_url',
+            'discord_notification_enabled',
+            'discord_notification_template',
+            'theme_mode',
+            'default_scoreboard_start_date',
+            'lapse_email_notifications_enabled',
+            'lapse_email_subject',
+            'lapse_email_body',
+            # SMS templates
+            'sms_welcome_enabled',
+            'sms_welcome_template',
+            'sms_billing_reminder_enabled',
+            'sms_billing_reminder_template',
+            'sms_lapse_reminder_enabled',
+            'sms_lapse_reminder_template',
+            'sms_birthday_enabled',
+            'sms_birthday_template',
+            'sms_holiday_enabled',
+            'sms_holiday_template',
+            'sms_quarterly_enabled',
+            'sms_quarterly_template',
+            'sms_policy_packet_enabled',
+            'sms_policy_packet_template',
         ]
         read_only_fields = ['id', 'created_at', 'updated_at']
 
@@ -181,6 +210,12 @@ class UserDetailSerializer(serializers.ModelSerializer):
             'theme_mode',
             'created_at',
             'updated_at',
+            # Billing cycle fields (P1-009)
+            'billing_cycle_start',
+            'billing_cycle_end',
+            # Usage tracking (P1-009)
+            'messages_sent_count',
+            'ai_requests_count',
         ]
 
 
@@ -614,12 +649,16 @@ class ConversationSerializer(serializers.ModelSerializer):
             'client_name',
             'deal_id',
             'phone_number',
-            'status',
             'unread_count',
+            'is_archived',
             'last_message_at',
             'last_message_preview',
             'created_at',
             'updated_at',
+            # SMS opt-in tracking (P1-014)
+            'sms_opt_in_status',
+            'opted_in_at',
+            'opted_out_at',
         ]
 
     def get_agent_name(self, obj):
@@ -635,6 +674,7 @@ class ConversationSerializer(serializers.ModelSerializer):
 
 class MessageSerializer(serializers.ModelSerializer):
     """Read serializer for Message."""
+    sent_by_name = serializers.SerializerMethodField()
 
     class Meta:
         model = Message
@@ -644,13 +684,19 @@ class MessageSerializer(serializers.ModelSerializer):
             'direction',
             'content',
             'status',
-            'sent_at',
-            'delivered_at',
-            'read_at',
             'external_id',
-            'error_message',
+            'sent_by_id',
+            'sent_by_name',
+            'is_read',
+            'sent_at',  # Delivery tracking (P1-014)
             'created_at',
+            'updated_at',
         ]
+
+    def get_sent_by_name(self, obj):
+        if obj.sent_by:
+            return f"{obj.sent_by.first_name or ''} {obj.sent_by.last_name or ''}".strip()
+        return None
 
 
 class MessageCreateSerializer(serializers.ModelSerializer):
@@ -664,17 +710,22 @@ class MessageCreateSerializer(serializers.ModelSerializer):
 class DraftMessageSerializer(serializers.ModelSerializer):
     """Read serializer for DraftMessage."""
     agent_name = serializers.SerializerMethodField()
+    approved_by_name = serializers.SerializerMethodField()
 
     class Meta:
         model = DraftMessage
         fields = [
             'id',
+            'agency_id',
             'conversation_id',
             'agent_id',
             'agent_name',
             'content',
-            'scheduled_for',
             'status',
+            'approved_by_id',
+            'approved_by_name',
+            'approved_at',
+            'rejection_reason',
             'created_at',
             'updated_at',
         ]
@@ -682,6 +733,11 @@ class DraftMessageSerializer(serializers.ModelSerializer):
     def get_agent_name(self, obj):
         if obj.agent:
             return f"{obj.agent.first_name or ''} {obj.agent.last_name or ''}".strip()
+        return None
+
+    def get_approved_by_name(self, obj):
+        if obj.approved_by:
+            return f"{obj.approved_by.first_name or ''} {obj.approved_by.last_name or ''}".strip()
         return None
 
 
@@ -807,8 +863,22 @@ class AIMessageSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = AIMessage
-        fields = ['id', 'conversation_id', 'role', 'content',
-                  'tool_calls', 'tool_results', 'created_at']
+        fields = [
+            'id',
+            'conversation_id',
+            'role',
+            'content',
+            'tool_calls',
+            'tool_results',
+            'created_at',
+            # Token tracking (P1-015)
+            'input_tokens',
+            'output_tokens',
+            'tokens_used',
+            # Chart generation (P1-015)
+            'chart_code',
+            'chart_data',
+        ]
         read_only_fields = ['id', 'created_at']
 
 
