@@ -314,6 +314,7 @@ class Carrier(models.Model):
     """
     id = models.UUIDField(primary_key=True, default=uuid.uuid4)
     name = models.CharField(max_length=255)
+    display_name = models.CharField(max_length=255, null=True, blank=True)
     code = models.CharField(max_length=50, null=True, blank=True)
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -324,7 +325,7 @@ class Carrier(models.Model):
         db_table = 'carriers'
 
     def __str__(self):
-        return self.name
+        return self.display_name or self.name
 
 
 class Product(models.Model):

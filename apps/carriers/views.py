@@ -17,6 +17,7 @@ from apps.core.authentication import get_user_context
 from .selectors import (
     get_active_carriers,
     get_carrier_names,
+    get_carriers_for_agency,
     get_carriers_with_products_for_agency,
 )
 
@@ -75,6 +76,44 @@ class CarrierNamesView(APIView):
             logger.error(f'Carrier names failed: {e}')
             return Response(
                 {'error': 'Failed to fetch carrier names', 'detail': str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
+class AgencyCarriersView(APIView):
+    """
+    GET /api/carriers/agency (P2-030)
+
+    Get carriers associated with the user's agency.
+    Returns a lightweight list of carriers that have products for the agency.
+
+    Response (200):
+        [
+            {
+                "id": "uuid",
+                "name": "Carrier Name",
+                "display_name": "Display Name",
+                "is_active": true
+            }
+        ]
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = get_user_context(request)
+        if not user:
+            return Response(
+                {'error': 'Unauthorized', 'message': 'Authentication required'},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
+        try:
+            carriers = get_carriers_for_agency(user.agency_id)
+            return Response(carriers)
+        except Exception as e:
+            logger.error(f'Agency carriers failed: {e}')
+            return Response(
+                {'error': 'Failed to fetch agency carriers', 'detail': str(e)},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 

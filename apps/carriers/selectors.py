@@ -121,6 +121,41 @@ def get_carrier_names() -> List[dict]:
     ]
 
 
+def get_carriers_for_agency(agency_id: UUID) -> List[dict]:
+    """
+    Get carriers associated with an agency (P2-030).
+
+    Returns carriers that have products or deals associated with the agency.
+    This is a lightweight list for agency-specific carrier selection.
+
+    Args:
+        agency_id: The agency UUID
+
+    Returns:
+        List of carrier dictionaries with id, name, display_name, is_active
+    """
+    # Get carriers that have products for this agency
+    carriers = (
+        Carrier.objects
+        .filter(
+            is_active=True,
+            products__agency_id=agency_id,
+        )
+        .distinct()
+        .order_by('name')
+    )
+
+    return [
+        {
+            'id': str(c.id),
+            'name': c.name,
+            'display_name': c.display_name,
+            'is_active': c.is_active,
+        }
+        for c in carriers
+    ]
+
+
 def get_carrier_by_id(carrier_id: UUID) -> Optional[dict]:
     """
     Get a single carrier by ID.

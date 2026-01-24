@@ -315,6 +315,17 @@ class ReferenceDataUser(AuthenticatedUser):
 
     @task(2)
     @tag('carriers')
+    def get_carriers_agency(self):
+        """GET /api/carriers/agency - Agency-specific carriers (P2-030)."""
+        with self.client.get(
+            '/api/carriers/agency',
+            headers=self.headers,
+            name='/api/carriers/agency',
+        ) as response:
+            pass
+
+    @task(2)
+    @tag('carriers')
     def get_carriers_with_products(self):
         """GET /api/carriers/with-products - Carriers with products."""
         with self.client.get(

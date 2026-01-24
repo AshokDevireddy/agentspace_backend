@@ -16,6 +16,35 @@ from apps.core.authentication import AuthenticatedUser
 logger = logging.getLogger(__name__)
 
 
+def mask_phone_number(phone: str | None, can_view_full: bool = False) -> str | None:
+    """
+    Mask a phone number for privacy protection (P2-027).
+
+    Args:
+        phone: The phone number to mask
+        can_view_full: If True, returns the full phone number
+
+    Returns:
+        Masked phone number (e.g., '555****12') or full number if permitted
+    """
+    if not phone:
+        return None
+
+    if can_view_full:
+        return phone
+
+    # Strip non-digits for consistent masking
+    digits = ''.join(c for c in phone if c.isdigit())
+
+    if len(digits) <= 4:
+        return '****'
+    elif len(digits) <= 6:
+        return digits[:2] + '****'
+    else:
+        # Show first 3 and last 2 digits
+        return digits[:3] + '****' + digits[-2:]
+
+
 def get_book_of_business(
     user: AuthenticatedUser,
     limit: int = 50,
@@ -225,6 +254,11 @@ def get_book_of_business(
         deals = []
         for row in rows:
             deal = dict(zip(columns, row))
+
+            # Phone masking: admins see all, users see own deals' phones (P2-027)
+            deal_agent_id = deal['agent_id']
+            can_view_full_phone = is_admin or (deal_agent_id and str(deal_agent_id) == str(user.id))
+
             deals.append({
                 'id': str(deal['id']),
                 'policy_number': deal['policy_number'],
@@ -242,7 +276,7 @@ def get_book_of_business(
                     'first_name': deal['client_first_name'],
                     'last_name': deal['client_last_name'],
                     'email': deal['client_email'],
-                    'phone': deal['client_phone'],
+                    'phone': mask_phone_number(deal['client_phone'], can_view_full_phone),  # P2-027: masked
                     'name': f"{deal['client_first_name'] or ''} {deal['client_last_name'] or ''}".strip(),
                 } if deal['client_id'] else None,
                 'carrier': {
