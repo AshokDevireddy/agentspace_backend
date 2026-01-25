@@ -1,0 +1,2160 @@
+openapi: 3.0.3
+info:
+  title: AgentSpace API
+  description: |
+    AgentSpace Backend API - A comprehensive insurance agency management platform.
+
+    ## Authentication
+    Most endpoints require Bearer token authentication. Include the token in the Authorization header:
+    ```
+    Authorization: Bearer <access_token>
+    ```
+
+    ## Error Responses
+    All endpoints may return standard error responses:
+    - `401 Unauthorized` - Missing or invalid authentication
+    - `403 Forbidden` - Insufficient permissions
+    - `404 Not Found` - Resource not found
+    - `500 Internal Server Error` - Server error
+
+    ## Pagination
+    List endpoints support cursor-based or page-based pagination with `limit`, `page`, or `cursor` parameters.
+
+  version: 1.0.0
+  contact:
+    name: AgentSpace Support
+    email: support@agentspace.com
+
+servers:
+  - url: https://api.agentspace.com
+    description: Production server
+  - url: http://localhost:8000
+    description: Local development server
+
+tags:
+  - name: Authentication
+    description: User authentication and session management
+  - name: Dashboard
+    description: Dashboard metrics and widgets
+  - name: Carriers
+    description: Insurance carrier management
+  - name: Products
+    description: Insurance product management
+  - name: Positions
+    description: Agent position and commission management
+  - name: Agents
+    description: Agent hierarchy and management
+  - name: Deals
+    description: Policy deals and book of business
+  - name: Payouts
+    description: Commission payouts and debt tracking
+  - name: SMS
+    description: SMS messaging and conversations
+  - name: Clients
+    description: Client management
+  - name: Analytics
+    description: Business analytics and insights
+  - name: Messaging
+    description: Automated messaging campaigns
+  - name: NIPR
+    description: NIPR verification job management
+  - name: Ingest
+    description: Data ingestion and processing
+  - name: AI
+    description: AI-powered features and insights
+  - name: Onboarding
+    description: User onboarding flow
+  - name: Search
+    description: Search functionality
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Supabase JWT access token
+
+  schemas:
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+          description: Error type identifier
+        message:
+          type: string
+          description: Human-readable error message
+        detail:
+          type: string
+          description: Additional error details
+      required:
+        - error
+        - message
+
+    User:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        email:
+          type: string
+          format: email
+        first_name:
+          type: string
+        last_name:
+          type: string
+        agency_id:
+          type: string
+          format: uuid
+        role:
+          type: string
+          enum: [admin, agent, manager]
+        is_admin:
+          type: boolean
+        status:
+          type: string
+          enum: [active, inactive, invited, onboarding]
+        subscription_tier:
+          type: string
+
+    Agent:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        email:
+          type: string
+          format: email
+        position:
+          type: string
+        position_id:
+          type: string
+          format: uuid
+          nullable: true
+        position_name:
+          type: string
+          nullable: true
+        upline:
+          type: string
+        status:
+          type: string
+        created:
+          type: string
+        downlines:
+          type: integer
+        individual_debt:
+          type: number
+        individual_production:
+          type: number
+        hierarchy_debt:
+          type: number
+        hierarchy_production:
+          type: number
+
+    Deal:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        policy_number:
+          type: string
+          nullable: true
+        carrier_id:
+          type: string
+          format: uuid
+          nullable: true
+        carrier_name:
+          type: string
+          nullable: true
+        product_id:
+          type: string
+          format: uuid
+          nullable: true
+        product_name:
+          type: string
+          nullable: true
+        agent_id:
+          type: string
+          format: uuid
+        agent_name:
+          type: string
+        client_id:
+          type: string
+          format: uuid
+          nullable: true
+        client_name:
+          type: string
+          nullable: true
+        status:
+          type: string
+        status_standardized:
+          type: string
+          enum: [pending, active, lapsed, cancelled]
+          nullable: true
+        annual_premium:
+          type: number
+          nullable: true
+        monthly_premium:
+          type: number
+          nullable: true
+        policy_effective_date:
+          type: string
+          format: date
+          nullable: true
+        submission_date:
+          type: string
+          format: date
+          nullable: true
+        billing_cycle:
+          type: string
+          nullable: true
+        lead_source:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+
+    Client:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        first_name:
+          type: string
+        last_name:
+          type: string
+        email:
+          type: string
+          format: email
+          nullable: true
+        phone:
+          type: string
+          nullable: true
+        address:
+          type: string
+          nullable: true
+        city:
+          type: string
+          nullable: true
+        state:
+          type: string
+          nullable: true
+        zip_code:
+          type: string
+          nullable: true
+        date_of_birth:
+          type: string
+          format: date
+          nullable: true
+        agent_id:
+          type: string
+          format: uuid
+        agent_name:
+          type: string
+        policies_count:
+          type: integer
+        total_premium:
+          type: number
+
+    Carrier:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        display_name:
+          type: string
+        is_active:
+          type: boolean
+
+    Product:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        carrier_id:
+          type: string
+          format: uuid
+        carrier_name:
+          type: string
+        product_type:
+          type: string
+        is_active:
+          type: boolean
+
+    Position:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        level:
+          type: integer
+        commission_rate:
+          type: number
+        description:
+          type: string
+          nullable: true
+
+    Pagination:
+      type: object
+      properties:
+        currentPage:
+          type: integer
+        totalPages:
+          type: integer
+        totalCount:
+          type: integer
+        limit:
+          type: integer
+        hasNextPage:
+          type: boolean
+        hasPrevPage:
+          type: boolean
+
+security:
+  - bearerAuth: []
+
+paths:
+  # ==================== Health Check ====================
+  /api/health:
+    get:
+      tags:
+        - Health
+      summary: Health check endpoint
+      description: Check if the API is running
+      security: []
+      responses:
+        '200':
+          description: API is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+
+  # ==================== Authentication ====================
+  /api/auth/login:
+    post:
+      tags:
+        - Authentication
+      summary: User login
+      description: Authenticate user with email and password via Supabase
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - email
+                - password
+              properties:
+                email:
+                  type: string
+                  format: email
+                  example: user@example.com
+                password:
+                  type: string
+                  format: password
+                  example: password123
+      responses:
+        '200':
+          description: Login successful
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  access_token:
+                    type: string
+                  refresh_token:
+                    type: string
+                  expires_in:
+                    type: integer
+                  token_type:
+                    type: string
+                    example: bearer
+                  user:
+                    $ref: '#/components/schemas/User'
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Account inactive or invited
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/auth/logout:
+    post:
+      tags:
+        - Authentication
+      summary: User logout
+      description: Sign out user from Supabase
+      responses:
+        '200':
+          description: Logout successful
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: Logged out successfully
+
+  /api/auth/register:
+    post:
+      tags:
+        - Authentication
+      summary: Register new admin user
+      description: Register a new admin user and create agency
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - email
+                - password
+                - first_name
+                - last_name
+                - agency_name
+              properties:
+                email:
+                  type: string
+                  format: email
+                password:
+                  type: string
+                  minLength: 8
+                first_name:
+                  type: string
+                last_name:
+                  type: string
+                agency_name:
+                  type: string
+      responses:
+        '201':
+          description: Registration successful
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  user_id:
+                    type: string
+                    format: uuid
+                  agency_id:
+                    type: string
+                    format: uuid
+        '400':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/auth/refresh:
+    post:
+      tags:
+        - Authentication
+      summary: Refresh access token
+      description: Get a new access token using refresh token
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - refresh_token
+              properties:
+                refresh_token:
+                  type: string
+      responses:
+        '200':
+          description: Token refreshed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  access_token:
+                    type: string
+                  refresh_token:
+                    type: string
+                  expires_in:
+                    type: integer
+                  token_type:
+                    type: string
+
+  /api/auth/session:
+    get:
+      tags:
+        - Authentication
+      summary: Get current session
+      description: Get current user session information
+      responses:
+        '200':
+          description: Session information
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  authenticated:
+                    type: boolean
+                  user:
+                    $ref: '#/components/schemas/User'
+
+  /api/auth/verify-invite:
+    post:
+      tags:
+        - Authentication
+      summary: Verify invite token
+      description: Verify an invite OTP token
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - email
+                - token
+              properties:
+                email:
+                  type: string
+                  format: email
+                token:
+                  type: string
+      responses:
+        '200':
+          description: Token verified
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  valid:
+                    type: boolean
+                  access_token:
+                    type: string
+                  refresh_token:
+                    type: string
+
+  /api/auth/setup-account:
+    post:
+      tags:
+        - Authentication
+      summary: Setup account
+      description: Set password and update profile during onboarding
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                password:
+                  type: string
+                  minLength: 8
+                first_name:
+                  type: string
+                last_name:
+                  type: string
+      responses:
+        '200':
+          description: Account setup complete
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+
+  /api/auth/forgot-password:
+    post:
+      tags:
+        - Authentication
+      summary: Request password reset
+      description: Send password reset email
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - email
+              properties:
+                email:
+                  type: string
+                  format: email
+      responses:
+        '200':
+          description: Email sent (if account exists)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+
+  /api/auth/reset-password:
+    post:
+      tags:
+        - Authentication
+      summary: Reset password
+      description: Reset password with token
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - access_token
+                - password
+              properties:
+                access_token:
+                  type: string
+                password:
+                  type: string
+                  minLength: 8
+      responses:
+        '200':
+          description: Password reset successful
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+
+  # ==================== Dashboard ====================
+  /api/dashboard/summary:
+    get:
+      tags:
+        - Dashboard
+      summary: Get dashboard summary
+      description: Get overview metrics for dashboard
+      responses:
+        '200':
+          description: Dashboard summary data
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /api/dashboard/scoreboard:
+    get:
+      tags:
+        - Dashboard
+      summary: Get scoreboard
+      description: Get production scoreboard data
+      responses:
+        '200':
+          description: Scoreboard data
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /api/dashboard/widgets:
+    get:
+      tags:
+        - Dashboard
+      summary: List dashboard widgets
+      description: Get user's dashboard widgets
+      responses:
+        '200':
+          description: List of widgets
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+
+    post:
+      tags:
+        - Dashboard
+      summary: Create dashboard widget
+      description: Add a new widget to dashboard
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '201':
+          description: Widget created
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /api/dashboard/widgets/{widget_id}:
+    get:
+      tags:
+        - Dashboard
+      summary: Get widget details
+      parameters:
+        - name: widget_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Widget details
+          content:
+            application/json:
+              schema:
+                type: object
+
+    patch:
+      tags:
+        - Dashboard
+      summary: Update widget
+      parameters:
+        - name: widget_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: Widget updated
+          content:
+            application/json:
+              schema:
+                type: object
+
+    delete:
+      tags:
+        - Dashboard
+      summary: Delete widget
+      parameters:
+        - name: widget_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '204':
+          description: Widget deleted
+
+  # ==================== Carriers ====================
+  /api/carriers:
+    get:
+      tags:
+        - Carriers
+      summary: List carriers
+      description: Get list of insurance carriers
+      parameters:
+        - name: active_only
+          in: query
+          schema:
+            type: boolean
+      responses:
+        '200':
+          description: List of carriers
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Carrier'
+
+  /api/carriers/names:
+    get:
+      tags:
+        - Carriers
+      summary: Get carrier names
+      description: Get simplified list of carrier names for dropdowns
+      responses:
+        '200':
+          description: List of carrier names
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id:
+                      type: string
+                      format: uuid
+                    name:
+                      type: string
+
+  /api/carriers/statuses:
+    get:
+      tags:
+        - Carriers
+      summary: Get status mappings
+      description: Get carrier-specific status mappings
+      responses:
+        '200':
+          description: Status mappings
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+
+  # ==================== Products ====================
+  /api/products:
+    get:
+      tags:
+        - Products
+      summary: List products
+      description: Get paginated list of insurance products
+      parameters:
+        - name: carrier_id
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+      responses:
+        '200':
+          description: List of products
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  products:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Product'
+                  pagination:
+                    $ref: '#/components/schemas/Pagination'
+
+  /api/products/all:
+    get:
+      tags:
+        - Products
+      summary: Get all products
+      description: Get all products without pagination
+      responses:
+        '200':
+          description: All products
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Product'
+
+  /api/products/{product_id}:
+    get:
+      tags:
+        - Products
+      summary: Get product details
+      parameters:
+        - name: product_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Product details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Product'
+
+  # ==================== Positions ====================
+  /api/positions:
+    get:
+      tags:
+        - Positions
+      summary: List positions
+      description: Get list of agent positions
+      responses:
+        '200':
+          description: List of positions
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Position'
+
+  /api/positions/{position_id}:
+    get:
+      tags:
+        - Positions
+      summary: Get position details
+      parameters:
+        - name: position_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Position details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Position'
+
+  /api/positions/product-commissions:
+    get:
+      tags:
+        - Positions
+      summary: List position commissions
+      description: Get commission rates for positions and products
+      responses:
+        '200':
+          description: List of commissions
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+
+  # ==================== Agents ====================
+  /api/agents:
+    get:
+      tags:
+        - Agents
+      summary: List agents
+      description: Get agents in table or tree view
+      parameters:
+        - name: view
+          in: query
+          schema:
+            type: string
+            enum: [table, tree]
+            default: table
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+        - name: status
+          in: query
+          schema:
+            type: string
+        - name: agentName
+          in: query
+          schema:
+            type: string
+        - name: positionId
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: startMonth
+          in: query
+          schema:
+            type: string
+            pattern: '^\d{4}-\d{2}$'
+            example: '2025-01'
+        - name: endMonth
+          in: query
+          schema:
+            type: string
+            pattern: '^\d{4}-\d{2}$'
+            example: '2025-12'
+      responses:
+        '200':
+          description: List of agents
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  agents:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Agent'
+                  pagination:
+                    $ref: '#/components/schemas/Pagination'
+
+  /api/agents/{agent_id}:
+    get:
+      tags:
+        - Agents
+      summary: Get agent details
+      description: Get full agent profile and performance stats
+      parameters:
+        - name: agent_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Agent details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Agent'
+
+  /api/agents/{agent_id}/downline:
+    get:
+      tags:
+        - Agents
+      summary: Get agent downline
+      description: Get recursive downline for an agent
+      parameters:
+        - name: agent_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: depth
+          in: query
+          schema:
+            type: integer
+            maximum: 20
+        - name: include_self
+          in: query
+          schema:
+            type: boolean
+            default: true
+      responses:
+        '200':
+          description: Agent downline
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  agent_id:
+                    type: string
+                    format: uuid
+                  downline:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Agent'
+                  count:
+                    type: integer
+
+  /api/agents/downlines:
+    get:
+      tags:
+        - Agents
+      summary: Get agent direct downlines
+      description: Get direct downlines for an agent
+      parameters:
+        - name: agentId
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Direct downlines
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  downlines:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Agent'
+
+  /api/agents/assign-position:
+    post:
+      tags:
+        - Agents
+      summary: Assign position to agent
+      description: Assign or update agent's position
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - agent_id
+              properties:
+                agent_id:
+                  type: string
+                  format: uuid
+                position_id:
+                  type: string
+                  format: uuid
+                  nullable: true
+      responses:
+        '200':
+          description: Position assigned
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  agent:
+                    $ref: '#/components/schemas/Agent'
+
+  # ==================== Deals ====================
+  /api/deals:
+    get:
+      tags:
+        - Deals
+      summary: List deals (Book of Business)
+      description: Get paginated list of deals with filtering
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+            maximum: 100
+        - name: cursor_policy_effective_date
+          in: query
+          schema:
+            type: string
+            format: date
+        - name: cursor_id
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: carrier_id
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: product_id
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: agent_id
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: client_id
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: status
+          in: query
+          schema:
+            type: string
+        - name: status_standardized
+          in: query
+          schema:
+            type: string
+            enum: [pending, active, lapsed, cancelled]
+        - name: date_from
+          in: query
+          schema:
+            type: string
+            format: date
+        - name: date_to
+          in: query
+          schema:
+            type: string
+            format: date
+        - name: search
+          in: query
+          schema:
+            type: string
+        - name: policy_number
+          in: query
+          schema:
+            type: string
+        - name: billing_cycle
+          in: query
+          schema:
+            type: string
+        - name: view
+          in: query
+          schema:
+            type: string
+            enum: [self, downlines, all]
+            default: downlines
+      responses:
+        '200':
+          description: List of deals
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deals:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Deal'
+                  has_more:
+                    type: boolean
+                  next_cursor:
+                    type: object
+
+    post:
+      tags:
+        - Deals
+      summary: Create deal
+      description: Create a new policy deal
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - agent_id
+              properties:
+                agent_id:
+                  type: string
+                  format: uuid
+                client_id:
+                  type: string
+                  format: uuid
+                carrier_id:
+                  type: string
+                  format: uuid
+                product_id:
+                  type: string
+                  format: uuid
+                policy_number:
+                  type: string
+                status:
+                  type: string
+                status_standardized:
+                  type: string
+                  enum: [pending, active, lapsed, cancelled]
+                annual_premium:
+                  type: number
+                monthly_premium:
+                  type: number
+                policy_effective_date:
+                  type: string
+                  format: date
+                submission_date:
+                  type: string
+                  format: date
+                billing_cycle:
+                  type: string
+                lead_source:
+                  type: string
+      responses:
+        '201':
+          description: Deal created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Deal'
+
+  /api/deals/{deal_id}:
+    get:
+      tags:
+        - Deals
+      summary: Get deal details
+      parameters:
+        - name: deal_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Deal details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Deal'
+
+    put:
+      tags:
+        - Deals
+      summary: Update deal (full)
+      parameters:
+        - name: deal_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: Deal updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Deal'
+
+    patch:
+      tags:
+        - Deals
+      summary: Update deal (partial)
+      parameters:
+        - name: deal_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: Deal updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Deal'
+
+    delete:
+      tags:
+        - Deals
+      summary: Delete deal
+      parameters:
+        - name: deal_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Deal deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+
+  /api/deals/{deal_id}/status:
+    post:
+      tags:
+        - Deals
+      summary: Update deal status
+      parameters:
+        - name: deal_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - status
+              properties:
+                status:
+                  type: string
+                status_standardized:
+                  type: string
+                  enum: [pending, active, lapsed, cancelled]
+      responses:
+        '200':
+          description: Status updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Deal'
+
+  /api/deals/filter-options:
+    get:
+      tags:
+        - Deals
+      summary: Get filter options
+      description: Get available filter options for deals
+      responses:
+        '200':
+          description: Filter options
+          content:
+            application/json:
+              schema:
+                type: object
+
+  # ==================== Payouts ====================
+  /api/expected-payouts:
+    get:
+      tags:
+        - Payouts
+      summary: Get expected payouts
+      description: Calculate expected commission payouts
+      parameters:
+        - name: agent_id
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: date_from
+          in: query
+          schema:
+            type: string
+            format: date
+        - name: date_to
+          in: query
+          schema:
+            type: string
+            format: date
+      responses:
+        '200':
+          description: Expected payouts
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+
+  /api/expected-payouts/debt:
+    get:
+      tags:
+        - Payouts
+      summary: Get agent debt
+      description: Get agent debt information
+      parameters:
+        - name: agent_id
+          in: query
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Debt information
+          content:
+            application/json:
+              schema:
+                type: object
+
+  # ==================== SMS ====================
+  /api/sms/conversations:
+    get:
+      tags:
+        - SMS
+      summary: List SMS conversations
+      description: Get list of SMS conversations
+      responses:
+        '200':
+          description: List of conversations
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+
+  /api/sms/messages:
+    get:
+      tags:
+        - SMS
+      summary: Get messages
+      description: Get messages for a conversation
+      parameters:
+        - name: conversation_id
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: List of messages
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+
+    post:
+      tags:
+        - SMS
+      summary: Send SMS message
+      description: Send an SMS message
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - to
+                - message
+              properties:
+                to:
+                  type: string
+                message:
+                  type: string
+      responses:
+        '201':
+          description: Message sent
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /api/sms/bulk:
+    post:
+      tags:
+        - SMS
+      summary: Send bulk SMS
+      description: Send SMS to multiple recipients
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - recipients
+                - message
+              properties:
+                recipients:
+                  type: array
+                  items:
+                    type: string
+                message:
+                  type: string
+      responses:
+        '201':
+          description: Bulk messages sent
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /api/sms/templates:
+    get:
+      tags:
+        - SMS
+      summary: List SMS templates
+      description: Get list of SMS message templates
+      responses:
+        '200':
+          description: List of templates
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+
+    post:
+      tags:
+        - SMS
+      summary: Create SMS template
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '201':
+          description: Template created
+
+  # ==================== Clients ====================
+  /api/clients:
+    get:
+      tags:
+        - Clients
+      summary: List clients
+      description: Get paginated list of clients
+      parameters:
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+            maximum: 100
+        - name: search
+          in: query
+          schema:
+            type: string
+        - name: agent_id
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: view
+          in: query
+          schema:
+            type: string
+            enum: [self, downlines, all]
+            default: downlines
+      responses:
+        '200':
+          description: List of clients
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  clients:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Client'
+                  pagination:
+                    $ref: '#/components/schemas/Pagination'
+
+  /api/clients/{client_id}:
+    get:
+      tags:
+        - Clients
+      summary: Get client details
+      parameters:
+        - name: client_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Client details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Client'
+
+  # ==================== Analytics ====================
+  /api/analytics/split-view:
+    get:
+      tags:
+        - Analytics
+      summary: Get split view analytics
+      description: Get analytics data for split view visualization
+      responses:
+        '200':
+          description: Split view analytics
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /api/analytics/deals:
+    get:
+      tags:
+        - Analytics
+      summary: Get deals analytics
+      description: Get analytics data for deals
+      parameters:
+        - name: date_from
+          in: query
+          schema:
+            type: string
+            format: date
+        - name: date_to
+          in: query
+          schema:
+            type: string
+            format: date
+      responses:
+        '200':
+          description: Deals analytics
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /api/analytics/persistency:
+    get:
+      tags:
+        - Analytics
+      summary: Get persistency analytics
+      description: Get policy persistency analytics
+      responses:
+        '200':
+          description: Persistency analytics
+          content:
+            application/json:
+              schema:
+                type: object
+
+  # ==================== AI ====================
+  /api/ai/conversations:
+    get:
+      tags:
+        - AI
+      summary: List AI conversations
+      description: Get list of AI chat conversations
+      responses:
+        '200':
+          description: List of conversations
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+
+    post:
+      tags:
+        - AI
+      summary: Create AI conversation
+      description: Start a new AI chat conversation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '201':
+          description: Conversation created
+
+  /api/ai/conversations/{conversation_id}:
+    get:
+      tags:
+        - AI
+      summary: Get AI conversation
+      parameters:
+        - name: conversation_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Conversation details
+
+  /api/ai/conversations/{conversation_id}/messages:
+    get:
+      tags:
+        - AI
+      summary: Get AI conversation messages
+      parameters:
+        - name: conversation_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: List of messages
+
+    post:
+      tags:
+        - AI
+      summary: Send AI message
+      description: Send a message in AI conversation
+      parameters:
+        - name: conversation_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - message
+              properties:
+                message:
+                  type: string
+      responses:
+        '200':
+          description: AI response
+
+  /api/ai/chat:
+    post:
+      tags:
+        - AI
+      summary: Quick AI chat
+      description: Send a quick chat message without creating a conversation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - message
+              properties:
+                message:
+                  type: string
+      responses:
+        '200':
+          description: AI response
+
+  /api/ai/suggestions:
+    get:
+      tags:
+        - AI
+      summary: Get AI suggestions
+      description: Get AI-powered suggestions for actions
+      responses:
+        '200':
+          description: AI suggestions
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+
+  # ==================== Onboarding ====================
+  /api/onboarding/progress:
+    get:
+      tags:
+        - Onboarding
+      summary: Get onboarding progress
+      description: Get current user's onboarding progress
+      responses:
+        '200':
+          description: Onboarding progress
+          content:
+            application/json:
+              schema:
+                type: object
+
+    patch:
+      tags:
+        - Onboarding
+      summary: Update onboarding progress
+      description: Update onboarding step completion
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: Progress updated
+
+  /api/onboarding/nipr/status:
+    get:
+      tags:
+        - Onboarding
+      summary: Get NIPR verification status
+      responses:
+        '200':
+          description: NIPR status
+
+    post:
+      tags:
+        - Onboarding
+      summary: Start NIPR verification
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: Verification started
+
+  /api/onboarding/invitations:
+    get:
+      tags:
+        - Onboarding
+      summary: Get team invitations
+      responses:
+        '200':
+          description: List of invitations
+
+    post:
+      tags:
+        - Onboarding
+      summary: Add team invitation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '201':
+          description: Invitation added
+
+  /api/onboarding/complete:
+    post:
+      tags:
+        - Onboarding
+      summary: Complete onboarding
+      description: Mark onboarding as complete and activate user
+      responses:
+        '200':
+          description: Onboarding completed
+
+  # ==================== Search ====================
+  /api/search-agents:
+    get:
+      tags:
+        - Search
+      summary: Search agents
+      description: Search for agents by name or email
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Search results
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+
+  /api/search-agents/fuzzy:
+    get:
+      tags:
+        - Search
+      summary: Fuzzy search agents
+      description: Fuzzy search for agents
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Search results
+
+  /api/search-clients/fuzzy:
+    get:
+      tags:
+        - Search
+      summary: Fuzzy search clients
+      description: Fuzzy search for clients
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Search results
+
+  /api/search-policies:
+    get:
+      tags:
+        - Search
+      summary: Search policies
+      description: Search for policies by policy number
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Search results
+
+  # ==================== Ingest ====================
+  /api/ingest/enqueue-job:
+    post:
+      tags:
+        - Ingest
+      summary: Enqueue ingest job
+      description: Create a new data ingestion job
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '201':
+          description: Job enqueued
+
+  /api/ingest/sync-staging:
+    post:
+      tags:
+        - Ingest
+      summary: Sync staging data
+      description: Sync data from staging tables to production
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: Sync completed
+
+  # ==================== NIPR ====================
+  /api/nipr/acquire-job:
+    post:
+      tags:
+        - NIPR
+      summary: Acquire NIPR job
+      description: Acquire a NIPR verification job for processing
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: Job acquired
+
+  /api/nipr/complete-job:
+    post:
+      tags:
+        - NIPR
+      summary: Complete NIPR job
+      description: Mark NIPR job as complete
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: Job completed
+
+  /api/nipr/job/{job_id}:
+    get:
+      tags:
+        - NIPR
+      summary: Get NIPR job status
+      parameters:
+        - name: job_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Job status
+
+  # ==================== Messaging ====================
+  /api/messaging/billing-reminders:
+    get:
+      tags:
+        - Messaging
+      summary: Get billing reminders
+      description: Get scheduled billing reminder messages
+      responses:
+        '200':
+          description: Billing reminders
+
+  /api/messaging/birthdays:
+    get:
+      tags:
+        - Messaging
+      summary: Get birthday messages
+      description: Get scheduled birthday messages
+      responses:
+        '200':
+          description: Birthday messages
+
+  /api/messaging/lapse-reminders:
+    get:
+      tags:
+        - Messaging
+      summary: Get lapse reminders
+      description: Get scheduled lapse reminder messages
+      responses:
+        '200':
+          description: Lapse reminders
