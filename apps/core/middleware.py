@@ -114,21 +114,3 @@ class AgencyContextMiddleware:
             request.agency_id = None
 
         return self.get_response(request)
-
-
-class RateLimitMiddleware:
-    """
-    Simple rate limiting middleware using sliding window.
-
-    For production, consider using Redis-based rate limiting
-    or a dedicated service like Cloudflare Rate Limiting.
-    """
-
-    def __init__(self, get_response: Callable):
-        self.get_response = get_response
-        # In-memory store - use Redis in production
-        self._requests: dict = {}
-
-    def __call__(self, request):
-        # Skip rate limiting for now - implement with Redis in production
-        return self.get_response(request)

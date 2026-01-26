@@ -99,7 +99,7 @@ class User(models.Model):
     email = models.CharField(max_length=255, null=True, blank=True)
     first_name = models.CharField(max_length=255, null=True, blank=True)
     last_name = models.CharField(max_length=255, null=True, blank=True)
-    phone = models.CharField(max_length=50, null=True, blank=True)
+    phone_number = models.CharField(max_length=50, null=True, blank=True)
     agency = models.ForeignKey(
         Agency,
         on_delete=models.SET_NULL,
@@ -157,6 +157,11 @@ class User(models.Model):
     @property
     def full_name(self):
         return f"{self.first_name or ''} {self.last_name or ''}".strip() or self.email
+
+    @property
+    def is_administrator(self) -> bool:
+        """Check if user has administrator privileges."""
+        return self.is_admin or self.role == 'admin'
 
     # =========================================================================
     # Hierarchy Methods (P1-009)

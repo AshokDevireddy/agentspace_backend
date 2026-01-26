@@ -21,8 +21,8 @@ logger = logging.getLogger(__name__)
 TIER_LIMITS = {
     'free': {
         'max_agents': 5,
-        'max_deals_per_month': 50,
-        'max_sms_per_month': 100,
+        'max_deals_per_month': 10,
+        'max_sms_per_month': 0,  # Free tier gets no SMS
         'ai_chat_enabled': False,
         'advanced_analytics': False,
         'custom_branding': False,
@@ -48,6 +48,7 @@ TIER_LIMITS = {
         'max_deals_per_month': None,  # Unlimited
         'max_sms_per_month': None,  # Unlimited
         'ai_chat_enabled': True,
+        'ai_mode_admin_only': True,  # Expert tier feature
         'advanced_analytics': True,
         'custom_branding': True,
     },
@@ -91,7 +92,7 @@ class IsAdmin(permissions.BasePermission):
         user = getattr(request, 'user', None)
         if not isinstance(user, AuthenticatedUser):
             return False
-        return user.is_admin or user.role == 'admin'
+        return user.is_administrator
 
 
 class IsAdminOrSelf(permissions.BasePermission):
@@ -110,7 +111,7 @@ class IsAdminOrSelf(permissions.BasePermission):
 
     def has_object_permission(self, request, view, obj):
         user = request.user
-        if user.is_admin or user.role == 'admin':
+        if user.is_administrator:
             return True
 
         # Check if object belongs to user
@@ -185,7 +186,7 @@ def check_hierarchy_access(user: AuthenticatedUser, target_agent_id: UUID) -> bo
         return True
 
     # Admins can access anyone in their agency
-    if user.is_admin or user.role == 'admin':
+    if user.is_administrator:
         # Verify target is in same agency
         with connection.cursor() as cursor:
             cursor.execute("""
@@ -222,7 +223,7 @@ def get_visible_agent_ids(user: AuthenticatedUser, include_full_agency: bool = F
     """
     from django.db import connection
 
-    if include_full_agency and (user.is_admin or user.role == 'admin'):
+    if include_full_agency and user.is_administrator:
         # Admin sees all agents in agency
         with connection.cursor() as cursor:
             cursor.execute("""
@@ -359,7 +360,7 @@ class CanAccessConversation(permissions.BasePermission):
             return False
 
         # Admin can access any conversation in their agency
-        if user.is_admin or user.role == 'admin':
+        if user.is_administrator:
             return str(obj.agency_id) == str(user.agency_id)
 
         # Check if user is the conversation's agent

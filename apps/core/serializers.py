@@ -9,6 +9,7 @@ DRF Serializers for all core models following best practices:
 from decimal import Decimal
 from rest_framework import serializers
 
+from .utils import format_full_name
 from .models import (
     Agency,
     AIConversation,
@@ -155,7 +156,7 @@ class UserListSerializer(serializers.ModelSerializer):
             'first_name',
             'last_name',
             'full_name',
-            'phone',
+            'phone_number',
             'role',
             'is_admin',
             'status',
@@ -171,7 +172,7 @@ class UserListSerializer(serializers.ModelSerializer):
 
     def get_upline_name(self, obj):
         if obj.upline:
-            return f"{obj.upline.first_name or ''} {obj.upline.last_name or ''}".strip()
+            return format_full_name(obj.upline.first_name, obj.upline.last_name)
         return None
 
 
@@ -192,7 +193,7 @@ class UserDetailSerializer(serializers.ModelSerializer):
             'first_name',
             'last_name',
             'full_name',
-            'phone',
+            'phone_number',
             'agency',
             'role',
             'is_admin',
@@ -228,7 +229,7 @@ class UserCreateSerializer(serializers.ModelSerializer):
             'email',
             'first_name',
             'last_name',
-            'phone',
+            'phone_number',
             'agency',
             'role',
             'is_admin',
@@ -248,7 +249,7 @@ class UserUpdateSerializer(serializers.ModelSerializer):
         fields = [
             'first_name',
             'last_name',
-            'phone',
+            'phone_number',
             'role',
             'is_admin',
             'is_active',
@@ -399,7 +400,7 @@ class ClientSerializer(serializers.ModelSerializer):
             'last_name',
             'full_name',
             'email',
-            'phone',
+            'phone_number',
             'agency_id',
             'created_at',
             'updated_at',
@@ -407,7 +408,7 @@ class ClientSerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'created_at', 'updated_at']
 
     def get_full_name(self, obj):
-        return f"{obj.first_name or ''} {obj.last_name or ''}".strip()
+        return format_full_name(obj.first_name, obj.last_name)
 
 
 class ClientMinimalSerializer(serializers.ModelSerializer):
@@ -419,7 +420,7 @@ class ClientMinimalSerializer(serializers.ModelSerializer):
         fields = ['id', 'first_name', 'last_name', 'full_name', 'email', 'phone']
 
     def get_full_name(self, obj):
-        return f"{obj.first_name or ''} {obj.last_name or ''}".strip()
+        return format_full_name(obj.first_name, obj.last_name)
 
 
 class ClientCreateSerializer(serializers.ModelSerializer):
@@ -465,7 +466,7 @@ class DealListSerializer(serializers.ModelSerializer):
 
     def get_agent_name(self, obj):
         if obj.agent:
-            return f"{obj.agent.first_name or ''} {obj.agent.last_name or ''}".strip()
+            return format_full_name(obj.agent.first_name, obj.agent.last_name)
         return None
 
 
@@ -543,7 +544,7 @@ class BeneficiarySerializer(serializers.ModelSerializer):
         ]
 
     def get_full_name(self, obj):
-        return f"{obj.first_name or ''} {obj.last_name or ''}".strip()
+        return format_full_name(obj.first_name, obj.last_name)
 
 
 # =============================================================================
@@ -594,7 +595,7 @@ class DealHierarchySnapshotSerializer(serializers.ModelSerializer):
 
     def get_agent_name(self, obj):
         if obj.agent:
-            return f"{obj.agent.first_name or ''} {obj.agent.last_name or ''}".strip()
+            return format_full_name(obj.agent.first_name, obj.agent.last_name)
         return None
 
 
@@ -663,12 +664,12 @@ class ConversationSerializer(serializers.ModelSerializer):
 
     def get_agent_name(self, obj):
         if obj.agent:
-            return f"{obj.agent.first_name or ''} {obj.agent.last_name or ''}".strip()
+            return format_full_name(obj.agent.first_name, obj.agent.last_name)
         return None
 
     def get_client_name(self, obj):
         if obj.client:
-            return f"{obj.client.first_name or ''} {obj.client.last_name or ''}".strip()
+            return format_full_name(obj.client.first_name, obj.client.last_name)
         return None
 
 
@@ -695,7 +696,7 @@ class MessageSerializer(serializers.ModelSerializer):
 
     def get_sent_by_name(self, obj):
         if obj.sent_by:
-            return f"{obj.sent_by.first_name or ''} {obj.sent_by.last_name or ''}".strip()
+            return format_full_name(obj.sent_by.first_name, obj.sent_by.last_name)
         return None
 
 
@@ -732,12 +733,12 @@ class DraftMessageSerializer(serializers.ModelSerializer):
 
     def get_agent_name(self, obj):
         if obj.agent:
-            return f"{obj.agent.first_name or ''} {obj.agent.last_name or ''}".strip()
+            return format_full_name(obj.agent.first_name, obj.agent.last_name)
         return None
 
     def get_approved_by_name(self, obj):
         if obj.approved_by:
-            return f"{obj.approved_by.first_name or ''} {obj.approved_by.last_name or ''}".strip()
+            return format_full_name(obj.approved_by.first_name, obj.approved_by.last_name)
         return None
 
 

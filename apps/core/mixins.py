@@ -10,30 +10,7 @@ from rest_framework import status
 from rest_framework.response import Response
 
 from .authentication import get_user_context, AuthenticatedUser
-
-
-class APIError(Exception):
-    """Base exception for API errors with status codes."""
-
-    def __init__(self, message: str, status_code: int = 400, details: str = None):
-        self.message = message
-        self.status_code = status_code
-        self.details = details
-        super().__init__(message)
-
-
-class NotFoundError(APIError):
-    """Resource not found."""
-
-    def __init__(self, message: str = "Resource not found"):
-        super().__init__(message, status_code=404)
-
-
-class ValidationError(APIError):
-    """Validation failed."""
-
-    def __init__(self, message: str):
-        super().__init__(message, status_code=400)
+from .exceptions import APIException as APIError, NotFoundError, ValidationError
 
 
 class AuthenticatedAPIView:

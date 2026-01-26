@@ -42,6 +42,11 @@ class AuthenticatedUser:
     def is_active(self) -> bool:
         return self.status == 'active'
 
+    @property
+    def is_administrator(self) -> bool:
+        """Check if user has administrator privileges."""
+        return self.is_admin or self.role == 'admin'
+
 
 class SupabaseJWTAuthentication(authentication.BaseAuthentication):
     """

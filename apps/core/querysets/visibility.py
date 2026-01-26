@@ -36,7 +36,7 @@ class ViewModeQuerySetMixin:
         Returns:
             Filtered queryset
         """
-        is_admin = user.is_admin or user.role == 'admin'
+        is_admin = user.is_administrator
 
         if view_mode == 'self':
             # Only user's own records
@@ -75,7 +75,7 @@ class ViewModeQuerySetMixin:
         Returns:
             Filtered queryset
         """
-        is_admin = user.is_admin or user.role == 'admin'
+        is_admin = user.is_administrator
 
         if is_admin:
             return self.filter(agency_id=user.agency_id)

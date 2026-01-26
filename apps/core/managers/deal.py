@@ -6,7 +6,7 @@ from typing import Optional
 from uuid import UUID
 
 from django.db import models
-from django.db.models import Q, Sum, Count, F, Subquery, OuterRef
+from django.db.models import Q, Sum, Count, F
 from django.db.models.functions import Coalesce
 
 from apps.core.querysets import HierarchyQuerySetMixin, ViewModeQuerySetMixin

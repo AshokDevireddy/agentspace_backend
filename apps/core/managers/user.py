@@ -2,7 +2,7 @@
 User QuerySet and Manager for optimized user queries.
 """
 from django.db import models
-from django.db.models import Count, Prefetch, Q, Subquery, OuterRef
+from django.db.models import Count, Q
 
 from apps.core.querysets import HierarchyQuerySetMixin, ViewModeQuerySetMixin
 
