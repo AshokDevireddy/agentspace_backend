@@ -5,13 +5,12 @@ Complex queries for deal-related data retrieval.
 """
 import logging
 from datetime import date
-from typing import Optional
 from uuid import UUID
 
 from django.db import connection
 
-from apps.core.permissions import get_visible_agent_ids
 from apps.core.authentication import AuthenticatedUser
+from apps.core.permissions import get_visible_agent_ids
 
 logger = logging.getLogger(__name__)
 
@@ -48,22 +47,22 @@ def mask_phone_number(phone: str | None, can_view_full: bool = False) -> str | N
 def get_book_of_business(
     user: AuthenticatedUser,
     limit: int = 50,
-    cursor_policy_effective_date: Optional[date] = None,
-    cursor_id: Optional[UUID] = None,
-    carrier_id: Optional[UUID] = None,
-    product_id: Optional[UUID] = None,
-    agent_id: Optional[UUID] = None,
-    client_id: Optional[UUID] = None,
-    status: Optional[str] = None,
-    status_standardized: Optional[str] = None,
-    date_from: Optional[date] = None,
-    date_to: Optional[date] = None,
-    search_query: Optional[str] = None,
-    policy_number: Optional[str] = None,
-    billing_cycle: Optional[str] = None,
-    lead_source: Optional[str] = None,
-    view: Optional[str] = 'downlines',
-    effective_date_sort: Optional[str] = None,
+    cursor_policy_effective_date: date | None = None,
+    cursor_id: UUID | None = None,
+    carrier_id: UUID | None = None,
+    product_id: UUID | None = None,
+    agent_id: UUID | None = None,
+    client_id: UUID | None = None,
+    status: str | None = None,
+    status_standardized: str | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    search_query: str | None = None,
+    policy_number: str | None = None,
+    billing_cycle: str | None = None,
+    lead_source: str | None = None,
+    view: str | None = 'downlines',
+    effective_date_sort: str | None = None,
     include_full_agency: bool = False,
 ) -> dict:
     """
@@ -200,7 +199,7 @@ def get_book_of_business(
 
     # Fetch limit + 1 to determine if there are more records
     fetch_limit = limit + 1
-    params.append(fetch_limit)
+    params.append(str(fetch_limit))
 
     query = f"""
         SELECT
@@ -241,7 +240,7 @@ def get_book_of_business(
 
     try:
         with connection.cursor() as cursor:
-            cursor.execute(query, params)
+            cursor.execute(query, params)  # type: ignore[arg-type]
             columns = [col[0] for col in cursor.description]
             rows = cursor.fetchall()
 
@@ -253,7 +252,7 @@ def get_book_of_business(
         # Format results
         deals = []
         for row in rows:
-            deal = dict(zip(columns, row))
+            deal = dict(zip(columns, row, strict=False))
 
             # Phone masking: admins see all, users see own deals' phones (P2-027)
             deal_agent_id = deal['agent_id']
@@ -330,36 +329,36 @@ def get_static_filter_options(user: AuthenticatedUser) -> dict:
     Returns:
         Dictionary with filter options
     """
-    from apps.core.models import Deal, Carrier, Product, User
+    from apps.core.models import Carrier, Deal, Product, User
 
     is_admin = user.is_admin or user.role == 'admin'
 
     try:
         # Get carriers that have deals in this agency
         carrier_ids = (
-            Deal.objects.filter(agency_id=user.agency_id, carrier_id__isnull=False)
+            Deal.objects.filter(agency_id=user.agency_id, carrier_id__isnull=False)  # type: ignore[attr-defined]
             .values_list('carrier_id', flat=True)
             .distinct()
         )
         carriers = [
             {'id': str(c.id), 'name': c.name}
-            for c in Carrier.objects.filter(id__in=carrier_ids).order_by('name')
+            for c in Carrier.objects.filter(id__in=carrier_ids).order_by('name')  # type: ignore[attr-defined]
         ]
 
         # Get products that have deals in this agency (with carrier info)
         product_ids = (
-            Deal.objects.filter(agency_id=user.agency_id, product_id__isnull=False)
+            Deal.objects.filter(agency_id=user.agency_id, product_id__isnull=False)  # type: ignore[attr-defined]
             .values_list('product_id', flat=True)
             .distinct()
         )
         products = [
             {'id': str(p.id), 'name': p.name, 'carrier_name': p.carrier.name if p.carrier else None}
-            for p in Product.objects.filter(id__in=product_ids).select_related('carrier').order_by('name')
+            for p in Product.objects.filter(id__in=product_ids).select_related('carrier').order_by('name')  # type: ignore[attr-defined]
         ]
 
         # Get distinct statuses
         statuses = list(
-            Deal.objects.filter(agency_id=user.agency_id, status__isnull=False)
+            Deal.objects.filter(agency_id=user.agency_id, status__isnull=False)  # type: ignore[attr-defined]
             .values_list('status', flat=True)
             .distinct()
             .order_by('status')
@@ -367,7 +366,7 @@ def get_static_filter_options(user: AuthenticatedUser) -> dict:
 
         # Get distinct standardized statuses
         statuses_standardized = list(
-            Deal.objects.filter(agency_id=user.agency_id, status_standardized__isnull=False)
+            Deal.objects.filter(agency_id=user.agency_id, status_standardized__isnull=False)  # type: ignore[attr-defined]
             .values_list('status_standardized', flat=True)
             .distinct()
             .order_by('status_standardized')
@@ -378,7 +377,7 @@ def get_static_filter_options(user: AuthenticatedUser) -> dict:
         if visible_ids:
             # Get agent IDs that have deals in this agency and are visible
             agent_ids_with_deals = (
-                Deal.objects.filter(
+                Deal.objects.filter(  # type: ignore[attr-defined]
                     agency_id=user.agency_id,
                     agent_id__in=visible_ids
                 )
@@ -391,7 +390,7 @@ def get_static_filter_options(user: AuthenticatedUser) -> dict:
                     'name': f"{u.first_name or ''} {u.last_name or ''}".strip() or u.email,
                     'email': u.email,
                 }
-                for u in User.objects.filter(id__in=agent_ids_with_deals).order_by('first_name', 'last_name')
+                for u in User.objects.filter(id__in=agent_ids_with_deals).order_by('first_name', 'last_name')  # type: ignore[attr-defined]
             ]
         else:
             agents = []
@@ -406,4 +405,120 @@ def get_static_filter_options(user: AuthenticatedUser) -> dict:
 
     except Exception as e:
         logger.error(f'Error getting filter options: {e}')
+        raise
+
+
+def get_post_deal_form_data(user: AuthenticatedUser) -> dict:
+    """
+    Get form data for the Post A Deal page.
+
+    Returns carriers, products, agents, and lead sources for the form.
+
+    Args:
+        user: The authenticated user
+
+    Returns:
+        Dictionary with form data options
+    """
+    from apps.core.models import Carrier, Product, User
+
+    is_admin = user.is_admin or user.role == 'admin'
+
+    try:
+        # Get all carriers for this agency
+        carriers = [
+            {'id': str(c.id), 'name': c.name}
+            for c in Carrier.objects.filter(agency_id=user.agency_id, is_active=True).order_by('name')  # type: ignore[attr-defined]
+        ]
+
+        # Get all products with carrier info
+        products = [
+            {
+                'id': str(p.id),
+                'name': p.name,
+                'carrier_id': str(p.carrier_id) if p.carrier_id else None,
+                'carrier_name': p.carrier.name if p.carrier else None,
+            }
+            for p in (
+                Product.objects.filter(agency_id=user.agency_id, is_active=True)  # type: ignore[attr-defined]
+                .select_related('carrier')
+                .order_by('carrier__name', 'name')
+            )
+        ]
+
+        # Get visible agents for the dropdown
+        visible_ids = get_visible_agent_ids(user, include_full_agency=is_admin)
+        if visible_ids:
+            agents = [
+                {
+                    'id': str(u.id),
+                    'name': f"{u.first_name or ''} {u.last_name or ''}".strip() or u.email,
+                    'email': u.email,
+                }
+                for u in User.objects.filter(id__in=visible_ids, is_active=True).order_by('first_name', 'last_name')  # type: ignore[attr-defined]
+            ]
+        else:
+            agents = []
+
+        # Lead source options (common values)
+        lead_sources = [
+            'Referral',
+            'Website',
+            'Social Media',
+            'Cold Call',
+            'Walk-in',
+            'Other',
+        ]
+
+        return {
+            'carriers': carriers,
+            'products': products,
+            'agents': agents,
+            'lead_sources': lead_sources,
+            'user': {
+                'id': str(user.id),
+                'is_admin': is_admin,
+            },
+        }
+
+    except Exception as e:
+        logger.error(f'Error getting post deal form data: {e}')
+        raise
+
+
+def get_products_by_carrier(user: AuthenticatedUser, carrier_id: UUID) -> list[dict]:
+    """
+    Get products for a specific carrier.
+
+    Args:
+        user: The authenticated user
+        carrier_id: The carrier UUID
+
+    Returns:
+        List of product dictionaries
+    """
+    from apps.core.models import Product
+
+    try:
+        products = (
+            Product.objects  # type: ignore[attr-defined]
+            .filter(
+                agency_id=user.agency_id,
+                carrier_id=carrier_id,
+                is_active=True,
+            )
+            .order_by('name')
+        )
+
+        return [
+            {
+                'id': str(p.id),
+                'name': p.name,
+                'carrier_id': str(p.carrier_id) if p.carrier_id else None,
+            }
+            for p in products
+        ]
+
+    except Exception as e:
+        logger.error(f'Error getting products by carrier: {e}')
         raise

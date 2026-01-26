@@ -13,6 +13,11 @@ urlpatterns = [
     path('downlines', views.AgentDownlinesView.as_view(), name='agent_downlines'),
     path('without-positions', views.AgentsWithoutPositionsView.as_view(), name='agents_without_positions'),
     path('assign-position', views.AssignPositionView.as_view(), name='assign_position'),
+    path(
+        'check-positions',
+        views.CheckCurrentUserUplinePositionsView.as_view(),
+        name='check_current_user_upline_positions',
+    ),
 
     # Agent-specific endpoints (P1-007, P1-008)
     path('<str:agent_id>', views.AgentDetailView.as_view(), name='agent_detail'),

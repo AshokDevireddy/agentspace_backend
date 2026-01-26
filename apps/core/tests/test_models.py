@@ -4,18 +4,28 @@ Model Unit Tests (P1-020)
 Tests for core Django models including hierarchy methods.
 """
 import uuid
-from unittest.mock import patch, MagicMock
+
+# Import for proper Deal model setup
+from unittest.mock import MagicMock, patch
 
 from django.test import TestCase
 
 from apps.core.models import (
-    Agency, User, Position, Carrier, Product, Client, Deal,
-    PositionProductCommission, StatusMapping, Conversation, Message,
-    DraftMessage, AIConversation, AIMessage, FeatureFlag,
+    Agency,
+    AIConversation,
+    AIMessage,
+    Carrier,
+    Client,
+    Conversation,
+    Deal,
+    DraftMessage,
+    FeatureFlag,
+    Message,
+    Position,
+    Product,
+    StatusMapping,
+    User,
 )
-
-# Import for proper Deal model setup
-from decimal import Decimal
 
 
 class AgencyModelTests(TestCase):

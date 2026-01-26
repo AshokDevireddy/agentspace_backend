@@ -4,7 +4,6 @@ Permission Classes for AgentSpace Backend
 Provides multi-tenancy and role-based access control.
 """
 import logging
-from typing import Optional
 from uuid import UUID
 
 from rest_framework import permissions
@@ -63,10 +62,8 @@ class IsAuthenticated(permissions.BasePermission):
 
     def has_permission(self, request, view):
         user = getattr(request, 'user', None)
-        if not isinstance(user, AuthenticatedUser):
-            return False
         # Allow any authenticated user (status checking is separate)
-        return True
+        return isinstance(user, AuthenticatedUser)
 
 
 class IsActiveUser(permissions.BasePermission):
@@ -105,9 +102,7 @@ class IsAdminOrSelf(permissions.BasePermission):
 
     def has_permission(self, request, view):
         user = getattr(request, 'user', None)
-        if not isinstance(user, AuthenticatedUser):
-            return False
-        return True
+        return isinstance(user, AuthenticatedUser)
 
     def has_object_permission(self, request, view, obj):
         user = request.user
@@ -179,7 +174,7 @@ def check_hierarchy_access(user: AuthenticatedUser, target_agent_id: UUID) -> bo
     Returns:
         bool: True if access is allowed
     """
-    from django.db import connection
+    from apps.core.hierarchy import is_in_agency, is_in_downline
 
     # User can always access themselves
     if str(user.id) == str(target_agent_id):
@@ -187,27 +182,10 @@ def check_hierarchy_access(user: AuthenticatedUser, target_agent_id: UUID) -> bo
 
     # Admins can access anyone in their agency
     if user.is_administrator:
-        # Verify target is in same agency
-        with connection.cursor() as cursor:
-            cursor.execute("""
-                SELECT 1 FROM public.users
-                WHERE id = %s AND agency_id = %s
-                LIMIT 1
-            """, [str(target_agent_id), str(user.agency_id)])
-            return cursor.fetchone() is not None
+        return is_in_agency(target_agent_id, user.agency_id)
 
-    # Check if target is in user's downline using recursive CTE
-    with connection.cursor() as cursor:
-        cursor.execute("""
-            WITH RECURSIVE downline AS (
-                SELECT id FROM public.users WHERE id = %s
-                UNION ALL
-                SELECT u.id FROM public.users u
-                JOIN downline d ON u.upline_id = d.id
-            )
-            SELECT 1 FROM downline WHERE id = %s LIMIT 1
-        """, [str(user.id), str(target_agent_id)])
-        return cursor.fetchone() is not None
+    # Check if target is in user's downline
+    return is_in_downline(user.id, target_agent_id, user.agency_id)
 
 
 def get_visible_agent_ids(user: AuthenticatedUser, include_full_agency: bool = False) -> list[UUID]:
@@ -221,30 +199,14 @@ def get_visible_agent_ids(user: AuthenticatedUser, include_full_agency: bool = F
     Returns:
         List of agent UUIDs the user can access
     """
-    from django.db import connection
+    from apps.core.hierarchy import get_all_agency_agent_ids, get_downline_ids
 
     if include_full_agency and user.is_administrator:
         # Admin sees all agents in agency
-        with connection.cursor() as cursor:
-            cursor.execute("""
-                SELECT id FROM public.users
-                WHERE agency_id = %s AND role != 'client'
-            """, [str(user.agency_id)])
-            return [row[0] for row in cursor.fetchall()]
+        return get_all_agency_agent_ids(user.agency_id, exclude_clients=True)
 
     # Regular user sees themselves and their downline
-    with connection.cursor() as cursor:
-        cursor.execute("""
-            WITH RECURSIVE downline AS (
-                SELECT id FROM public.users WHERE id = %s
-                UNION ALL
-                SELECT u.id FROM public.users u
-                JOIN downline d ON u.upline_id = d.id
-                WHERE u.agency_id = %s
-            )
-            SELECT id FROM downline
-        """, [str(user.id), str(user.agency_id)])
-        return [row[0] for row in cursor.fetchall()]
+    return get_downline_ids(user.id, user.agency_id, include_self=True)
 
 
 # =============================================================================
@@ -280,9 +242,7 @@ class IsAdminOrSelfOrDownline(permissions.BasePermission):
 
     def has_permission(self, request, view):
         user = getattr(request, 'user', None)
-        if not isinstance(user, AuthenticatedUser):
-            return False
-        return True
+        return isinstance(user, AuthenticatedUser)
 
     def has_object_permission(self, request, view, obj):
         user = request.user
@@ -376,7 +336,10 @@ class CanAccessConversation(permissions.BasePermission):
 
 class HasUnlimitedSMS(permissions.BasePermission):
     """
-    Check if user has unlimited SMS based on subscription tier.
+    Check if user has SMS access based on subscription tier and usage.
+
+    Note: This permission checks if the user CAN send SMS, not if they have unlimited.
+    The actual limit enforcement happens in the service layer during send operations.
     """
     message = 'SMS limit reached. Upgrade for unlimited messaging.'
 
@@ -387,14 +350,27 @@ class HasUnlimitedSMS(permissions.BasePermission):
 
         user_tier = user.subscription_tier or 'free'
         tier_config = TIER_LIMITS.get(user_tier, TIER_LIMITS['free'])
+        max_sms = tier_config.get('max_sms_per_month', 0)
 
-        # Expert tier has unlimited
-        if tier_config.get('max_sms_per_month') is None:
+        # Unlimited SMS (None means unlimited)
+        if max_sms is None:
             return True
 
-        # For limited tiers, would need to check usage count
-        # This is a simplified check - real implementation would query usage
-        return True  # Allow for now, actual limit check in service layer
+        # No SMS allowed for this tier
+        if max_sms == 0:
+            self.message = 'SMS not available on your plan. Upgrade to access messaging.'
+            return False
+
+        # Check current billing cycle usage
+        # Note: messages_sent_count tracks current billing cycle usage
+        # and should be reset at the start of each billing cycle
+        current_usage = user.messages_sent_count or 0
+
+        if current_usage >= max_sms:
+            self.message = f'Monthly SMS limit of {max_sms} reached. Upgrade for more messages.'
+            return False
+
+        return True
 
 
 def get_tier_limits(tier: str) -> dict:
@@ -407,7 +383,10 @@ def get_tier_limits(tier: str) -> dict:
     Returns:
         Dictionary of tier limits
     """
-    return TIER_LIMITS.get(tier, TIER_LIMITS['free']).copy()
+    tier_config = TIER_LIMITS.get(tier, TIER_LIMITS['free'])
+    if tier_config is None:
+        tier_config = TIER_LIMITS['free']
+    return tier_config.copy()  # type: ignore[attr-defined]  # TIER_LIMITS values are dicts
 
 
 def check_feature_access(user: AuthenticatedUser, feature: str) -> bool:
@@ -423,4 +402,6 @@ def check_feature_access(user: AuthenticatedUser, feature: str) -> bool:
     """
     user_tier = user.subscription_tier or 'free'
     tier_config = TIER_LIMITS.get(user_tier, TIER_LIMITS['free'])
-    return tier_config.get(feature, False)
+    if tier_config is None:
+        tier_config = TIER_LIMITS['free']
+    return tier_config.get(feature, False)  # type: ignore[attr-defined]  # TIER_LIMITS values are dicts

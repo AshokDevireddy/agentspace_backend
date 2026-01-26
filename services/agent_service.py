@@ -9,11 +9,10 @@ Priority: P0 - Core Operations, P0 - Hierarchy
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any
 from uuid import UUID
 
 from .base import BaseService, PaginationResult
-
 
 # ============================================================================
 # Data Transfer Objects (DTOs)
@@ -33,7 +32,7 @@ class AgentDownlineResult:
 class AgentUplineChainResult:
     """Result from get_agent_upline_chain."""
     agent_id: UUID
-    upline_id: Optional[UUID]
+    upline_id: UUID | None
     depth: int  # 0 = self, 1 = direct upline, etc.
 
 
@@ -51,16 +50,16 @@ class AgentTableRow:
     first_name: str
     last_name: str
     perm_level: str
-    upline_id: Optional[UUID]
-    upline_name: Optional[str]
+    upline_id: UUID | None
+    upline_name: str | None
     created_at: str
     status: str
     total_prod: float
     total_policies_sold: int
     downline_count: int
-    position_id: Optional[UUID]
-    position_name: Optional[str]
-    position_level: Optional[int]
+    position_id: UUID | None
+    position_name: str | None
+    position_level: int | None
     total_count: int  # For pagination
 
 
@@ -98,7 +97,7 @@ class AgentService(BaseService):
     # P0 - Hierarchy Functions
     # ========================================================================
 
-    def get_agent_downline(self, agent_id: UUID) -> List[AgentDownlineResult]:
+    def get_agent_downline(self, agent_id: UUID) -> list[AgentDownlineResult]:
         """
         Translated from Supabase RPC: get_agent_downline
 
@@ -130,9 +129,9 @@ class AgentService(BaseService):
         # SELECT d.id, d.first_name, d.last_name, d.email, d.depth as level
         # FROM downline d
         # ORDER BY d.depth, d.last_name, d.first_name;
-        pass
+        return []
 
-    def get_agent_upline_chain(self, agent_id: UUID) -> List[AgentUplineChainResult]:
+    def get_agent_upline_chain(self, agent_id: UUID) -> list[AgentUplineChainResult]:
         """
         Translated from Supabase RPC: get_agent_upline_chain
 
@@ -165,7 +164,7 @@ class AgentService(BaseService):
         # SELECT uc.agent_id, uc.upline_id, uc.depth
         # FROM upline_chain uc
         # ORDER BY uc.depth ASC;
-        pass
+        return []
 
     # ========================================================================
     # P0 - Core Operations
@@ -174,7 +173,7 @@ class AgentService(BaseService):
     def get_agent_options(
         self,
         include_full_agency: bool = False
-    ) -> List[AgentOption]:
+    ) -> list[AgentOption]:
         """
         Translated from Supabase RPC: get_agent_options
 
@@ -215,11 +214,11 @@ class AgentService(BaseService):
         # WHERE p_include_full_agency
         #    OR EXISTS (SELECT 1 FROM downline d WHERE d.id = a.id)
         # ORDER BY a.last_name, a.first_name;
-        pass
+        return []
 
     def get_agents_table(
         self,
-        filters: Optional[Dict[str, Any]] = None,
+        filters: dict[str, Any] | None = None,
         include_full_agency: bool = False,
         limit: int = 50,
         offset: int = 0
@@ -267,7 +266,7 @@ class AgentService(BaseService):
         # 7. downline_relationships - Build relationship graph
         # 8. filtered - Apply all filters
         # 9. Final SELECT with JOINs for upline_name, position, downline_count
-        pass
+        return PaginationResult(items=[], total_count=0, has_more=False)
 
     # ========================================================================
     # P0 - Commission/Money Functions
@@ -275,10 +274,10 @@ class AgentService(BaseService):
 
     def get_agents_debt_production(
         self,
-        agent_ids: List[UUID],
+        agent_ids: list[UUID],
         start_date: str,
         end_date: str
-    ) -> List[AgentDebtProductionResult]:
+    ) -> list[AgentDebtProductionResult]:
         """
         Translated from Supabase RPC: get_agents_debt_production
 
@@ -314,9 +313,9 @@ class AgentService(BaseService):
         # 4. team_prod_calc - Team production via deal_hierarchy_snapshot
         # 5. hierarchy_metrics - Aggregate downline metrics
         # 6. Final SELECT combining all calculations
-        pass
+        return []
 
-    def get_agent_debt(self, agent_id: UUID) -> Dict[str, Any]:
+    def get_agent_debt(self, agent_id: UUID) -> dict[str, Any]:
         """
         Translated from Supabase RPC: get_agent_debt
 
@@ -374,7 +373,11 @@ class AgentService(BaseService):
         # final_debt AS (
         #   -- Calculate actual_debt based on early/late lapse rules
         # )
-        pass
+        return {
+            'total_debt': 0,
+            'lapsed_deals_count': 0,
+            'debt_breakdown': []
+        }
 
 
 # ============================================================================

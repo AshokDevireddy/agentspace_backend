@@ -6,16 +6,15 @@ Translates Supabase RPC functions to Django queries.
 
 Uses django-cte 2.0 for recursive CTE support where needed.
 """
-from typing import Any, Dict, List, Optional
+from typing import Any
 from uuid import UUID
 
 from django.db import connection
-from django.db.models import F, Value, IntegerField, CharField
-from django.db.models.functions import Concat
+from django.db.models import F, IntegerField, Value
 from django_cte import With
 
 
-def get_agent_downline(agent_id: UUID) -> List[dict]:
+def get_agent_downline(agent_id: UUID) -> list[dict]:
     """
     Get all agents in the downline hierarchy of a given agent.
     Translated from Supabase RPC: get_agent_downline
@@ -33,7 +32,7 @@ def get_agent_downline(agent_id: UUID) -> List[dict]:
     def make_downline_cte(cte):
         # Anchor: the agent themselves at depth 0
         anchor = (
-            User.objects.filter(id=agent_id)
+            User.objects.filter(id=agent_id)  # type: ignore[attr-defined]
             .annotate(depth=Value(0, output_field=IntegerField()))
             .values('id', 'first_name', 'last_name', 'email', 'depth')
         )
@@ -70,7 +69,7 @@ def get_agent_downline(agent_id: UUID) -> List[dict]:
     ]
 
 
-def get_agent_upline_chain(agent_id: UUID) -> List[dict]:
+def get_agent_upline_chain(agent_id: UUID) -> list[dict]:
     """
     Get the complete upline chain from an agent to the top of hierarchy.
     Translated from Supabase RPC: get_agent_upline_chain
@@ -88,7 +87,7 @@ def get_agent_upline_chain(agent_id: UUID) -> List[dict]:
     def make_upline_cte(cte):
         # Anchor: the agent themselves
         anchor = (
-            User.objects.filter(id=agent_id)
+            User.objects.filter(id=agent_id)  # type: ignore[attr-defined]
             .annotate(depth=Value(0, output_field=IntegerField()))
             .values('id', 'upline_id', 'depth')
         )
@@ -121,7 +120,7 @@ def get_agent_upline_chain(agent_id: UUID) -> List[dict]:
     ]
 
 
-def get_agent_options(user_id: UUID, include_full_agency: bool = False) -> List[dict]:
+def get_agent_options(user_id: UUID, include_full_agency: bool = False) -> list[dict]:
     """
     Get agent options for dropdown/select components.
     Translated from Supabase RPC: get_agent_options
@@ -139,13 +138,13 @@ def get_agent_options(user_id: UUID, include_full_agency: bool = False) -> List[
 
     if include_full_agency:
         # Get user's agency first
-        user = User.objects.filter(id=user_id).values('agency_id').first()
+        user = User.objects.filter(id=user_id).values('agency_id').first()  # type: ignore[attr-defined]
         if not user:
             return []
 
         # Get all active agents in the agency using ORM
         agents = (
-            User.objects.filter(
+            User.objects.filter(  # type: ignore[attr-defined]
                 agency_id=user['agency_id'],
                 is_active=True
             )
@@ -164,7 +163,7 @@ def get_agent_options(user_id: UUID, include_full_agency: bool = False) -> List[
         # Use django-cte for recursive downline
         def make_downline_cte(cte):
             anchor = (
-                User.objects.filter(id=user_id)
+                User.objects.filter(id=user_id)  # type: ignore[attr-defined]
                 .values('id', 'first_name', 'last_name')
             )
 
@@ -192,7 +191,7 @@ def get_agent_options(user_id: UUID, include_full_agency: bool = False) -> List[
         ]
 
 
-def get_agents_hierarchy_nodes(user_id: UUID, include_full_agency: bool = False) -> List[dict]:
+def get_agents_hierarchy_nodes(user_id: UUID, include_full_agency: bool = False) -> list[dict]:
     """
     Get hierarchy nodes for building tree view.
     Translated from Supabase RPC: get_agents_hierarchy_nodes
@@ -210,13 +209,13 @@ def get_agents_hierarchy_nodes(user_id: UUID, include_full_agency: bool = False)
 
     if include_full_agency:
         # Get user's agency
-        user = User.objects.filter(id=user_id).values('agency_id').first()
+        user = User.objects.filter(id=user_id).values('agency_id').first()  # type: ignore[attr-defined]
         if not user:
             return []
 
         # Get all active agents with position info using ORM
         agents = (
-            User.objects.filter(
+            User.objects.filter(  # type: ignore[attr-defined]
                 agency_id=user['agency_id'],
                 is_active=True
             )
@@ -241,7 +240,7 @@ def get_agents_hierarchy_nodes(user_id: UUID, include_full_agency: bool = False)
     else:
         # Use django-cte for recursive downline, then join with full user data
         def make_downline_cte(cte):
-            anchor = User.objects.filter(id=user_id).values('id')
+            anchor = User.objects.filter(id=user_id).values('id')  # type: ignore[attr-defined]
             recursive = cte.join(User, upline_id=cte.col.id).values('id')
             return anchor.union(recursive, all=True)
 
@@ -256,7 +255,7 @@ def get_agents_hierarchy_nodes(user_id: UUID, include_full_agency: bool = False)
 
         # Fetch full user data with positions using ORM
         agents = (
-            User.objects.filter(id__in=downline_ids, is_active=True)
+            User.objects.filter(id__in=downline_ids, is_active=True)  # type: ignore[attr-defined]
             .exclude(role='client')
             .select_related('position')
             .order_by('last_name', 'first_name')
@@ -291,11 +290,11 @@ ALLOWED_AGENT_TABLE_FILTER_KEYS = frozenset({
 
 def get_agents_table(
     user_id: UUID,
-    filters: Optional[Dict[str, Any]] = None,
+    filters: dict[str, Any] | None = None,
     include_full_agency: bool = False,
     limit: int = 50,
     offset: int = 0,
-) -> List[dict]:
+) -> list[dict]:
     """
     Get paginated agent table data with filtering.
     Translated from Supabase RPC: get_agents_table
@@ -326,9 +325,9 @@ def get_agents_table(
     # Extract filter values
     status_filter = filters.get('status')
     agent_name = filters.get('agent_name')
-    in_upline = filters.get('in_upline')
+    filters.get('in_upline')
     direct_upline = filters.get('direct_upline')
-    in_downline = filters.get('in_downline')
+    filters.get('in_downline')
     direct_downline = filters.get('direct_downline')
     position_id = filters.get('position_id')
 
@@ -385,7 +384,10 @@ def get_agents_table(
 
         # Agent name filter (search by name)
         if agent_name and agent_name != 'all':
-            where_clauses.append("(LOWER(u.first_name) LIKE %s OR LOWER(u.last_name) LIKE %s OR LOWER(CONCAT(u.first_name, ' ', u.last_name)) LIKE %s)")
+            where_clauses.append(
+                "(LOWER(u.first_name) LIKE %s OR LOWER(u.last_name) LIKE %s OR "
+                "LOWER(CONCAT(u.first_name, ' ', u.last_name)) LIKE %s)"
+            )
             pattern = f'%{agent_name.lower()}%'
             params.extend([pattern, pattern, pattern])
 
@@ -422,7 +424,7 @@ def get_agents_table(
                 u.first_name,
                 u.last_name,
                 u.email,
-                u.phone as phone_number,
+                u.phone_number as phone_number,
                 u.status,
                 u.perm_level,
                 u.position_id,
@@ -440,14 +442,14 @@ def get_agents_table(
             ORDER BY u.last_name, u.first_name
             LIMIT %s OFFSET %s
         """
-        params.extend([limit, offset])
+        params.extend([str(limit), str(offset)])
 
         cursor.execute(query, params)
         columns = [col[0] for col in cursor.description]
-        return [dict(zip(columns, row)) for row in cursor.fetchall()]
+        return [dict(zip(columns, row, strict=False)) for row in cursor.fetchall()]
 
 
-def get_agents_without_positions(user_id: UUID) -> List[dict]:
+def get_agents_without_positions(user_id: UUID) -> list[dict]:
     """
     Get agents who don't have a position assigned.
     Translated from Supabase RPC: get_agents_without_positions
@@ -463,7 +465,7 @@ def get_agents_without_positions(user_id: UUID) -> List[dict]:
     from apps.core.models import User
 
     # Get user info to determine visibility
-    user = User.objects.filter(id=user_id).values(
+    user = User.objects.filter(id=user_id).values(  # type: ignore[attr-defined]
         'id', 'agency_id', 'is_admin', 'perm_level', 'role'
     ).first()
 
@@ -475,7 +477,7 @@ def get_agents_without_positions(user_id: UUID) -> List[dict]:
     if is_admin:
         # Admin sees all agency agents without positions
         agents = (
-            User.objects.filter(
+            User.objects.filter(  # type: ignore[attr-defined]
                 agency_id=user['agency_id'],
                 position_id__isnull=True,
                 is_active=True
@@ -487,7 +489,7 @@ def get_agents_without_positions(user_id: UUID) -> List[dict]:
     else:
         # Use django-cte to get downline IDs
         def make_downline_cte(cte):
-            anchor = User.objects.filter(id=user_id).values('id')
+            anchor = User.objects.filter(id=user_id).values('id')  # type: ignore[attr-defined]
             recursive = cte.join(User, upline_id=cte.col.id).values('id')
             return anchor.union(recursive, all=True)
 
@@ -500,7 +502,7 @@ def get_agents_without_positions(user_id: UUID) -> List[dict]:
 
         # Filter to agents without positions in downline
         agents = (
-            User.objects.filter(
+            User.objects.filter(  # type: ignore[attr-defined]
                 id__in=downline_ids,
                 position_id__isnull=True,
                 is_active=True
@@ -525,7 +527,7 @@ def get_agents_without_positions(user_id: UUID) -> List[dict]:
     ]
 
 
-def get_agent_downlines_with_details(agent_id: UUID) -> List[dict]:
+def get_agent_downlines_with_details(agent_id: UUID) -> list[dict]:
     """
     Get direct downlines with position details and metrics.
 
@@ -540,7 +542,7 @@ def get_agent_downlines_with_details(agent_id: UUID) -> List[dict]:
     from apps.core.models import User
 
     downlines = (
-        User.objects.filter(upline_id=agent_id, is_active=True)
+        User.objects.filter(upline_id=agent_id, is_active=True)  # type: ignore[attr-defined]
         .select_related('position')
         .order_by('-created_at')
     )
@@ -581,7 +583,7 @@ def check_agent_upline_positions(agent_id: UUID) -> dict:
     def make_upline_cte(cte):
         # Anchor: start with the given agent
         anchor = (
-            User.objects.filter(id=agent_id)
+            User.objects.filter(id=agent_id)  # type: ignore[attr-defined]
             .annotate(depth=Value(0, output_field=IntegerField()))
             .values('id', 'first_name', 'last_name', 'email', 'position_id', 'upline_id', 'depth')
         )
@@ -628,10 +630,10 @@ def check_agent_upline_positions(agent_id: UUID) -> dict:
 
 def get_agents_debt_production(
     user_id: UUID,
-    agent_ids: List[UUID],
+    agent_ids: list[UUID],
     start_date: str,
     end_date: str,
-) -> List[dict]:
+) -> list[dict]:
     """
     Calculate debt and production metrics for agents.
     Translated from Supabase RPC: get_agents_debt_production
@@ -758,10 +760,10 @@ def get_agents_debt_production(
             start_date, end_date,
         ])
         columns = [col[0] for col in cursor.description]
-        return [dict(zip(columns, row)) for row in cursor.fetchall()]
+        return [dict(zip(columns, row, strict=False)) for row in cursor.fetchall()]
 
 
-def get_agent_detail(agent_id: UUID, requesting_user_id: UUID) -> Optional[dict]:
+def get_agent_detail(agent_id: UUID, requesting_user_id: UUID) -> dict | None:
     """
     Get full agent details including profile, performance stats, and hierarchy info.
     Implements P1-007: Agent Detail Endpoint.
@@ -806,7 +808,7 @@ def get_agent_detail(agent_id: UUID, requesting_user_id: UUID) -> Optional[dict]
                 u.first_name,
                 u.last_name,
                 u.email,
-                u.phone,
+                u.phone_number,
                 u.status,
                 u.role,
                 u.perm_level,
@@ -841,7 +843,7 @@ def get_agent_detail(agent_id: UUID, requesting_user_id: UUID) -> Optional[dict]
             return None
 
         columns = [col[0] for col in cursor.description]
-        agent = dict(zip(columns, row))
+        agent = dict(zip(columns, row, strict=False))
 
         # Get performance metrics
         cursor.execute("""
@@ -858,7 +860,7 @@ def get_agent_detail(agent_id: UUID, requesting_user_id: UUID) -> Optional[dict]
 
         perf_row = cursor.fetchone()
         perf_columns = [col[0] for col in cursor.description]
-        performance = dict(zip(perf_columns, perf_row)) if perf_row else {}
+        performance = dict(zip(perf_columns, perf_row, strict=False)) if perf_row else {}
 
         # Get hierarchy depth
         cursor.execute("""
@@ -884,7 +886,7 @@ def get_agent_detail(agent_id: UUID, requesting_user_id: UUID) -> Optional[dict]
             'first_name': agent['first_name'],
             'last_name': agent['last_name'],
             'email': agent['email'],
-            'phone': agent['phone'],
+            'phone': agent['phone_number'],
             'status': agent['status'],
             'role': agent['role'],
             'perm_level': agent['perm_level'],
@@ -928,9 +930,9 @@ def get_agent_detail(agent_id: UUID, requesting_user_id: UUID) -> Optional[dict]
 
 def get_agent_downline_with_depth(
     agent_id: UUID,
-    max_depth: Optional[int] = None,
+    max_depth: int | None = None,
     include_self: bool = True,
-) -> List[dict]:
+) -> list[dict]:
     """
     Get all agents in the downline hierarchy with optional depth limit.
     Implements P1-008: Recursive Downline Endpoint.
@@ -954,7 +956,7 @@ def get_agent_downline_with_depth(
                     first_name,
                     last_name,
                     email,
-                    phone,
+                    phone_number,
                     status,
                     position_id,
                     upline_id,
@@ -970,7 +972,7 @@ def get_agent_downline_with_depth(
                     u.first_name,
                     u.last_name,
                     u.email,
-                    u.phone,
+                    u.phone_number,
                     u.status,
                     u.position_id,
                     u.upline_id,
@@ -984,7 +986,7 @@ def get_agent_downline_with_depth(
                 d.first_name,
                 d.last_name,
                 d.email,
-                d.phone,
+                d.phone_number,
                 d.status,
                 d.depth,
                 d.position_id,
@@ -1007,7 +1009,7 @@ def get_agent_downline_with_depth(
                 'first_name': row[columns.index('first_name')],
                 'last_name': row[columns.index('last_name')],
                 'email': row[columns.index('email')],
-                'phone': row[columns.index('phone')],
+                'phone': row[columns.index('phone_number')],
                 'status': row[columns.index('status')],
                 'depth': row[columns.index('depth')],
                 'position': {

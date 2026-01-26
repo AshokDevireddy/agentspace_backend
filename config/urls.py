@@ -8,12 +8,12 @@ from django.urls import include, path
 
 from apps.core.views import health_check
 from apps.search.urls import (
-    search_agents_urlpatterns,
-    search_clients_urlpatterns,
     search_agents_filter_urlpatterns,
-    search_policy_numbers_urlpatterns,
+    search_agents_urlpatterns,
     search_clients_fuzzy_urlpatterns,
+    search_clients_urlpatterns,
     search_policies_urlpatterns,
+    search_policy_numbers_urlpatterns,
 )
 
 urlpatterns = [
@@ -55,6 +55,9 @@ urlpatterns = [
 
     # Clients endpoints (P2-037)
     path('api/clients/', include('apps.clients.urls')),
+
+    # Agencies endpoints (configuration settings)
+    path('api/agencies/', include('apps.agencies.urls')),
 
     # Analytics endpoints
     path('api/analytics/', include('apps.analytics.urls')),

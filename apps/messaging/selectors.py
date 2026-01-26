@@ -10,10 +10,9 @@ Cron job queries for automated messaging translated from Supabase RPC functions:
 - get_policy_packet_checkup_deals -> get_policy_packet_checkup_deals()
 - get_quarterly_checkin_deals -> get_quarterly_checkin_deals()
 """
+import calendar
 import logging
 from datetime import date, timedelta
-from typing import Optional
-import calendar
 
 from django.db import connection
 
@@ -21,12 +20,12 @@ logger = logging.getLogger(__name__)
 
 
 def calculate_next_billing_date(
-    billing_day_of_month: Optional[int],
-    billing_weekday: Optional[int],
+    billing_day_of_month: int | None,
+    billing_weekday: int | None,
     billing_cycle: str,
     reference_date: date,
-    today: Optional[date] = None
-) -> Optional[date]:
+    today: date | None = None
+) -> date | None:
     """
     Calculate the next billing date based on billing pattern.
 
@@ -277,7 +276,7 @@ def get_billing_reminder_deals() -> list[dict]:
 
     result = []
     for row in rows:
-        row_dict = dict(zip(columns, row))
+        row_dict = dict(zip(columns, row, strict=False))
         result.append({
             'deal_id': str(row_dict['deal_id']),
             'agent_id': str(row_dict['agent_id']),
@@ -342,7 +341,7 @@ def get_birthday_message_deals() -> list[dict]:
 
     result = []
     for row in rows:
-        row_dict = dict(zip(columns, row))
+        row_dict = dict(zip(columns, row, strict=False))
         result.append({
             'deal_id': str(row_dict['deal_id']),
             'client_name': row_dict['client_name'],
@@ -404,7 +403,7 @@ def get_holiday_message_deals(holiday_name: str) -> list[dict]:
 
     result = []
     for row in rows:
-        row_dict = dict(zip(columns, row))
+        row_dict = dict(zip(columns, row, strict=False))
         result.append({
             'deal_id': str(row_dict['deal_id']),
             'client_name': row_dict['client_name'],
@@ -461,7 +460,7 @@ def get_lapse_reminder_deals() -> list[dict]:
 
     result = []
     for row in rows:
-        row_dict = dict(zip(columns, row))
+        row_dict = dict(zip(columns, row, strict=False))
         result.append({
             'deal_id': str(row_dict['deal_id']),
             'client_name': row_dict['client_name'],
@@ -517,7 +516,7 @@ def get_needs_more_info_deals() -> list[dict]:
 
     result = []
     for row in rows:
-        row_dict = dict(zip(columns, row))
+        row_dict = dict(zip(columns, row, strict=False))
         result.append({
             'deal_id': str(row_dict['deal_id']),
             'client_name': row_dict['client_name'],
@@ -574,7 +573,7 @@ def get_policy_packet_checkup_deals() -> list[dict]:
 
     result = []
     for row in rows:
-        row_dict = dict(zip(columns, row))
+        row_dict = dict(zip(columns, row, strict=False))
         result.append({
             'deal_id': str(row_dict['deal_id']),
             'client_name': row_dict['client_name'],
@@ -662,7 +661,7 @@ def get_quarterly_checkin_deals() -> list[dict]:
 
     result = []
     for row in rows:
-        row_dict = dict(zip(columns, row))
+        row_dict = dict(zip(columns, row, strict=False))
         result.append({
             'deal_id': str(row_dict['deal_id']),
             'client_name': row_dict['client_name'],

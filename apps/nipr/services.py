@@ -8,7 +8,6 @@ Job management functions for NIPR processing translated from Supabase RPC functi
 - release_stale_nipr_locks -> release_stale_locks()
 """
 import logging
-from typing import Optional
 from uuid import UUID
 
 from django.db import connection, transaction
@@ -16,7 +15,7 @@ from django.db import connection, transaction
 logger = logging.getLogger(__name__)
 
 
-def acquire_job() -> Optional[dict]:
+def acquire_job() -> dict | None:
     """
     Acquire the next pending NIPR job for processing.
     Translated from Supabase RPC: acquire_nipr_job
@@ -74,9 +73,9 @@ def acquire_job() -> Optional[dict]:
 def complete_job(
     job_id: UUID,
     success: bool,
-    files: Optional[list[str]] = None,
-    carriers: Optional[list[str]] = None,
-    error: Optional[str] = None,
+    files: list[str] | None = None,
+    carriers: list[str] | None = None,
+    error: str | None = None,
 ) -> bool:
     """
     Mark a NIPR job as completed or failed.
@@ -119,7 +118,7 @@ def complete_job(
 def update_job_progress(
     job_id: UUID,
     progress: int,
-    message: Optional[str] = None,
+    message: str | None = None,
 ) -> bool:
     """
     Update the progress of a running NIPR job.
@@ -173,7 +172,7 @@ def release_stale_locks() -> int:
         return cursor.rowcount
 
 
-def get_job_status(job_id: UUID) -> Optional[dict]:
+def get_job_status(job_id: UUID) -> dict | None:
     """
     Get the current status of a NIPR job.
 

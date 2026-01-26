@@ -11,11 +11,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
-from typing import Any, Dict, List, Optional
+from typing import Any
 from uuid import UUID
 
-from .base import BaseService, PaginationResult
-
+from .base import BaseService
 
 # ============================================================================
 # Data Transfer Objects (DTOs)
@@ -26,24 +25,24 @@ class BookOfBusinessRow:
     """Result from get_book_of_business."""
     id: UUID
     created_at: str
-    policy_number: Optional[str]
-    application_number: Optional[str]
+    policy_number: str | None
+    application_number: str | None
     client_name: str
-    client_phone: Optional[str]
-    policy_effective_date: Optional[date]
-    annual_premium: Optional[Decimal]
-    lead_source: Optional[str]
-    billing_cycle: Optional[str]
+    client_phone: str | None
+    policy_effective_date: date | None
+    annual_premium: Decimal | None
+    lead_source: str | None
+    billing_cycle: str | None
     status: str
     agent_id: UUID
     agent_first_name: str
     agent_last_name: str
     carrier_id: UUID
     carrier_display_name: str
-    product_id: Optional[UUID]
-    product_name: Optional[str]
-    status_standardized: Optional[str]
-    status_impact: Optional[str]  # 'positive', 'negative', 'neutral'
+    product_id: UUID | None
+    product_name: str | None
+    status_standardized: str | None
+    status_impact: str | None  # 'positive', 'negative', 'neutral'
 
 
 @dataclass
@@ -55,7 +54,7 @@ class ExpectedPayoutRow:
     carrier_id: UUID
     carrier_name: str
     deal_id: UUID
-    policy_number: Optional[str]
+    policy_number: str | None
     annual_premium: Decimal
     agent_commission_percentage: Decimal
     hierarchy_total_percentage: Decimal
@@ -82,7 +81,7 @@ class PositionInfo:
     position_id: UUID
     name: str
     level: int
-    description: Optional[str]
+    description: str | None
     is_active: bool
     created_at: str
 
@@ -109,11 +108,11 @@ class DealService(BaseService):
     def get_book_of_business(
         self,
         view: str = 'downlines',
-        filters: Optional[Dict[str, Any]] = None,
+        filters: dict[str, Any] | None = None,
         limit: int = 50,
-        cursor_created_at: Optional[str] = None,
-        cursor_id: Optional[UUID] = None
-    ) -> List[BookOfBusinessRow]:
+        cursor_created_at: str | None = None,
+        cursor_id: UUID | None = None
+    ) -> list[BookOfBusinessRow]:
         """
         Translated from Supabase RPC: get_book_of_business
 
@@ -157,7 +156,7 @@ class DealService(BaseService):
         #    - Calculate effective_sort_date for sorting
         # 8. Final SELECT with cursor pagination and dynamic ordering
         #    - Sort by effective_date_sort or default to created_at DESC
-        pass
+        return []
 
     # ========================================================================
     # P0 - Commission/Money Functions
@@ -168,7 +167,7 @@ class DealService(BaseService):
         agent_id: UUID,
         months_past: int = 6,
         months_future: int = 3
-    ) -> List[ExpectedPayoutRow]:
+    ) -> list[ExpectedPayoutRow]:
         """
         Translated from Supabase RPC: get_expected_payouts_for_agent
 
@@ -233,7 +232,7 @@ class DealService(BaseService):
         # JOIN status_mapping sm ON sm.carrier_id = c.id
         #   AND LOWER(sm.raw_status) = LOWER(rd.status)
         # WHERE sm.impact IN ('positive', 'neutral')
-        pass
+        return []
 
     # ========================================================================
     # Commission Structure Functions
@@ -241,8 +240,8 @@ class DealService(BaseService):
 
     def get_position_product_commissions(
         self,
-        carrier_id: Optional[UUID] = None
-    ) -> List[PositionProductCommission]:
+        carrier_id: UUID | None = None
+    ) -> list[PositionProductCommission]:
         """
         Translated from Supabase RPC: get_position_product_commissions
 
@@ -275,9 +274,9 @@ class DealService(BaseService):
         # WHERE u.id = p_user_id
         #   AND (p_carrier_id IS NULL OR prod.carrier_id = p_carrier_id)
         # ORDER BY pos.level DESC, prod.carrier_id, prod.name;
-        pass
+        return []
 
-    def get_positions_for_agency(self) -> List[PositionInfo]:
+    def get_positions_for_agency(self) -> list[PositionInfo]:
         """
         Translated from Supabase RPC: get_positions_for_agency
 
@@ -299,7 +298,7 @@ class DealService(BaseService):
         # JOIN users u ON u.agency_id = p.agency_id
         # WHERE u.id = p_user_id
         # ORDER BY p.level DESC, p.name;
-        pass
+        return []
 
 
 # ============================================================================

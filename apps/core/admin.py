@@ -5,7 +5,8 @@ Provides admin interface for viewing and managing data.
 All models are read-only by default (unmanaged tables).
 """
 from django.contrib import admin
-from .models import Agency, User, Position, Carrier, Product, Client, Deal
+
+from .models import Agency, Carrier, Client, Deal, Position, Product, User
 
 
 @admin.register(Agency)
@@ -29,7 +30,7 @@ class UserAdmin(admin.ModelAdmin):
 
     fieldsets = (
         ('Identity', {
-            'fields': ('id', 'auth_user_id', 'email', 'first_name', 'last_name', 'phone')
+            'fields': ('id', 'auth_user_id', 'email', 'first_name', 'last_name', 'phone_number')
         }),
         ('Organization', {
             'fields': ('agency', 'role', 'is_admin', 'status', 'perm_level', 'position', 'upline')

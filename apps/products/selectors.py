@@ -5,13 +5,12 @@ Query functions for product data following the selector pattern.
 
 Uses Django ORM with select_related for efficient queries.
 """
-from typing import List, Optional
 from uuid import UUID
 
 from apps.core.models import Product
 
 
-def get_products_for_carrier(carrier_id: UUID, agency_id: UUID) -> List[dict]:
+def get_products_for_carrier(carrier_id: UUID, agency_id: UUID) -> list[dict]:
     """
     Get all active products for a specific carrier and agency.
 
@@ -25,7 +24,7 @@ def get_products_for_carrier(carrier_id: UUID, agency_id: UUID) -> List[dict]:
         List of product dictionaries
     """
     products = (
-        Product.objects
+        Product.objects  # type: ignore[attr-defined]
         .filter(
             carrier_id=carrier_id,
             agency_id=agency_id,
@@ -47,7 +46,7 @@ def get_products_for_carrier(carrier_id: UUID, agency_id: UUID) -> List[dict]:
     ]
 
 
-def get_all_products_for_agency(agency_id: UUID) -> List[dict]:
+def get_all_products_for_agency(agency_id: UUID) -> list[dict]:
     """
     Get all active products for an agency with carrier information.
 
@@ -60,7 +59,7 @@ def get_all_products_for_agency(agency_id: UUID) -> List[dict]:
         List of product dictionaries with carrier name
     """
     products = (
-        Product.objects
+        Product.objects  # type: ignore[attr-defined]
         .filter(
             agency_id=agency_id,
             is_active=True,
@@ -84,7 +83,7 @@ def get_all_products_for_agency(agency_id: UUID) -> List[dict]:
     ]
 
 
-def get_product_by_id(product_id: UUID, agency_id: UUID) -> Optional[dict]:
+def get_product_by_id(product_id: UUID, agency_id: UUID) -> dict | None:
     """
     Get a single product by ID (agency-scoped).
 
@@ -98,7 +97,7 @@ def get_product_by_id(product_id: UUID, agency_id: UUID) -> Optional[dict]:
         Product dictionary or None if not found
     """
     product = (
-        Product.objects
+        Product.objects  # type: ignore[attr-defined]
         .filter(id=product_id, agency_id=agency_id)
         .select_related('carrier')
         .first()
@@ -119,7 +118,7 @@ def get_product_by_id(product_id: UUID, agency_id: UUID) -> Optional[dict]:
     }
 
 
-def get_products_for_dropdown(agency_id: UUID, carrier_id: Optional[UUID] = None) -> List[dict]:
+def get_products_for_dropdown(agency_id: UUID, carrier_id: UUID | None = None) -> list[dict]:
     """
     Get products for dropdown selection (lightweight query).
 
@@ -133,7 +132,7 @@ def get_products_for_dropdown(agency_id: UUID, carrier_id: Optional[UUID] = None
         List of product dictionaries with id, name, and carrier info
     """
     queryset = (
-        Product.objects
+        Product.objects  # type: ignore[attr-defined]
         .filter(agency_id=agency_id, is_active=True)
         .select_related('carrier')
     )

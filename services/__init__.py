@@ -13,12 +13,12 @@ Service Organization:
 - SearchService: Fuzzy search across agents, clients, policies
 """
 
-from .base import BaseService
 from .agent_service import AgentService
-from .deal_service import DealService
 from .analytics_service import AnalyticsService
-from .sms_service import SMSService
+from .base import BaseService
+from .deal_service import DealService
 from .search_service import SearchService
+from .sms_service import SMSService
 
 __all__ = [
     'BaseService',

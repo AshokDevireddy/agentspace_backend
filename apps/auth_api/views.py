@@ -4,8 +4,6 @@ Authentication API Views
 Implements auth endpoints that work with Supabase Auth.
 """
 import logging
-from typing import Optional
-from uuid import UUID
 
 import httpx
 from django.conf import settings
@@ -15,7 +13,7 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from apps.core.authentication import AuthenticatedUser, get_user_context
+from apps.core.authentication import get_user_context
 from apps.onboarding.services import create_onboarding_progress
 
 logger = logging.getLogger(__name__)
@@ -132,7 +130,7 @@ class LoginView(APIView):
             'user': user_data
         })
 
-    def _get_user_data(self, auth_user_id: str) -> Optional[dict]:
+    def _get_user_data(self, auth_user_id: str) -> dict | None:
         """Fetch user data from database."""
         try:
             with connection.cursor() as cursor:
@@ -548,7 +546,7 @@ class ForgotPasswordView(APIView):
             app_url = settings.APP_URL
 
             with httpx.Client() as client:
-                response = client.post(
+                _response = client.post(
                     f'{supabase_url}/auth/v1/recover',
                     json={
                         'email': email,

@@ -5,10 +5,9 @@ Provides methods for navigating and validating the agent hierarchy.
 Uses django-cte 2.0 for recursive CTEs.
 """
 import logging
-from typing import Optional
 from uuid import UUID
 
-from django.db.models import F, Value, IntegerField
+from django.db.models import IntegerField, Value
 from django_cte import With
 
 logger = logging.getLogger(__name__)
@@ -123,7 +122,7 @@ class HierarchyService:
 
         if include_full_agency and is_admin:
             return list(
-                User.objects
+                User.objects  # type: ignore[attr-defined]
                 .filter(agency_id=agency_id)
                 .exclude(role='client')
                 .values_list('id', flat=True)
@@ -223,7 +222,7 @@ class HierarchyService:
             return True
 
         if requesting_user_is_admin:
-            return User.objects.filter(
+            return User.objects.filter(  # type: ignore[attr-defined]
                 id=target_user_id,
                 agency_id=requesting_user_agency_id
             ).exists()
@@ -272,7 +271,7 @@ class HierarchyService:
         agent_id: UUID,
         new_upline_id: UUID,
         agency_id: UUID
-    ) -> tuple[bool, Optional[str]]:
+    ) -> tuple[bool, str | None]:
         """
         Validate that an upline assignment won't create a cycle.
         """
@@ -286,7 +285,7 @@ class HierarchyService:
         ):
             return False, "Cannot assign upline that is in agent's downline (would create cycle)"
 
-        if not User.objects.filter(id=new_upline_id, agency_id=agency_id).exists():
+        if not User.objects.filter(id=new_upline_id, agency_id=agency_id).exists():  # type: ignore[attr-defined]
             return False, "New upline not found in agency"
 
         return True, None

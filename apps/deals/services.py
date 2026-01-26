@@ -8,7 +8,7 @@ import logging
 import uuid
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Optional
+from typing import Any
 from uuid import UUID
 
 from django.db import connection, transaction
@@ -23,35 +23,35 @@ class DealCreateInput:
     """Input data for creating a deal."""
     agency_id: UUID
     agent_id: UUID
-    client_id: Optional[UUID] = None
-    carrier_id: Optional[UUID] = None
-    product_id: Optional[UUID] = None
-    policy_number: Optional[str] = None
-    status: Optional[str] = None
-    status_standardized: Optional[str] = None
-    annual_premium: Optional[Decimal] = None
-    monthly_premium: Optional[Decimal] = None
-    policy_effective_date: Optional[str] = None
-    submission_date: Optional[str] = None
-    billing_cycle: Optional[str] = None
-    lead_source: Optional[str] = None
+    client_id: UUID | None = None
+    carrier_id: UUID | None = None
+    product_id: UUID | None = None
+    policy_number: str | None = None
+    status: str | None = None
+    status_standardized: str | None = None
+    annual_premium: Decimal | None = None
+    monthly_premium: Decimal | None = None
+    policy_effective_date: str | None = None
+    submission_date: str | None = None
+    billing_cycle: str | None = None
+    lead_source: str | None = None
 
 
 @dataclass
 class DealUpdateInput:
     """Input data for updating a deal."""
-    client_id: Optional[UUID] = None
-    carrier_id: Optional[UUID] = None
-    product_id: Optional[UUID] = None
-    policy_number: Optional[str] = None
-    status: Optional[str] = None
-    status_standardized: Optional[str] = None
-    annual_premium: Optional[Decimal] = None
-    monthly_premium: Optional[Decimal] = None
-    policy_effective_date: Optional[str] = None
-    submission_date: Optional[str] = None
-    billing_cycle: Optional[str] = None
-    lead_source: Optional[str] = None
+    client_id: UUID | None = None
+    carrier_id: UUID | None = None
+    product_id: UUID | None = None
+    policy_number: str | None = None
+    status: str | None = None
+    status_standardized: str | None = None
+    annual_premium: Decimal | None = None
+    monthly_premium: Decimal | None = None
+    policy_effective_date: str | None = None
+    submission_date: str | None = None
+    billing_cycle: str | None = None
+    lead_source: str | None = None
 
 
 def create_deal(
@@ -74,10 +74,9 @@ def create_deal(
     """
     deal_id = uuid.uuid4()
 
-    with transaction.atomic():
-        with connection.cursor() as cursor:
-            # Insert the deal
-            cursor.execute("""
+    with transaction.atomic(), connection.cursor() as cursor:
+        # Insert the deal
+        cursor.execute("""
                 INSERT INTO public.deals (
                     id, agency_id, agent_id, client_id, carrier_id, product_id,
                     policy_number, status, status_standardized,
@@ -88,39 +87,40 @@ def create_deal(
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id, created_at, updated_at
             """, [
-                str(deal_id),
-                str(data.agency_id),
-                str(data.agent_id),
-                str(data.client_id) if data.client_id else None,
-                str(data.carrier_id) if data.carrier_id else None,
-                str(data.product_id) if data.product_id else None,
-                data.policy_number,
-                data.status,
-                data.status_standardized or 'pending',
-                float(data.annual_premium) if data.annual_premium else None,
-                float(data.monthly_premium) if data.monthly_premium else None,
-                data.policy_effective_date,
-                data.submission_date,
-                data.billing_cycle,
-                data.lead_source,
-            ])
-            deal_row = cursor.fetchone()
+            str(deal_id),
+            str(data.agency_id),
+            str(data.agent_id),
+            str(data.client_id) if data.client_id else None,
+            str(data.carrier_id) if data.carrier_id else None,
+            str(data.product_id) if data.product_id else None,
+            data.policy_number,
+            data.status,
+            data.status_standardized or 'pending',
+            float(data.annual_premium) if data.annual_premium else None,
+            float(data.monthly_premium) if data.monthly_premium else None,
+            data.policy_effective_date,
+            data.submission_date,
+            data.billing_cycle,
+            data.lead_source,
+        ])
+        deal_row = cursor.fetchone()
 
-            if not deal_row:
-                raise Exception("Failed to create deal")
+        if not deal_row:
+            raise Exception("Failed to create deal")
 
-            # Capture hierarchy snapshot
-            _capture_hierarchy_snapshot(cursor, deal_id, data.agent_id, data.product_id)
+        # Capture hierarchy snapshot
+        _capture_hierarchy_snapshot(cursor, deal_id, data.agent_id, data.product_id)
 
     # Fetch and return the complete deal
-    return get_deal_by_id(deal_id, user)
+    result = get_deal_by_id(deal_id, user)
+    return result if result is not None else {}
 
 
 def update_deal(
     deal_id: UUID,
     user: AuthenticatedUser,
     data: DealUpdateInput,
-) -> Optional[dict]:
+) -> dict | None:
     """
     Update an existing deal.
 
@@ -137,7 +137,7 @@ def update_deal(
     """
     # Build dynamic UPDATE query based on provided fields
     updates = []
-    params = []
+    params: list[Any] = []
 
     if data.client_id is not None:
         updates.append("client_id = %s")
@@ -217,8 +217,8 @@ def update_deal_status(
     deal_id: UUID,
     user: AuthenticatedUser,
     new_status: str,
-    new_status_standardized: Optional[str] = None,
-) -> Optional[dict]:
+    new_status_standardized: str | None = None,
+) -> dict | None:
     """
     Update deal status with validation.
 
@@ -286,7 +286,7 @@ def delete_deal(
         return row is not None
 
 
-def get_deal_by_id(deal_id: UUID, user: AuthenticatedUser) -> Optional[dict]:
+def get_deal_by_id(deal_id: UUID, user: AuthenticatedUser) -> dict | None:
     """
     Get deal details by ID.
 
@@ -344,7 +344,7 @@ def get_deal_by_id(deal_id: UUID, user: AuthenticatedUser) -> Optional[dict]:
             return None
 
         columns = [col[0] for col in cursor.description]
-        deal = dict(zip(columns, row))
+        deal = dict(zip(columns, row, strict=False))
 
         # Get hierarchy snapshots
         cursor.execute("""
@@ -366,7 +366,7 @@ def get_deal_by_id(deal_id: UUID, user: AuthenticatedUser) -> Optional[dict]:
         """, [str(deal_id)])
 
         snapshot_columns = [col[0] for col in cursor.description]
-        snapshots = [dict(zip(snapshot_columns, r)) for r in cursor.fetchall()]
+        snapshots = [dict(zip(snapshot_columns, r, strict=False)) for r in cursor.fetchall()]
 
     return {
         'id': str(deal['id']),
@@ -426,7 +426,7 @@ def _capture_hierarchy_snapshot(
     cursor,
     deal_id: UUID,
     agent_id: UUID,
-    product_id: Optional[UUID],
+    product_id: UUID | None,
 ) -> None:
     """
     Capture the agent hierarchy at deal creation time.

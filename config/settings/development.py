@@ -37,5 +37,6 @@ DATABASES['default']['OPTIONS']['sslmode'] = config(  # noqa: F405
 # Logging - More verbose in development
 # =============================================================================
 
-LOGGING['root']['level'] = 'DEBUG'  # noqa: F405
-LOGGING['loggers']['django']['level'] = 'INFO'  # noqa: F405
+LOGGING = LOGGING.copy()  # noqa: F405  # type: ignore[name-defined]
+LOGGING['root']['level'] = 'DEBUG'  # type: ignore[index]
+LOGGING['loggers']['django']['level'] = 'INFO'  # type: ignore[index]

@@ -8,7 +8,6 @@ import json
 import logging
 import uuid
 from dataclasses import dataclass
-from typing import Optional
 
 from decouple import config
 from django.db import connection
@@ -42,7 +41,8 @@ Focus on:
 - Performance improvement tips
 - Risk identification
 
-Format your response as a JSON array of suggestion objects with 'title', 'description', 'priority' (high/medium/low), and 'category' fields."""
+Format your response as a JSON array of suggestion objects with 'title', 'description',
+'priority' (high/medium/low), and 'category' fields."""
 
 ANALYTICS_SYSTEM_PROMPT = """You are an AI analyst for an insurance agency platform.
 Analyze the provided metrics and generate insights.
@@ -52,7 +52,8 @@ Focus on:
 - Opportunities for improvement
 - Comparisons to benchmarks
 
-Format your response as a JSON object with 'summary', 'insights' (array), 'recommendations' (array), and 'key_metrics' (object) fields."""
+Format your response as a JSON object with 'summary', 'insights' (array),
+'recommendations' (array), and 'key_metrics' (object) fields."""
 
 
 @dataclass
@@ -63,11 +64,11 @@ class AIResponse:
     input_tokens: int = 0
     output_tokens: int = 0
     total_tokens: int = 0
-    tool_calls: Optional[dict] = None
-    error: Optional[str] = None
+    tool_calls: dict | None = None
+    error: str | None = None
 
 
-def get_openai_client() -> Optional[OpenAI]:
+def get_openai_client() -> OpenAI | None:
     """Get configured OpenAI client."""
     if not OPENAI_API_KEY:
         logger.warning('OPENAI_API_KEY not configured')
@@ -79,7 +80,7 @@ def generate_chat_response(
     user: AuthenticatedUser,
     conversation_id: uuid.UUID,
     user_message: str,
-    context: Optional[dict] = None,
+    context: dict | None = None,
 ) -> AIResponse:
     """
     Generate AI response to user message.
@@ -105,7 +106,7 @@ def generate_chat_response(
         messages = _get_conversation_history(conversation_id, limit=20)
 
         # Build message list
-        openai_messages = [
+        openai_messages: list[dict[str, str]] = [
             {"role": "system", "content": CHAT_SYSTEM_PROMPT}
         ]
 
@@ -133,7 +134,7 @@ def generate_chat_response(
         # Call OpenAI API
         response = client.chat.completions.create(
             model=OPENAI_MODEL,
-            messages=openai_messages,
+            messages=openai_messages,  # type: ignore[arg-type]
             max_tokens=OPENAI_MAX_TOKENS,
             temperature=0.7,
         )
@@ -161,7 +162,7 @@ def generate_chat_response(
 def generate_suggestions(
     user: AuthenticatedUser,
     suggestion_type: str = 'general',
-    context: Optional[dict] = None,
+    context: dict | None = None,
 ) -> list[dict]:
     """
     Generate AI-powered suggestions for the user.
@@ -180,7 +181,8 @@ def generate_suggestions(
 
     try:
         # Build context message
-        context_parts = [f"User: {user.first_name} {user.last_name}"]
+        user_name = f"{user.first_name or ''} {user.last_name or ''}".strip() or "User"
+        context_parts = [f"User: {user_name}"]
         context_parts.append(f"Agency ID: {user.agency_id}")
         context_parts.append(f"Suggestion type requested: {suggestion_type}")
 
@@ -245,9 +247,10 @@ def generate_analytics_insights(
 
     try:
         # Build prompt
+        user_name = f"{user.first_name or ''} {user.last_name or ''}".strip() or "User"
         prompt_parts = [
             f"Analyze the following {insight_type} data for an insurance agent:",
-            f"User: {user.first_name} {user.last_name}",
+            f"User: {user_name}",
             f"Analytics Data:\n{json.dumps(analytics_data, indent=2)}",
             "Generate insights, recommendations, and highlight key metrics."
         ]
@@ -301,9 +304,9 @@ def save_ai_message(
     input_tokens: int = 0,
     output_tokens: int = 0,
     tokens_used: int = 0,
-    tool_calls: Optional[dict] = None,
-    tool_results: Optional[dict] = None,
-) -> Optional[dict]:
+    tool_calls: dict | None = None,
+    tool_results: dict | None = None,
+) -> dict | None:
     """
     Save an AI message to the database.
 
@@ -416,8 +419,9 @@ def get_user_context(user: AuthenticatedUser) -> dict:
             """, [str(user.id), str(user.id), str(user.id)])
             row = cursor.fetchone()
 
+        user_name = f"{user.first_name or ''} {user.last_name or ''}".strip() or "User"
         return {
-            'user_name': f"{user.first_name} {user.last_name}",
+            'user_name': user_name,
             'role': user.role,
             'is_admin': user.is_admin,
             'subscription_tier': user.subscription_tier,
@@ -428,7 +432,8 @@ def get_user_context(user: AuthenticatedUser) -> dict:
 
     except Exception as e:
         logger.error(f"Failed to get user context: {e}")
+        user_name = f"{user.first_name or ''} {user.last_name or ''}".strip() or "User"
         return {
-            'user_name': f"{user.first_name} {user.last_name}",
+            'user_name': user_name,
             'role': user.role,
         }

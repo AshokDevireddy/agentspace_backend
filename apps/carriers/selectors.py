@@ -5,7 +5,6 @@ Query functions for carrier data following the selector pattern.
 
 Uses Django ORM with select_related and prefetch_related for efficient queries.
 """
-from typing import List, Optional
 from uuid import UUID
 
 from django.db.models import Prefetch
@@ -13,7 +12,7 @@ from django.db.models import Prefetch
 from apps.core.models import Carrier, Product, StatusMapping
 
 
-def get_active_carriers() -> List[dict]:
+def get_active_carriers() -> list[dict]:
     """
     Get all active carriers ordered by display_name.
 
@@ -23,7 +22,7 @@ def get_active_carriers() -> List[dict]:
         List of carrier dictionaries with id, name, display_name, is_active, created_at
     """
     carriers = (
-        Carrier.objects
+        Carrier.objects  # type: ignore[attr-defined]
         .filter(is_active=True)
         .order_by('name')  # Fallback since display_name may not exist
     )
@@ -40,7 +39,7 @@ def get_active_carriers() -> List[dict]:
     ]
 
 
-def get_carriers_with_products_for_agency(agency_id: UUID) -> List[dict]:
+def get_carriers_with_products_for_agency(agency_id: UUID) -> list[dict]:
     """
     Get carriers that have products associated with the given agency.
 
@@ -55,7 +54,7 @@ def get_carriers_with_products_for_agency(agency_id: UUID) -> List[dict]:
     # Prefetch active products for this agency
     products_prefetch = Prefetch(
         'products',
-        queryset=Product.objects.filter(
+        queryset=Product.objects.filter(  # type: ignore[attr-defined]
             agency_id=agency_id,
             is_active=True
         ).order_by('name'),
@@ -64,7 +63,7 @@ def get_carriers_with_products_for_agency(agency_id: UUID) -> List[dict]:
 
     # Get carriers with active products for this agency
     carriers = (
-        Carrier.objects
+        Carrier.objects  # type: ignore[attr-defined]
         .filter(
             is_active=True,
             products__agency_id=agency_id,
@@ -96,7 +95,7 @@ def get_carriers_with_products_for_agency(agency_id: UUID) -> List[dict]:
     ]
 
 
-def get_carrier_names() -> List[dict]:
+def get_carrier_names() -> list[dict]:
     """
     Get carrier names for dropdowns (lightweight query).
 
@@ -106,7 +105,7 @@ def get_carrier_names() -> List[dict]:
         List of carrier dictionaries with id and name only
     """
     carriers = (
-        Carrier.objects
+        Carrier.objects  # type: ignore[attr-defined]
         .filter(is_active=True)
         .only('id', 'name')
         .order_by('name')
@@ -121,7 +120,7 @@ def get_carrier_names() -> List[dict]:
     ]
 
 
-def get_carriers_for_agency(agency_id: UUID) -> List[dict]:
+def get_carriers_for_agency(agency_id: UUID) -> list[dict]:
     """
     Get carriers associated with an agency (P2-030).
 
@@ -136,7 +135,7 @@ def get_carriers_for_agency(agency_id: UUID) -> List[dict]:
     """
     # Get carriers that have products for this agency
     carriers = (
-        Carrier.objects
+        Carrier.objects  # type: ignore[attr-defined]
         .filter(
             is_active=True,
             products__agency_id=agency_id,
@@ -156,7 +155,7 @@ def get_carriers_for_agency(agency_id: UUID) -> List[dict]:
     ]
 
 
-def get_carrier_by_id(carrier_id: UUID) -> Optional[dict]:
+def get_carrier_by_id(carrier_id: UUID) -> dict | None:
     """
     Get a single carrier by ID.
 
@@ -168,7 +167,7 @@ def get_carrier_by_id(carrier_id: UUID) -> Optional[dict]:
     Returns:
         Carrier dictionary or None if not found
     """
-    carrier = Carrier.objects.filter(id=carrier_id).first()
+    carrier = Carrier.objects.filter(id=carrier_id).first()  # type: ignore[attr-defined]
 
     if not carrier:
         return None
@@ -188,7 +187,7 @@ def get_carrier_by_id(carrier_id: UUID) -> Optional[dict]:
 # Status Mappings (P1-020)
 # =============================================================================
 
-def get_status_mappings(carrier_id: Optional[UUID] = None) -> List[dict]:
+def get_status_mappings(carrier_id: UUID | None = None) -> list[dict]:
     """
     Get status mappings (P1-020).
 
@@ -200,7 +199,7 @@ def get_status_mappings(carrier_id: Optional[UUID] = None) -> List[dict]:
     Returns:
         List of status mapping dictionaries
     """
-    qs = StatusMapping.objects.select_related('carrier').order_by('carrier__name', 'raw_status')
+    qs = StatusMapping.objects.select_related('carrier').order_by('carrier__name', 'raw_status')  # type: ignore[attr-defined]
 
     if carrier_id:
         qs = qs.filter(carrier_id=carrier_id)
@@ -220,7 +219,7 @@ def get_status_mappings(carrier_id: Optional[UUID] = None) -> List[dict]:
     ]
 
 
-def get_standardized_statuses() -> List[dict]:
+def get_standardized_statuses() -> list[dict]:
     """
     Get list of standardized status values (P1-020).
 

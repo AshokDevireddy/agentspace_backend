@@ -88,10 +88,7 @@ class TestDealFilters:
         user_id = uuid.uuid4()
         view = 'self'
 
-        if view == 'self':
-            visible_ids = [user_id]
-        else:
-            visible_ids = []  # Would be populated from hierarchy
+        visible_ids = [user_id] if view == 'self' else []  # Would be populated from hierarchy
 
         assert len(visible_ids) == 1
         assert visible_ids[0] == user_id
@@ -104,10 +101,7 @@ class TestDealFilters:
         downline_ids = [uuid.uuid4() for _ in range(3)]
         view = 'downlines'
 
-        if view == 'downlines':
-            visible_ids = [user_id] + downline_ids
-        else:
-            visible_ids = [user_id]
+        visible_ids = [user_id] + downline_ids if view == 'downlines' else [user_id]
 
         assert len(visible_ids) == 4
         assert user_id in visible_ids
@@ -161,6 +155,6 @@ class TestStatusImpactFiltering:
         """
         impact_negative_statuses = ['lapsed', 'cancelled', 'terminated']
 
-        for status in impact_negative_statuses:
-            is_negative = status in impact_negative_statuses
+        for deal_status in impact_negative_statuses:
+            is_negative = deal_status in impact_negative_statuses
             assert is_negative is True

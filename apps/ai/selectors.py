@@ -4,7 +4,6 @@ AI Selectors (P1-015)
 Query functions for AI conversations and messages.
 """
 import logging
-from typing import Optional
 from uuid import UUID
 
 from django.db import connection
@@ -73,7 +72,7 @@ def get_ai_conversations(
 
         conversations = []
         for row in rows:
-            conv = dict(zip(columns, row))
+            conv = dict(zip(columns, row, strict=False))
             conversations.append({
                 'id': str(conv['id']),
                 'title': conv['title'],
@@ -105,7 +104,7 @@ def get_ai_conversations(
 def get_ai_conversation_detail(
     user: AuthenticatedUser,
     conversation_id: UUID,
-) -> Optional[dict]:
+) -> dict | None:
     """
     Get a single AI conversation with its messages.
 
@@ -159,7 +158,7 @@ def get_ai_conversation_detail(
                 return None
 
             columns = [col[0] for col in cursor.description]
-            conv = dict(zip(columns, row))
+            conv = dict(zip(columns, row, strict=False))
 
             # Get messages
             cursor.execute(messages_query, [str(conversation_id)])
@@ -168,7 +167,7 @@ def get_ai_conversation_detail(
 
         messages = []
         for msg_row in msg_rows:
-            msg = dict(zip(msg_columns, msg_row))
+            msg = dict(zip(msg_columns, msg_row, strict=False))
             messages.append({
                 'id': str(msg['id']),
                 'role': msg['role'],
@@ -265,7 +264,7 @@ def get_ai_messages(
 
         messages = []
         for row in rows:
-            msg = dict(zip(columns, row))
+            msg = dict(zip(columns, row, strict=False))
             messages.append({
                 'id': str(msg['id']),
                 'role': msg['role'],

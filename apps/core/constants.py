@@ -58,6 +58,11 @@ STANDARDIZED_STATUSES = [
     },
 ]
 
+# Django model choices derived from STANDARDIZED_STATUSES
+STATUS_STANDARDIZED_CHOICES = [
+    (status["value"], status["label"]) for status in STANDARDIZED_STATUSES
+]
+
 # SMS opt-in statuses
 OPT_STATUSES = ["opted_in", "opted_out", "pending"]
 

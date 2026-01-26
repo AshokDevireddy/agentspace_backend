@@ -17,10 +17,11 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.core.authentication import get_user_context
+
 from .selectors import (
+    get_analytics_from_deals,
     get_analytics_split_view,
     get_downline_production_distribution,
-    get_analytics_from_deals,
     get_persistency_analytics,
 )
 

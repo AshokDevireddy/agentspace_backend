@@ -9,7 +9,6 @@ Endpoints:
 - GET/PUT /api/sms/opt-out - Opt-out management
 """
 import logging
-from uuid import UUID
 
 from django.utils.decorators import method_decorator
 from django_ratelimit.decorators import ratelimit
@@ -18,27 +17,30 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from apps.core.constants import RATE_LIMITS, PAGINATION
-from apps.core.mixins import AuthenticatedAPIView, APIError, ValidationError
+from apps.core.constants import PAGINATION, RATE_LIMITS
+from apps.core.mixins import AuthenticatedAPIView
+
 from .selectors import (
+    get_draft_messages,
     get_sms_conversations,
     get_sms_messages,
-    get_draft_messages,
     get_unread_message_count,
 )
 from .services import (
-    SendMessageInput,
-    send_message,
     BulkSendInput,
-    send_bulk_messages,
+    SendMessageInput,
     TemplateInput,
+    approve_drafts,
     create_template,
-    update_template,
     delete_template,
+    get_opted_out_numbers,
     get_template_by_id,
     list_templates,
+    reject_drafts,
+    send_bulk_messages,
+    send_message,
     update_opt_status,
-    get_opted_out_numbers,
+    update_template,
 )
 
 logger = logging.getLogger(__name__)
@@ -167,6 +169,55 @@ class DraftsView(AuthenticatedAPIView, APIView):
             user=user, view_mode=view_mode, page=page, limit=limit
         )
         return Response(result)
+
+
+class DraftsApproveView(AuthenticatedAPIView, APIView):
+    """POST /api/sms/drafts/approve - Approve and send draft SMS messages."""
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        user = self.get_user(request)
+
+        message_ids = request.data.get('messageIds', [])
+        if not message_ids or not isinstance(message_ids, list):
+            return Response(
+                {'error': 'Message IDs are required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        result = approve_drafts(user=user, message_ids=message_ids)
+
+        return Response({
+            'success': result.success,
+            'approved': result.approved,
+            'failed': result.failed,
+            'results': result.results or [],
+            'errors': result.errors,
+        })
+
+
+class DraftsRejectView(AuthenticatedAPIView, APIView):
+    """POST /api/sms/drafts/reject - Reject (delete) draft SMS messages."""
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        user = self.get_user(request)
+
+        message_ids = request.data.get('messageIds', [])
+        if not message_ids or not isinstance(message_ids, list):
+            return Response(
+                {'error': 'Message IDs are required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        result = reject_drafts(user=user, message_ids=message_ids)
+
+        return Response({
+            'success': result.success,
+            'rejected': result.rejected,
+        })
 
 
 class UnreadCountView(AuthenticatedAPIView, APIView):

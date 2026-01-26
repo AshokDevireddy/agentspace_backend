@@ -20,15 +20,16 @@ from rest_framework.views import APIView
 
 from apps.core.constants import PAGINATION
 from apps.core.mixins import AuthenticatedAPIView
-from .selectors import get_book_of_business, get_static_filter_options
+
+from .selectors import get_book_of_business, get_post_deal_form_data, get_products_by_carrier, get_static_filter_options
 from .services import (
     DealCreateInput,
     DealUpdateInput,
     create_deal,
-    update_deal,
-    update_deal_status,
     delete_deal,
     get_deal_by_id,
+    update_deal,
+    update_deal_status,
 )
 
 logger = logging.getLogger(__name__)
@@ -265,3 +266,34 @@ class FilterOptionsView(AuthenticatedAPIView, APIView):
         user = self.get_user(request)
         options = get_static_filter_options(user)
         return Response(options)
+
+
+class FormDataView(AuthenticatedAPIView, APIView):
+    """GET /api/deals/form-data - Get form data for Post A Deal page."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = self.get_user(request)
+        form_data = get_post_deal_form_data(user)
+        return Response(form_data)
+
+
+class ProductsByCarrierView(AuthenticatedAPIView, APIView):
+    """GET /api/deals/products-by-carrier - Get products for a specific carrier."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = self.get_user(request)
+        carrier_id = request.query_params.get('carrier_id')
+
+        if not carrier_id:
+            return Response(
+                {'error': 'carrier_id is required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        carrier_uuid = self.parse_uuid(carrier_id, "carrier_id")
+        products = get_products_by_carrier(user, carrier_uuid)
+        return Response(products)

@@ -10,11 +10,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any
 from uuid import UUID
 
 from .base import BaseService
-
 
 # ============================================================================
 # Data Transfer Objects (DTOs)
@@ -29,12 +28,12 @@ class SMSConversation:
     client_name: str
     client_phone: str
     last_message: str
-    last_message_at: Optional[datetime]
+    last_message_at: datetime | None
     unread_count: int
-    sms_opt_in_status: Optional[str]
-    opted_in_at: Optional[datetime]
-    opted_out_at: Optional[datetime]
-    status_standardized: Optional[str]
+    sms_opt_in_status: str | None
+    opted_in_at: datetime | None
+    opted_out_at: datetime | None
+    status_standardized: str | None
 
 
 @dataclass
@@ -42,15 +41,15 @@ class ConversationMessage:
     """Result from get_conversation_messages."""
     id: UUID
     conversation_id: UUID
-    sender_id: Optional[UUID]
-    receiver_id: Optional[UUID]
+    sender_id: UUID | None
+    receiver_id: UUID | None
     body: str
     direction: str  # 'inbound' or 'outbound'
     message_type: str
-    sent_at: Optional[datetime]
+    sent_at: datetime | None
     status: str
-    metadata: Optional[Dict[str, Any]]
-    read_at: Optional[datetime]
+    metadata: dict[str, Any] | None
+    read_at: datetime | None
 
 
 # ============================================================================
@@ -71,7 +70,7 @@ class SMSService(BaseService):
     # P1 - SMS Conversation Functions
     # ========================================================================
 
-    def get_sms_conversations_self(self) -> List[SMSConversation]:
+    def get_sms_conversations_self(self) -> list[SMSConversation]:
         """
         Translated from Supabase RPC: get_sms_conversations_self
 
@@ -123,9 +122,9 @@ class SMSService(BaseService):
         #   AND c.type = 'sms'
         #   AND c.is_active = true
         # ORDER BY c.last_message_at DESC;
-        pass
+        return []
 
-    def get_sms_conversations_downlines(self) -> List[SMSConversation]:
+    def get_sms_conversations_downlines(self) -> list[SMSConversation]:
         """
         Translated from Supabase RPC: get_sms_conversations_downlines
 
@@ -178,9 +177,9 @@ class SMSService(BaseService):
         # LEFT JOIN unread_counts uc ON uc.conversation_id = c.id
         # WHERE c.type = 'sms' AND c.is_active = true
         # ORDER BY c.last_message_at DESC;
-        pass
+        return []
 
-    def get_sms_conversations_all(self) -> List[SMSConversation]:
+    def get_sms_conversations_all(self) -> list[SMSConversation]:
         """
         Translated from Supabase RPC: get_sms_conversations_all
 
@@ -233,7 +232,7 @@ class SMSService(BaseService):
         # WHERE c.agency_id = v_agency_id
         #   AND c.type = 'sms' AND c.is_active = true
         # ORDER BY c.last_message_at DESC;
-        pass
+        return []
 
     # ========================================================================
     # P1 - Message Functions
@@ -243,7 +242,7 @@ class SMSService(BaseService):
         self,
         conversation_id: UUID,
         view: str = 'downlines'
-    ) -> List[ConversationMessage]:
+    ) -> list[ConversationMessage]:
         """
         Translated from Supabase RPC: get_conversation_messages
 
@@ -305,7 +304,7 @@ class SMSService(BaseService):
         # ORDER BY
         #   CASE WHEN m.sent_at IS NULL THEN 1 ELSE 0 END,
         #   m.sent_at ASC, m.id;
-        pass
+        return []
 
     # ========================================================================
     # Helper Methods
@@ -327,7 +326,7 @@ class SMSService(BaseService):
             bool: True if user has access
         """
         # TODO: Implement permission check
-        pass
+        return False
 
 
 # ============================================================================

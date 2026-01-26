@@ -40,11 +40,11 @@ class ViewModeQuerySetMixin:
 
         if view_mode == 'self':
             # Only user's own records
-            return self.filter(**{agent_field: user.id})
+            return self.filter(**{agent_field: user.id})  # type: ignore[attr-defined]
 
         elif view_mode == 'all' and is_admin:
             # Admin viewing all agency records
-            return self.filter(agency_id=user.agency_id)
+            return self.filter(agency_id=user.agency_id)  # type: ignore[attr-defined]
 
         else:
             # Default: user + downlines
@@ -60,7 +60,7 @@ class ViewModeQuerySetMixin:
                 visible_ids = get_visible_agent_ids(
                     user, include_full_agency=is_admin
                 )
-                return self.filter(**{f'{agent_field}__in': visible_ids})
+                return self.filter(**{f'{agent_field}__in': visible_ids})  # type: ignore[attr-defined]
 
     def visible_to(self, user: 'AuthenticatedUser', agent_field: str = 'agent_id'):
         """
@@ -78,7 +78,7 @@ class ViewModeQuerySetMixin:
         is_admin = user.is_administrator
 
         if is_admin:
-            return self.filter(agency_id=user.agency_id)
+            return self.filter(agency_id=user.agency_id)  # type: ignore[attr-defined]
         else:
             return self.for_view_mode(user, view_mode='downlines', agent_field=agent_field)
 
@@ -93,4 +93,4 @@ class ViewModeQuerySetMixin:
         Returns:
             Filtered queryset
         """
-        return self.filter(**{agent_field: agent_id})
+        return self.filter(**{agent_field: agent_id})  # type: ignore[attr-defined]

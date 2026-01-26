@@ -5,6 +5,7 @@ UNMANAGED models that map to existing PostgreSQL tables.
 Used for tracking onboarding progress and NIPR verification state.
 """
 import uuid
+
 from django.db import models
 
 

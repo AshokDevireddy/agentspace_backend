@@ -5,8 +5,6 @@ Provides utilities for checking feature flags stored in the database.
 Supports global flags and per-agency overrides.
 """
 import logging
-from functools import lru_cache
-from typing import Optional
 from uuid import UUID
 
 from django.core.cache import cache
@@ -56,7 +54,7 @@ class FeatureFlags:
 
 def get_feature_flag(
     flag_name: str,
-    agency_id: Optional[UUID] = None,
+    agency_id: UUID | None = None,
     default: bool = False
 ) -> bool:
     """
@@ -125,7 +123,7 @@ def get_feature_flag(
     return default
 
 
-def is_feature_enabled(flag_name: str, agency_id: Optional[UUID] = None) -> bool:
+def is_feature_enabled(flag_name: str, agency_id: UUID | None = None) -> bool:
     """
     Convenience function to check if a feature is enabled.
 
@@ -139,7 +137,7 @@ def is_feature_enabled(flag_name: str, agency_id: Optional[UUID] = None) -> bool
     return get_feature_flag(flag_name, agency_id, default=False)
 
 
-def get_all_feature_flags(agency_id: Optional[UUID] = None) -> dict[str, bool]:
+def get_all_feature_flags(agency_id: UUID | None = None) -> dict[str, bool]:
     """
     Get all feature flags and their states.
 
@@ -181,8 +179,8 @@ def get_all_feature_flags(agency_id: Optional[UUID] = None) -> dict[str, bool]:
 def set_feature_flag(
     flag_name: str,
     is_enabled: bool,
-    agency_id: Optional[UUID] = None,
-    description: Optional[str] = None,
+    agency_id: UUID | None = None,
+    description: str | None = None,
     rollout_percentage: int = 100
 ) -> bool:
     """
@@ -248,27 +246,27 @@ def clear_feature_flag_cache():
 # Django Endpoint Checks
 # =============================================================================
 
-def should_use_django_auth(agency_id: Optional[UUID] = None) -> bool:
+def should_use_django_auth(agency_id: UUID | None = None) -> bool:
     """Check if Django auth endpoints should be used."""
     return is_feature_enabled(FeatureFlags.USE_DJANGO_AUTH, agency_id)
 
 
-def should_use_django_dashboard(agency_id: Optional[UUID] = None) -> bool:
+def should_use_django_dashboard(agency_id: UUID | None = None) -> bool:
     """Check if Django dashboard endpoints should be used."""
     return is_feature_enabled(FeatureFlags.USE_DJANGO_DASHBOARD, agency_id)
 
 
-def should_use_django_agents(agency_id: Optional[UUID] = None) -> bool:
+def should_use_django_agents(agency_id: UUID | None = None) -> bool:
     """Check if Django agent endpoints should be used."""
     return is_feature_enabled(FeatureFlags.USE_DJANGO_AGENTS, agency_id)
 
 
-def should_use_django_deals(agency_id: Optional[UUID] = None) -> bool:
+def should_use_django_deals(agency_id: UUID | None = None) -> bool:
     """Check if Django deal endpoints should be used."""
     return is_feature_enabled(FeatureFlags.USE_DJANGO_DEALS, agency_id)
 
 
-def get_django_endpoints_status(agency_id: Optional[UUID] = None) -> dict[str, bool]:
+def get_django_endpoints_status(agency_id: UUID | None = None) -> dict[str, bool]:
     """
     Get status of all Django endpoint feature flags.
 

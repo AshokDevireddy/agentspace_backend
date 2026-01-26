@@ -7,7 +7,6 @@ Provides payout-related endpoints:
 """
 import logging
 from datetime import date, datetime
-from typing import Optional
 from uuid import UUID
 
 from rest_framework import status
@@ -16,12 +15,13 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.core.authentication import get_user_context
-from .selectors import get_expected_payouts, get_agent_debt
+
+from .selectors import get_agent_debt, get_expected_payouts
 
 logger = logging.getLogger(__name__)
 
 
-def parse_date_param(value: Optional[str]) -> Optional[date]:
+def parse_date_param(value: str | None) -> date | None:
     """Parse a YYYY-MM-DD date string, returning None if invalid."""
     if not value:
         return None
@@ -31,7 +31,7 @@ def parse_date_param(value: Optional[str]) -> Optional[date]:
         return None
 
 
-def parse_uuid_param(value: Optional[str]) -> Optional[UUID]:
+def parse_uuid_param(value: str | None) -> UUID | None:
     """Parse a UUID string, returning None if invalid."""
     if not value:
         return None

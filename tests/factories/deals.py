@@ -8,7 +8,6 @@ from datetime import date, timedelta
 from decimal import Decimal
 
 import factory
-from factory import fuzzy
 from faker import Faker
 
 from apps.core.models import (
@@ -18,11 +17,11 @@ from apps.core.models import (
 )
 from tests.factories.core import (
     AgencyFactory,
-    UserFactory,
     CarrierFactory,
-    ProductFactory,
     ClientFactory,
     PositionFactory,
+    ProductFactory,
+    UserFactory,
 )
 
 fake = Faker()

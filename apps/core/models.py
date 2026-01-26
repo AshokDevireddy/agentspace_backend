@@ -7,7 +7,10 @@ They do NOT create migrations - Django reads from existing tables.
 import uuid
 from typing import TYPE_CHECKING
 
-from django.db import connection, models
+from django.db import models
+
+from .constants import STATUS_STANDARDIZED_CHOICES
+from .utils import format_full_name
 
 if TYPE_CHECKING:
     from uuid import UUID
@@ -152,21 +155,20 @@ class User(models.Model):
         db_table = 'users'
 
     def __str__(self):
-        return f"{self.first_name or ''} {self.last_name or ''} ({self.email or 'No email'})".strip()
+        name = format_full_name(self.first_name, self.last_name)
+        email_part = self.email or 'No email'
+        return f"{name} ({email_part})".strip() if name else f"({email_part})"
 
     @property
     def full_name(self):
-        return f"{self.first_name or ''} {self.last_name or ''}".strip() or self.email
+        return format_full_name(self.first_name, self.last_name) or self.email
 
     @property
     def is_administrator(self) -> bool:
         """Check if user has administrator privileges."""
         return self.is_admin or self.role == 'admin'
 
-    # =========================================================================
-    # Hierarchy Methods (P1-009)
-    # =========================================================================
-
+    # Hierarchy Methods - delegates to centralized hierarchy module
     def get_downline(self, max_depth: int | None = None) -> list['UUID']:
         """
         Get all agents in this user's downline (recursive).
@@ -179,48 +181,12 @@ class User(models.Model):
         Returns:
             List of user IDs in the downline (excludes self)
         """
-        # Validate max_depth to prevent SQL injection - must be positive integer or None
-        if max_depth is not None:
-            max_depth = int(max_depth)  # Ensure it's an integer
-            if max_depth < 1:
-                max_depth = None
-
-        with connection.cursor() as cursor:
-            if max_depth is not None:
-                # Use parameterized query with depth limit
-                cursor.execute("""
-                    WITH RECURSIVE downline AS (
-                        SELECT id, 1 as depth
-                        FROM public.users
-                        WHERE upline_id = %s AND agency_id = %s
-
-                        UNION ALL
-
-                        SELECT u.id, d.depth + 1
-                        FROM public.users u
-                        JOIN downline d ON u.upline_id = d.id
-                        WHERE u.agency_id = %s AND d.depth < %s
-                    )
-                    SELECT id FROM downline
-                """, [str(self.id), str(self.agency_id), str(self.agency_id), max_depth])
-            else:
-                # No depth limit
-                cursor.execute("""
-                    WITH RECURSIVE downline AS (
-                        SELECT id, 1 as depth
-                        FROM public.users
-                        WHERE upline_id = %s AND agency_id = %s
-
-                        UNION ALL
-
-                        SELECT u.id, d.depth + 1
-                        FROM public.users u
-                        JOIN downline d ON u.upline_id = d.id
-                        WHERE u.agency_id = %s
-                    )
-                    SELECT id FROM downline
-                """, [str(self.id), str(self.agency_id), str(self.agency_id)])
-            return [row[0] for row in cursor.fetchall()]
+        from apps.core.hierarchy import get_downline_ids
+        # Get agency_id from agency foreign key
+        agency_id = self.agency.id if self.agency else None
+        if not agency_id:
+            return []
+        return get_downline_ids(self.id, agency_id, max_depth, include_self=False)
 
     def get_upline_chain(self) -> list['UUID']:
         """
@@ -229,25 +195,8 @@ class User(models.Model):
         Returns:
             List of user IDs from direct upline to root (ordered)
         """
-        with connection.cursor() as cursor:
-            cursor.execute("""
-                WITH RECURSIVE upline_chain AS (
-                    SELECT id, upline_id, 1 as depth
-                    FROM public.users
-                    WHERE id = %s
-
-                    UNION ALL
-
-                    SELECT u.id, u.upline_id, uc.depth + 1
-                    FROM public.users u
-                    JOIN upline_chain uc ON u.id = uc.upline_id
-                    WHERE u.id IS NOT NULL
-                )
-                SELECT id FROM upline_chain
-                WHERE depth > 1
-                ORDER BY depth
-            """, [str(self.id)])
-            return [row[0] for row in cursor.fetchall()]
+        from apps.core.hierarchy import get_upline_ids
+        return get_upline_ids(self.id, include_self=False)
 
     def is_in_downline(self, target_user_id: 'UUID') -> bool:
         """
@@ -259,25 +208,17 @@ class User(models.Model):
         Returns:
             True if target is in downline
         """
-        with connection.cursor() as cursor:
-            cursor.execute("""
-                WITH RECURSIVE downline AS (
-                    SELECT id FROM public.users WHERE id = %s
-
-                    UNION ALL
-
-                    SELECT u.id FROM public.users u
-                    JOIN downline d ON u.upline_id = d.id
-                    WHERE u.agency_id = %s
-                )
-                SELECT 1 FROM downline WHERE id = %s LIMIT 1
-            """, [str(self.id), str(self.agency_id), str(target_user_id)])
-            return cursor.fetchone() is not None
+        from apps.core.hierarchy import is_in_downline
+        # Get agency_id from agency foreign key
+        agency_id = self.agency.id if self.agency else None
+        if not agency_id:
+            return False
+        return is_in_downline(self.id, target_user_id, agency_id)
 
     @property
     def direct_downlines(self) -> models.QuerySet:
         """Get direct downlines (one level only)."""
-        return User.objects.filter(upline_id=self.id)
+        return User.objects.filter(upline_id=self.id)  # type: ignore[attr-defined]
 
     @property
     def downline_count(self) -> int:
@@ -385,7 +326,9 @@ class Client(models.Model):
         db_table = 'clients'
 
     def __str__(self):
-        return f"{self.first_name or ''} {self.last_name or ''} ({self.email or 'No email'})".strip()
+        name = format_full_name(self.first_name, self.last_name)
+        email_part = self.email or 'No email'
+        return f"{name} ({email_part})".strip() if name else f"({email_part})"
 
 
 class Deal(models.Model):
@@ -393,14 +336,6 @@ class Deal(models.Model):
     Represents an insurance policy/deal.
     Maps to: public.deals
     """
-    STATUS_STANDARDIZED_CHOICES = [
-        ('active', 'Active'),
-        ('pending', 'Pending'),
-        ('cancelled', 'Cancelled'),
-        ('lapsed', 'Lapsed'),
-        ('terminated', 'Terminated'),
-    ]
-
     id = models.UUIDField(primary_key=True, default=uuid.uuid4)
     agency = models.ForeignKey(
         Agency,
@@ -466,19 +401,15 @@ class Deal(models.Model):
         db_table = 'deals'
 
     def __str__(self):
-        client_name = f"{self.client.first_name or ''} {self.client.last_name or ''}".strip() if self.client else 'No client'
+        client_name = format_full_name(self.client.first_name, self.client.last_name) if self.client else 'No client'
         return f"{self.policy_number or 'No policy#'} - {client_name}"
 
     @property
     def client_name(self):
         if self.client:
-            return f"{self.client.first_name or ''} {self.client.last_name or ''}".strip()
+            return format_full_name(self.client.first_name, self.client.last_name)
         return ''
 
-
-# =============================================================================
-# Position Product Commissions (P1-011)
-# =============================================================================
 
 class PositionProductCommission(models.Model):
     """
@@ -511,10 +442,6 @@ class PositionProductCommission(models.Model):
     def __str__(self):
         return f"{self.position.name} - {self.product.name}: {self.commission_percentage}%"
 
-
-# =============================================================================
-# Deal Hierarchy Snapshot (P1-012)
-# =============================================================================
 
 class DealHierarchySnapshot(models.Model):
     """
@@ -583,12 +510,9 @@ class Beneficiary(models.Model):
         db_table = 'beneficiaries'
 
     def __str__(self):
-        return f"{self.first_name} {self.last_name} ({self.relationship})"
+        name = format_full_name(self.first_name, self.last_name)
+        return f"{name} ({self.relationship or 'Unknown'})" if name else f"({self.relationship or 'Unknown'})"
 
-
-# =============================================================================
-# Status Mapping (P1-013)
-# =============================================================================
 
 class StatusMapping(models.Model):
     """
@@ -632,10 +556,6 @@ class StatusMapping(models.Model):
     def __str__(self):
         return f"{self.carrier.name}: {self.raw_status} -> {self.standardized_status}"
 
-
-# =============================================================================
-# SMS Models (P1-014)
-# =============================================================================
 
 class Conversation(models.Model):
     """
@@ -698,8 +618,8 @@ class Conversation(models.Model):
         db_table = 'conversations'
 
     def __str__(self):
-        client_name = f"{self.client.first_name} {self.client.last_name}".strip() if self.client else self.phone_number
-        return f"Conversation with {client_name}"
+        client_name = format_full_name(self.client.first_name, self.client.last_name) if self.client else self.phone_number
+        return f"Conversation with {client_name or self.phone_number}"
 
 
 class Message(models.Model):
@@ -819,10 +739,6 @@ class DraftMessage(models.Model):
         return f"Draft by {self.agent}: {self.content[:50]}..."
 
 
-# =============================================================================
-# SMS Templates (P2-029)
-# =============================================================================
-
 class SmsTemplate(models.Model):
     """
     SMS message templates for automated messaging.
@@ -874,10 +790,6 @@ class SmsTemplate(models.Model):
         return f"{self.name} ({self.template_type})"
 
 
-# =============================================================================
-# Dashboard Widgets (P2-032)
-# =============================================================================
-
 class DashboardWidget(models.Model):
     """
     Configurable dashboard widgets for users.
@@ -920,10 +832,6 @@ class DashboardWidget(models.Model):
     def __str__(self):
         return f"{self.title} ({self.widget_type})"
 
-
-# =============================================================================
-# Reports (P2-033, P2-034)
-# =============================================================================
 
 class Report(models.Model):
     """
@@ -1057,10 +965,6 @@ class ScheduledReport(models.Model):
         return f"{self.title} ({self.frequency})"
 
 
-# =============================================================================
-# AI Chat Models (P1-015)
-# =============================================================================
-
 class AIConversation(models.Model):
     """
     AI chat conversation session.
@@ -1134,10 +1038,6 @@ class AIMessage(models.Model):
         return f"{self.role}: {self.content[:50]}..."
 
 
-# =============================================================================
-# Feature Flags Model (P0-006)
-# =============================================================================
-
 class FeatureFlag(models.Model):
     """
     Feature flags for controlling feature rollout.
@@ -1172,21 +1072,17 @@ class FeatureFlag(models.Model):
         return f"{self.name} ({scope}) - {'Enabled' if self.is_enabled else 'Disabled'}"
 
 
-# =============================================================================
-# Custom Managers (imported at end to avoid circular imports)
-# =============================================================================
-
 # Import and assign managers after all models are defined
-from apps.core.managers.user import UserManager
-from apps.core.managers.deal import DealManager
 from apps.core.managers.conversation import ConversationManager
+from apps.core.managers.deal import DealManager
+from apps.core.managers.user import UserManager
 
 # Assign custom managers to models
-User.objects = UserManager()
-User.objects.model = User
+User.objects = UserManager()  # type: ignore[attr-defined]
+User.objects.model = User  # type: ignore[attr-defined]
 
-Deal.objects = DealManager()
-Deal.objects.model = Deal
+Deal.objects = DealManager()  # type: ignore[attr-defined]
+Deal.objects.model = Deal  # type: ignore[attr-defined]
 
-Conversation.objects = ConversationManager()
-Conversation.objects.model = Conversation
+Conversation.objects = ConversationManager()  # type: ignore[attr-defined]
+Conversation.objects.model = Conversation  # type: ignore[attr-defined]

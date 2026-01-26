@@ -6,27 +6,26 @@ Provides common utilities and patterns for all service classes.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Generic, List, Optional, TypeVar
+from typing import TYPE_CHECKING, TypeVar
 from uuid import UUID
 
 from django.db import connection
-from django.db.models import QuerySet
 
 if TYPE_CHECKING:
-    from django.contrib.auth.models import AbstractUser
+    pass
 
 
 T = TypeVar('T')
 
 
 @dataclass
-class PaginationResult(Generic[T]):
+class PaginationResult[T]:
     """Standard pagination result container."""
-    items: List[T]
+    items: list[T]
     total_count: int
     has_more: bool
-    cursor_id: Optional[UUID] = None
-    cursor_created_at: Optional[str] = None
+    cursor_id: UUID | None = None
+    cursor_created_at: str | None = None
 
 
 class BaseService:
@@ -40,7 +39,7 @@ class BaseService:
     - Query execution helpers
     """
 
-    def __init__(self, user_id: UUID, agency_id: Optional[UUID] = None):
+    def __init__(self, user_id: UUID, agency_id: UUID | None = None):
         """
         Initialize service with user context.
 
@@ -50,14 +49,16 @@ class BaseService:
         """
         self.user_id = user_id
         self._agency_id = agency_id
-        self._is_admin: Optional[bool] = None
-        self._user_cache: Optional[dict] = None
+        self._is_admin: bool | None = None
+        self._user_cache: dict | None = None
 
     @property
     def agency_id(self) -> UUID:
         """Get the user's agency ID, fetching if necessary."""
         if self._agency_id is None:
             self._load_user_context()
+        if self._agency_id is None:
+            raise ValueError("Agency ID not available")
         return self._agency_id
 
     @property
@@ -65,6 +66,8 @@ class BaseService:
         """Check if the user is an admin."""
         if self._is_admin is None:
             self._load_user_context()
+        if self._is_admin is None:
+            return False
         return self._is_admin
 
     def _load_user_context(self) -> None:
@@ -92,14 +95,11 @@ class BaseService:
             # TODO: Verify target is in same agency
             return True
 
-        if target_agent_id == self.user_id:
-            return True
-
         # Check if target is in user's downline
         # TODO: Implement downline check
-        return False
+        return target_agent_id == self.user_id
 
-    def _execute_raw_sql(self, sql: str, params: tuple = ()) -> List[dict]:
+    def _execute_raw_sql(self, sql: str, params: tuple = ()) -> list[dict]:
         """
         Execute raw SQL and return results as list of dicts.
 
@@ -113,4 +113,4 @@ class BaseService:
         with connection.cursor() as cursor:
             cursor.execute(sql, params)
             columns = [col[0] for col in cursor.description]
-            return [dict(zip(columns, row)) for row in cursor.fetchall()]
+            return [dict(zip(columns, row, strict=False)) for row in cursor.fetchall()]

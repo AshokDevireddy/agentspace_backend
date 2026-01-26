@@ -14,12 +14,13 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.core.authentication import get_user_context
+
 from .selectors import (
-    search_agents_downline,
     search_agents_all,
-    search_clients_for_filter,
+    search_agents_downline,
     search_agents_for_filter,
     search_agents_fuzzy,
+    search_clients_for_filter,
     search_clients_fuzzy,
     search_policies_fuzzy,
     search_policy_numbers_for_filter,
@@ -57,12 +58,11 @@ class SearchAgentsView(APIView):
 
         # Validate query
         allow_empty = new_format == 'options'
-        if not query or len(query) < 2:
-            if not allow_empty:
-                return Response(
-                    {'error': 'Search query must be at least 2 characters long'},
-                    status=status.HTTP_400_BAD_REQUEST
-                )
+        if (not query or len(query) < 2) and not allow_empty:
+            return Response(
+                {'error': 'Search query must be at least 2 characters long'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
         # Parse limit
         limit = 10

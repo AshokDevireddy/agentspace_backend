@@ -16,12 +16,13 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.core.authentication import get_user_context
+
 from .selectors import (
-    get_products_for_carrier,
     get_all_products_for_agency,
     get_product_by_id,
+    get_products_for_carrier,
 )
-from .services import create_product, update_product
+from .services import create_product, delete_product, update_product
 
 logger = logging.getLogger(__name__)
 
@@ -272,5 +273,44 @@ class ProductDetailView(APIView):
             logger.error(f'Product update failed: {e}')
             return Response(
                 {'error': 'Failed to update product', 'detail': str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+    def delete(self, request, product_id):
+        """
+        DELETE /api/products/{id}
+
+        Delete a product.
+        """
+        user = get_user_context(request)
+        if not user:
+            return Response(
+                {'error': 'Unauthorized', 'detail': 'Authentication required'},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
+        try:
+            product_uuid = UUID(product_id)
+        except ValueError:
+            return Response(
+                {'error': 'Invalid product_id', 'detail': 'product_id must be a valid UUID'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            deleted = delete_product(
+                product_id=product_uuid,
+                agency_id=user.agency_id,
+            )
+            if not deleted:
+                return Response(
+                    {'error': 'Product not found'},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+            return Response({'message': 'Product deleted successfully'})
+        except Exception as e:
+            logger.error(f'Product delete failed: {e}')
+            return Response(
+                {'error': 'Failed to delete product', 'detail': str(e)},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )

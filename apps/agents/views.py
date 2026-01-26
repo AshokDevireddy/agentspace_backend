@@ -18,18 +18,18 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.core.authentication import get_user_context
+
 from .selectors import (
     check_agent_upline_positions,
-    get_agent_downline,
+    get_agent_detail,
+    get_agent_downline_with_depth,
+    get_agent_downlines_with_details,
     get_agent_options,
+    get_agent_upline_chain,
+    get_agents_debt_production,
     get_agents_hierarchy_nodes,
     get_agents_table,
     get_agents_without_positions,
-    get_agent_downlines_with_details,
-    get_agents_debt_production,
-    get_agent_upline_chain,
-    get_agent_detail,
-    get_agent_downline_with_depth,
 )
 from .services import assign_position_to_agent, update_agent_position
 
@@ -64,7 +64,7 @@ def build_tree(rows: list, root_id: str) -> dict:
             by_id[upline_id]['children'].append(agent_id)
 
     # Find reachable nodes from root
-    reachable = set()
+    reachable: set[str] = set()
     def visit(node_id, seen):
         if node_id in seen:
             return
@@ -253,7 +253,11 @@ class AgentsListView(APIView):
                     'hierarchy_debt_count': int(metrics.get('hierarchy_debt_count') or 0),
                     'hierarchy_production': float(metrics.get('hierarchy_production') or 0),
                     'hierarchy_production_count': int(metrics.get('hierarchy_production_count') or 0),
-                    'debt_to_production_ratio': float(metrics['debt_to_production_ratio']) if metrics.get('debt_to_production_ratio') is not None else None,
+                    'debt_to_production_ratio': (
+                        float(metrics['debt_to_production_ratio'])
+                        if metrics.get('debt_to_production_ratio') is not None
+                        else None
+                    ),
                 })
 
             # Get agent options for filter dropdowns
@@ -455,7 +459,11 @@ class AgentDownlinesView(APIView):
                     'hierarchy_debt_count': int(m.get('hierarchy_debt_count') or 0),
                     'hierarchy_production': float(m.get('hierarchy_production') or 0),
                     'hierarchy_production_count': int(m.get('hierarchy_production_count') or 0),
-                    'debt_to_production_ratio': float(m['debt_to_production_ratio']) if m.get('debt_to_production_ratio') is not None else None,
+                    'debt_to_production_ratio': (
+                        float(m['debt_to_production_ratio'])
+                        if m.get('debt_to_production_ratio') is not None
+                        else None
+                    ),
                 })
 
             return Response({
@@ -516,9 +524,8 @@ class AgentsWithoutPositionsView(APIView):
                 })
 
             # If search or fetch all, also get agents with positions
-            if search_query or fetch_all:
-                # For now, just filter the list by search query
-                if search_query and not fetch_all:
+            # For now, just filter the list by search query
+            if (search_query or fetch_all) and search_query and not fetch_all:
                     search_lower = search_query.lower()
                     agents = [
                         a for a in agents
@@ -603,6 +610,45 @@ class AssignPositionView(APIView):
             logger.error(f'Assign position failed: {e}')
             return Response(
                 {'error': 'Failed to assign position', 'detail': str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
+class CheckCurrentUserUplinePositionsView(APIView):
+    """
+    GET /api/agents/check-positions
+
+    Check if the current authenticated user and their entire upline have positions assigned.
+    Required for posting deals.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = get_user_context(request)
+        if not user:
+            return Response(
+                {'error': 'Unauthorized'},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
+        try:
+            result = check_agent_upline_positions(user.id)
+            return Response({
+                'success': True,
+                'has_all_positions': result.get('has_all_positions', False),
+                'missing_positions': result.get('missing_positions', []),
+                'total_checked': result.get('total_checked', 0),
+                'user': {
+                    'id': str(user.id),
+                    'name': f'{user.first_name} {user.last_name}',
+                    'role': user.role,
+                },
+            })
+
+        except Exception as e:
+            logger.error(f'Check current user upline positions failed: {e}')
+            return Response(
+                {'error': 'Failed to check positions', 'detail': str(e)},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 

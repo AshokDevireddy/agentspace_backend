@@ -3,7 +3,7 @@ Position Services
 
 Business logic for position operations.
 """
-from typing import Optional
+from typing import Any
 from uuid import UUID
 
 from django.db import connection, transaction
@@ -15,7 +15,7 @@ def create_position(
     agency_id: UUID,
     name: str,
     level: int,
-    description: Optional[str] = None,
+    description: str | None = None,
     is_active: bool = True,
 ) -> dict:
     """
@@ -38,7 +38,7 @@ def create_position(
             RETURNING id, agency_id, name, level, description, is_active, created_at
         """, [str(agency_id), name, level, description, is_active])
         columns = [col[0] for col in cursor.description]
-        return dict(zip(columns, cursor.fetchone()))
+        return dict(zip(columns, cursor.fetchone(), strict=False))
 
 
 @transaction.atomic
@@ -46,11 +46,11 @@ def update_position(
     *,
     position_id: UUID,
     agency_id: UUID,
-    name: Optional[str] = None,
-    level: Optional[int] = None,
-    description: Optional[str] = None,
-    is_active: Optional[bool] = None,
-) -> Optional[dict]:
+    name: str | None = None,
+    level: int | None = None,
+    description: str | None = None,
+    is_active: bool | None = None,
+) -> dict | None:
     """
     Update an existing position.
 
@@ -66,7 +66,7 @@ def update_position(
         Updated position dictionary or None if not found
     """
     updates = []
-    params = []
+    params: list[Any] = []
 
     if name is not None:
         updates.append('name = %s')
@@ -100,8 +100,50 @@ def update_position(
         columns = [col[0] for col in cursor.description]
         row = cursor.fetchone()
         if row:
-            return dict(zip(columns, row))
+            return dict(zip(columns, row, strict=False))
         return None
+
+
+@transaction.atomic
+def delete_position(
+    *,
+    position_id: UUID,
+    agency_id: UUID,
+) -> bool:
+    """
+    Delete a position if no agents are assigned to it.
+
+    Args:
+        position_id: The position UUID
+        agency_id: The agency UUID for security check
+
+    Returns:
+        True if deleted, False if not found
+
+    Raises:
+        ValueError: If agents are assigned to this position
+    """
+    with connection.cursor() as cursor:
+        # Check if any agents are assigned to this position
+        cursor.execute("""
+            SELECT COUNT(*) FROM users
+            WHERE position_id = %s AND agency_id = %s
+        """, [str(position_id), str(agency_id)])
+        agent_count = cursor.fetchone()[0]
+
+        if agent_count > 0:
+            raise ValueError(
+                'This position is currently assigned to one or more agents. '
+                'Please reassign them first.'
+            )
+
+        # Delete the position
+        cursor.execute("""
+            DELETE FROM positions
+            WHERE id = %s AND agency_id = %s
+            RETURNING id
+        """, [str(position_id), str(agency_id)])
+        return cursor.fetchone() is not None
 
 
 @transaction.atomic
@@ -110,7 +152,7 @@ def update_position_commission(
     commission_id: UUID,
     agency_id: UUID,
     commission_percentage: float,
-) -> Optional[dict]:
+) -> dict | None:
     """
     Update a position-product commission percentage.
 
@@ -136,8 +178,37 @@ def update_position_commission(
         columns = [col[0] for col in cursor.description]
         row = cursor.fetchone()
         if row:
-            return dict(zip(columns, row))
+            return dict(zip(columns, row, strict=False))
         return None
+
+
+@transaction.atomic
+def delete_position_commission(
+    *,
+    commission_id: UUID,
+    agency_id: UUID,
+) -> bool:
+    """
+    Delete a position-product commission entry.
+
+    Args:
+        commission_id: The commission record UUID
+        agency_id: The agency UUID for security check
+
+    Returns:
+        True if deleted, False if not found
+    """
+    with connection.cursor() as cursor:
+        # Delete commission only if it belongs to a position in the agency
+        cursor.execute("""
+            DELETE FROM position_product_commissions ppc
+            USING positions pos
+            WHERE ppc.id = %s
+                AND ppc.position_id = pos.id
+                AND pos.agency_id = %s
+            RETURNING ppc.id
+        """, [str(commission_id), str(agency_id)])
+        return cursor.fetchone() is not None
 
 
 @transaction.atomic

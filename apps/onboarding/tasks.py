@@ -5,8 +5,6 @@ Uses Django 6.0 built-in Tasks framework for background job processing.
 No Celery required for simple task patterns.
 """
 import logging
-from typing import Optional
-from uuid import UUID
 
 from django.db import connection, transaction
 
@@ -24,7 +22,7 @@ def start_nipr_verification(
     npn: str,
     ssn_last4: str,
     dob: str,
-) -> Optional[str]:
+) -> str | None:
     """
     Create a NIPR verification job.
 
@@ -102,7 +100,7 @@ def handle_nipr_upload(
     user_id: str,
     file_path: str,
     carriers: list[str],
-    licensed_states: Optional[dict] = None,
+    licensed_states: dict | None = None,
 ) -> bool:
     """
     Process a NIPR document upload.
@@ -124,6 +122,7 @@ def handle_nipr_upload(
     try:
         with connection.cursor() as cursor:
             # Update onboarding progress
+            # Type ignore for JSON data being passed to SQL
             cursor.execute("""
                 UPDATE onboarding_progress
                 SET
@@ -131,7 +130,7 @@ def handle_nipr_upload(
                     nipr_carriers = %s,
                     nipr_licensed_states = %s
                 WHERE user_id = %s
-            """, [carriers, licensed_states, user_id])
+            """, [carriers, licensed_states, str(user_id)])  # type: ignore[list-item]
 
             # Update users table
             cursor.execute("""
@@ -139,7 +138,7 @@ def handle_nipr_upload(
                 SET unique_carriers = %s
                 WHERE id = %s
                 RETURNING id
-            """, [carriers, user_id])
+            """, [carriers, str(user_id)])
 
             row = cursor.fetchone()
             return row is not None

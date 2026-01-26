@@ -6,11 +6,11 @@ for all API views in the application.
 """
 from uuid import UUID
 
-from rest_framework import status
 from rest_framework.response import Response
 
-from .authentication import get_user_context, AuthenticatedUser
-from .exceptions import APIException as APIError, NotFoundError, ValidationError
+from .authentication import AuthenticatedUser, get_user_context
+from .exceptions import APIException as APIError
+from .exceptions import ValidationError
 
 
 class AuthenticatedAPIView:
@@ -57,8 +57,8 @@ class AuthenticatedAPIView:
             raise ValidationError(f"{field_name} is required")
         try:
             return UUID(value)
-        except ValueError:
-            raise ValidationError(f"Invalid {field_name} format")
+        except ValueError as err:
+            raise ValidationError(f"Invalid {field_name} format") from err
 
     def parse_uuid_optional(self, value: str) -> UUID | None:
         """Parse string to UUID, return None if empty or invalid."""
@@ -81,7 +81,7 @@ class AuthenticatedAPIView:
 
     def error_response(self, error: APIError) -> Response:
         """Build standardized error response."""
-        data = {"error": error.message}
+        data: dict = {"error": error.message}
         if error.details:
             data["details"] = error.details
         return Response(data, status=error.status_code)

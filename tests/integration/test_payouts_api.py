@@ -16,12 +16,10 @@ from decimal import Decimal
 from unittest.mock import MagicMock, patch
 
 import pytest
-from django.test import override_settings
 from rest_framework import status
 from rest_framework.test import APIClient
 
 from apps.core.authentication import AuthenticatedUser
-
 
 # =============================================================================
 # Formula Verification Tests (Unit Tests)
@@ -196,18 +194,20 @@ class TestExpectedPayoutsAPI:
 
         # These should not raise errors even if they return empty results
         for production_type in ['personal', 'downline']:
-            with patch('apps.payouts.selectors.get_visible_agent_ids', return_value=[self.user_id]):
-                with patch('django.db.connection.cursor') as mock_cursor:
-                    mock_cursor_instance = MagicMock()
-                    mock_cursor_instance.__enter__ = MagicMock(return_value=mock_cursor_instance)
-                    mock_cursor_instance.__exit__ = MagicMock(return_value=False)
-                    mock_cursor_instance.description = []
-                    mock_cursor_instance.fetchall.return_value = []
-                    mock_cursor.return_value = mock_cursor_instance
+            with (
+                patch('apps.payouts.selectors.get_visible_agent_ids', return_value=[self.user_id]),
+                patch('django.db.connection.cursor') as mock_cursor,
+            ):
+                mock_cursor_instance = MagicMock()
+                mock_cursor_instance.__enter__ = MagicMock(return_value=mock_cursor_instance)
+                mock_cursor_instance.__exit__ = MagicMock(return_value=False)
+                mock_cursor_instance.description = []
+                mock_cursor_instance.fetchall.return_value = []
+                mock_cursor.return_value = mock_cursor_instance
 
-                    response = self.client.get(f'/api/expected-payouts/?production_type={production_type}')
-                    # Should not be a 400 error
-                    assert response.status_code != status.HTTP_400_BAD_REQUEST
+                response = self.client.get(f'/api/expected-payouts/?production_type={production_type}')
+                # Should not be a 400 error
+                assert response.status_code != status.HTTP_400_BAD_REQUEST
 
 
 # =============================================================================

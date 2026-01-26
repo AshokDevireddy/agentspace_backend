@@ -2,11 +2,10 @@
 Deal QuerySet and Manager for optimized deal queries.
 """
 from datetime import date
-from typing import Optional
 from uuid import UUID
 
 from django.db import models
-from django.db.models import Q, Sum, Count, F
+from django.db.models import Count, Q, Sum
 from django.db.models.functions import Coalesce
 
 from apps.core.querysets import HierarchyQuerySetMixin, ViewModeQuerySetMixin
@@ -37,7 +36,7 @@ class DealQuerySet(HierarchyQuerySetMixin, ViewModeQuerySetMixin, models.QuerySe
             status_standardized__in=['lapsed', 'cancelled', 'terminated']
         )
 
-    def in_date_range(self, date_from: Optional[date] = None, date_to: Optional[date] = None):
+    def in_date_range(self, date_from: date | None = None, date_to: date | None = None):
         """
         Filter by policy effective date range.
 
@@ -124,7 +123,7 @@ class DealQuerySet(HierarchyQuerySetMixin, ViewModeQuerySetMixin, models.QuerySe
         Note: This is a simplified version. For carrier-specific mapping,
         use the StatusMapping model.
         """
-        from django.db.models import Case, When, Value, CharField
+        from django.db.models import Case, CharField, Value, When
 
         return self.annotate(
             status_impact=Case(
@@ -166,8 +165,8 @@ class DealQuerySet(HierarchyQuerySetMixin, ViewModeQuerySetMixin, models.QuerySe
 
     def keyset_paginate(
         self,
-        cursor_date: Optional[date] = None,
-        cursor_id: Optional[UUID] = None,
+        cursor_date: date | None = None,
+        cursor_id: UUID | None = None,
         limit: int = 50,
         order: str = 'desc'
     ):

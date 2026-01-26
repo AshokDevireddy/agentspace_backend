@@ -19,16 +19,19 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.core.authentication import get_user_context
+
 from .selectors import (
-    get_positions_for_agency,
     get_position_by_id,
     get_position_product_commissions,
+    get_positions_for_agency,
 )
 from .services import (
     create_position,
+    delete_position,
+    delete_position_commission,
+    sync_position_commissions,
     update_position,
     update_position_commission,
-    sync_position_commissions,
 )
 
 logger = logging.getLogger(__name__)
@@ -212,6 +215,50 @@ class PositionDetailView(APIView):
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
+    def delete(self, request, position_id):
+        """
+        DELETE /api/positions/{id}
+
+        Delete a position if no agents are assigned to it.
+        """
+        user = get_user_context(request)
+        if not user:
+            return Response(
+                {'error': 'Unauthorized', 'detail': 'Authentication required'},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
+        try:
+            position_uuid = UUID(position_id)
+        except ValueError:
+            return Response(
+                {'error': 'Invalid position_id', 'detail': 'position_id must be a valid UUID'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            deleted = delete_position(
+                position_id=position_uuid,
+                agency_id=user.agency_id,
+            )
+            if not deleted:
+                return Response(
+                    {'error': 'Position not found'},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+            return Response({'success': True})
+        except ValueError as e:
+            return Response(
+                {'error': 'Cannot delete position', 'detail': str(e)},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        except Exception as e:
+            logger.error(f'Position delete failed: {e}')
+            return Response(
+                {'error': 'Failed to delete position', 'detail': str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
 
 class PositionCommissionsView(APIView):
     """
@@ -258,8 +305,9 @@ class PositionCommissionsView(APIView):
 class PositionCommissionDetailView(APIView):
     """
     PATCH /api/positions/product-commissions/{id}
+    DELETE /api/positions/product-commissions/{id}
 
-    Update a commission percentage.
+    Update or delete a commission entry.
     """
     permission_classes = [IsAuthenticated]
 
@@ -302,6 +350,40 @@ class PositionCommissionDetailView(APIView):
             logger.error(f'Commission update failed: {e}')
             return Response(
                 {'error': 'Failed to update commission', 'detail': str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+    def delete(self, request, commission_id):
+        user = get_user_context(request)
+        if not user:
+            return Response(
+                {'error': 'Unauthorized', 'detail': 'Authentication required'},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
+        try:
+            commission_uuid = UUID(commission_id)
+        except ValueError:
+            return Response(
+                {'error': 'Invalid commission_id', 'detail': 'commission_id must be a valid UUID'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            deleted = delete_position_commission(
+                commission_id=commission_uuid,
+                agency_id=user.agency_id,
+            )
+            if not deleted:
+                return Response(
+                    {'error': 'Commission not found'},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+            return Response({'success': True})
+        except Exception as e:
+            logger.error(f'Commission delete failed: {e}')
+            return Response(
+                {'error': 'Failed to delete commission', 'detail': str(e)},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 

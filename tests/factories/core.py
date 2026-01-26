@@ -7,17 +7,16 @@ import uuid
 from datetime import date, timedelta
 
 import factory
-from factory import fuzzy
 from faker import Faker
 
 from apps.core.models import (
     Agency,
-    User,
-    Position,
     Carrier,
-    Product,
     Client,
+    Position,
     PositionProductCommission,
+    Product,
+    User,
 )
 
 fake = Faker()

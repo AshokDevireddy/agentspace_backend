@@ -21,16 +21,19 @@ from rest_framework.views import APIView
 from apps.core.constants import PAGINATION
 from apps.core.mixins import AuthenticatedAPIView
 from apps.core.permissions import SubscriptionTierPermission
+
 from .selectors import (
-    get_ai_conversations,
     get_ai_conversation_detail,
+    get_ai_conversations,
     get_ai_messages,
 )
 from .services import (
+    generate_analytics_insights,
     generate_chat_response,
     generate_suggestions,
-    generate_analytics_insights,
     save_ai_message,
+)
+from .services import (
     get_user_context as get_ai_user_context,
 )
 

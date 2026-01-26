@@ -117,7 +117,14 @@ class TestClientsListAPI:
         mock_get_user.return_value = self._create_mock_user()
         mock_selector.return_value = {
             'clients': [],
-            'pagination': {'currentPage': 1, 'totalPages': 0, 'totalCount': 0, 'limit': 100, 'hasNextPage': False, 'hasPrevPage': False},
+            'pagination': {
+                'currentPage': 1,
+                'totalPages': 0,
+                'totalCount': 0,
+                'limit': 100,
+                'hasNextPage': False,
+                'hasPrevPage': False,
+            },
         }
 
         response = self.client.get('/api/clients/', {'limit': 500})
@@ -134,7 +141,14 @@ class TestClientsListAPI:
         mock_get_user.return_value = self._create_mock_user()
         mock_selector.return_value = {
             'clients': [],
-            'pagination': {'currentPage': 1, 'totalPages': 0, 'totalCount': 0, 'limit': 20, 'hasNextPage': False, 'hasPrevPage': False},
+            'pagination': {
+                'currentPage': 1,
+                'totalPages': 0,
+                'totalCount': 0,
+                'limit': 20,
+                'hasNextPage': False,
+                'hasPrevPage': False,
+            },
         }
 
         response = self.client.get('/api/clients/', {'search': 'John'})
@@ -174,7 +188,14 @@ class TestClientsViewModes:
         mock_get_user.return_value = user
         mock_selector.return_value = {
             'clients': [],
-            'pagination': {'currentPage': 1, 'totalPages': 0, 'totalCount': 0, 'limit': 20, 'hasNextPage': False, 'hasPrevPage': False},
+            'pagination': {
+                'currentPage': 1,
+                'totalPages': 0,
+                'totalCount': 0,
+                'limit': 20,
+                'hasNextPage': False,
+                'hasPrevPage': False,
+            },
         }
 
         response = self.client.get('/api/clients/', {'view': 'self'})
@@ -191,7 +212,14 @@ class TestClientsViewModes:
         mock_get_user.return_value = self._create_mock_user()
         mock_selector.return_value = {
             'clients': [],
-            'pagination': {'currentPage': 1, 'totalPages': 0, 'totalCount': 0, 'limit': 20, 'hasNextPage': False, 'hasPrevPage': False},
+            'pagination': {
+                'currentPage': 1,
+                'totalPages': 0,
+                'totalCount': 0,
+                'limit': 20,
+                'hasNextPage': False,
+                'hasPrevPage': False,
+            },
         }
 
         response = self.client.get('/api/clients/')
@@ -209,7 +237,14 @@ class TestClientsViewModes:
         mock_get_user.return_value = self._create_mock_user(is_admin=True)
         mock_selector.return_value = {
             'clients': [],
-            'pagination': {'currentPage': 1, 'totalPages': 0, 'totalCount': 0, 'limit': 20, 'hasNextPage': False, 'hasPrevPage': False},
+            'pagination': {
+                'currentPage': 1,
+                'totalPages': 0,
+                'totalCount': 0,
+                'limit': 20,
+                'hasNextPage': False,
+                'hasPrevPage': False,
+            },
         }
 
         response = self.client.get('/api/clients/', {'view': 'all'})
@@ -226,7 +261,14 @@ class TestClientsViewModes:
         mock_get_user.return_value = self._create_mock_user(is_admin=False)
         mock_selector.return_value = {
             'clients': [],
-            'pagination': {'currentPage': 1, 'totalPages': 0, 'totalCount': 0, 'limit': 20, 'hasNextPage': False, 'hasPrevPage': False},
+            'pagination': {
+                'currentPage': 1,
+                'totalPages': 0,
+                'totalCount': 0,
+                'limit': 20,
+                'hasNextPage': False,
+                'hasPrevPage': False,
+            },
         }
 
         response = self.client.get('/api/clients/', {'view': 'all'})

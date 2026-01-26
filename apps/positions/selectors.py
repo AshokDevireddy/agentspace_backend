@@ -6,7 +6,6 @@ Replaces Supabase RPC: get_positions_for_agency
 
 Uses Django ORM with annotations and prefetch for efficient queries.
 """
-from typing import List, Optional
 from uuid import UUID
 
 from django.db.models import Count, Q
@@ -14,7 +13,7 @@ from django.db.models import Count, Q
 from apps.core.models import Position, PositionProductCommission, User
 
 
-def get_positions_for_agency(user_id: UUID) -> List[dict]:
+def get_positions_for_agency(user_id: UUID) -> list[dict]:
     """
     Get all positions for a user's agency.
     Translated from Supabase RPC: get_positions_for_agency
@@ -28,7 +27,7 @@ def get_positions_for_agency(user_id: UUID) -> List[dict]:
         List of position dictionaries with counts
     """
     # Get user's agency first
-    user = User.objects.filter(id=user_id).values('agency_id').first()
+    user = User.objects.filter(id=user_id).values('agency_id').first()  # type: ignore[attr-defined]
     if not user or not user['agency_id']:
         return []
 
@@ -36,7 +35,7 @@ def get_positions_for_agency(user_id: UUID) -> List[dict]:
 
     # Query positions with agent count annotation
     positions = (
-        Position.objects
+        Position.objects  # type: ignore[attr-defined]
         .filter(agency_id=agency_id)
         .annotate(
             agent_count=Count(
@@ -62,7 +61,7 @@ def get_positions_for_agency(user_id: UUID) -> List[dict]:
     ]
 
 
-def get_position_by_id(position_id: UUID, agency_id: UUID) -> Optional[dict]:
+def get_position_by_id(position_id: UUID, agency_id: UUID) -> dict | None:
     """
     Get a single position by ID (agency-scoped).
 
@@ -76,7 +75,7 @@ def get_position_by_id(position_id: UUID, agency_id: UUID) -> Optional[dict]:
         Position dictionary or None if not found
     """
     position = (
-        Position.objects
+        Position.objects  # type: ignore[attr-defined]
         .filter(id=position_id, agency_id=agency_id)
         .annotate(
             agent_count=Count(
@@ -102,7 +101,7 @@ def get_position_by_id(position_id: UUID, agency_id: UUID) -> Optional[dict]:
     }
 
 
-def get_position_product_commissions(position_id: UUID, agency_id: UUID) -> List[dict]:
+def get_position_product_commissions(position_id: UUID, agency_id: UUID) -> list[dict]:
     """
     Get product commissions for a position.
 
@@ -116,7 +115,7 @@ def get_position_product_commissions(position_id: UUID, agency_id: UUID) -> List
         List of commission dictionaries with product info
     """
     commissions = (
-        PositionProductCommission.objects
+        PositionProductCommission.objects  # type: ignore[attr-defined]
         .filter(
             position_id=position_id,
             position__agency_id=agency_id,

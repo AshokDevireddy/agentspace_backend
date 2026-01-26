@@ -5,7 +5,6 @@ Query functions for onboarding progress retrieval.
 Follows the selector pattern used in other apps.
 """
 import logging
-from typing import Optional
 from uuid import UUID
 
 from django.db import connection
@@ -13,7 +12,7 @@ from django.db import connection
 logger = logging.getLogger(__name__)
 
 
-def get_onboarding_progress(user_id: UUID) -> Optional[dict]:
+def get_onboarding_progress(user_id: UUID) -> dict | None:
     """
     Get onboarding progress for a user.
 
@@ -61,7 +60,7 @@ def get_onboarding_progress(user_id: UUID) -> Optional[dict]:
     }
 
 
-def get_nipr_job_with_progress(job_id: UUID) -> Optional[dict]:
+def get_nipr_job_with_progress(job_id: UUID) -> dict | None:
     """
     Get NIPR job status with progress information.
 

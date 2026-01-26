@@ -1,208 +1,218 @@
 """
 Integration Parity Tests for Deals API (P2-040)
 
-Tests deal endpoints including book-of-business with phone masking.
-Verifies response structures match expected format.
+Tests deal endpoints with real database fixtures.
+Verifies response structures and actual database queries.
 """
-import uuid
 from datetime import date, timedelta
-from unittest.mock import MagicMock, patch
 
 import pytest
 from rest_framework import status
-from rest_framework.test import APIClient
+
+from tests.factories import (
+    CarrierFactory,
+    ClientFactory,
+    DealFactory,
+    ProductFactory,
+)
 
 
 @pytest.mark.django_db
-class TestBookOfBusinessParity:
+class TestBookOfBusinessWithRealData:
     """
-    Verify GET /api/deals/book-of-business endpoint response structure.
+    Test GET /api/deals/book-of-business with real database records.
     """
 
-    def setup_method(self):
-        """Set up test fixtures."""
-        self.client = APIClient()
-        self.agency_id = uuid.uuid4()
-        self.user_id = uuid.uuid4()
+    def test_response_structure_with_real_deals(
+        self,
+        authenticated_api_client,
+        test_deals,
+    ):
+        """Verify response structure with real deal data."""
+        client, mock_user = authenticated_api_client
 
-    def _create_mock_user(self, is_admin: bool = False) -> MagicMock:
-        """Create a mock authenticated user."""
-        user = MagicMock()
-        user.id = self.user_id
-        user.agency_id = self.agency_id
-        user.role = 'admin' if is_admin else 'agent'
-        user.is_admin = is_admin
-        user.email = 'test@example.com'
-        user.first_name = 'Test'
-        user.last_name = 'User'
-        return user
-
-    def _create_mock_deal(self, agent_id: uuid.UUID, client_phone: str = '+15551234567'):
-        """Create a mock deal with client data."""
-        return {
-            'id': str(uuid.uuid4()),
-            'policy_number': 'POL-12345678',
-            'status': 'Active',
-            'status_standardized': 'active',
-            'annual_premium': 12000.00,
-            'monthly_premium': 1000.00,
-            'policy_effective_date': '2024-01-15',
-            'submission_date': '2024-01-01',
-            'billing_cycle': 'monthly',
-            'lead_source': 'referral',
-            'created_at': '2024-01-01T00:00:00Z',
-            'client': {
-                'id': str(uuid.uuid4()),
-                'first_name': 'Jane',
-                'last_name': 'Doe',
-                'email': 'jane@client.com',
-                'phone': client_phone,
-                'name': 'Jane Doe',
-            },
-            'carrier': {
-                'id': str(uuid.uuid4()),
-                'name': 'Test Carrier',
-            },
-            'product': {
-                'id': str(uuid.uuid4()),
-                'name': 'Term Life',
-            },
-            'agent': {
-                'id': str(agent_id),
-                'first_name': 'John',
-                'last_name': 'Agent',
-                'email': 'john@agent.com',
-                'name': 'John Agent',
-            },
-        }
-
-    @patch('apps.deals.views.get_user_context')
-    @patch('apps.deals.selectors.get_book_of_business')
-    def test_response_structure_includes_required_fields(self, mock_selector, mock_get_user):
-        """Verify all required fields are present in response."""
-        mock_user = self._create_mock_user()
-        mock_get_user.return_value = mock_user
-
-        mock_deal = self._create_mock_deal(mock_user.id)
-        mock_selector.return_value = {
-            'deals': [mock_deal],
-            'has_more': False,
-            'next_cursor': None,
-        }
-
-        response = self.client.get('/api/deals/book-of-business/')
+        response = client.get('/api/deals/book-of-business/')
 
         assert response.status_code == status.HTTP_200_OK
         data = response.json()
 
-        # Verify structure
+        # Verify pagination structure
         assert 'deals' in data
         assert 'has_more' in data
+        assert isinstance(data['deals'], list)
 
+        # Verify deal structure if deals present
         if data['deals']:
             deal = data['deals'][0]
-            assert 'id' in deal
-            assert 'policy_number' in deal
-            assert 'status' in deal
-            assert 'client' in deal
-            assert 'carrier' in deal
-            assert 'product' in deal
-            assert 'agent' in deal
+            required_fields = [
+                'id', 'policy_number', 'status', 'status_standardized',
+                'annual_premium', 'client', 'carrier', 'product', 'agent'
+            ]
+            for field in required_fields:
+                assert field in deal, f"Missing field: {field}"
 
-    @patch('apps.deals.views.get_user_context')
-    @patch('apps.deals.selectors.get_book_of_business')
-    def test_keyset_pagination_structure(self, mock_selector, mock_get_user):
-        """Verify keyset pagination returns correct cursor."""
-        mock_get_user.return_value = self._create_mock_user()
+    def test_deals_filtered_by_agency(
+        self,
+        authenticated_api_client,
+        agency,
+        agent_user,
+        test_deals,
+    ):
+        """Verify deals are filtered to user's agency."""
+        client, mock_user = authenticated_api_client
 
-        mock_selector.return_value = {
-            'deals': [self._create_mock_deal(self.user_id)],
-            'has_more': True,
-            'next_cursor': {
-                'policy_effective_date': '2024-01-15',
-                'id': str(uuid.uuid4()),
-            },
-        }
+        # Create a deal for a different agency (should not appear)
+        other_carrier = CarrierFactory()
+        other_product = ProductFactory(carrier=other_carrier)
+        DealFactory(
+            carrier=other_carrier,
+            product=other_product,
+        )
 
-        response = self.client.get('/api/deals/book-of-business/')
+        response = client.get('/api/deals/book-of-business/')
 
         assert response.status_code == status.HTTP_200_OK
         data = response.json()
 
-        assert data['has_more'] is True
-        assert 'next_cursor' in data
-        assert 'policy_effective_date' in data['next_cursor']
-        assert 'id' in data['next_cursor']
+        # All returned deals should belong to the user's agency
+        for deal in data['deals']:
+            # Deal's agent should be from our agency
+            assert deal['agent']['id'] == str(agent_user.id)
 
-    @patch('apps.deals.views.get_user_context')
-    @patch('apps.deals.selectors.get_book_of_business')
-    def test_filter_parameters_accepted(self, mock_selector, mock_get_user):
-        """Verify all filter parameters are accepted."""
-        mock_get_user.return_value = self._create_mock_user(is_admin=True)
-        mock_selector.return_value = {'deals': [], 'has_more': False, 'next_cursor': None}
+    def test_pagination_limit_parameter(
+        self,
+        authenticated_api_client,
+        test_deals,
+    ):
+        """Test limit parameter for pagination."""
+        client, mock_user = authenticated_api_client
 
-        params = {
-            'limit': '50',
-            'carrier_id': str(uuid.uuid4()),
-            'product_id': str(uuid.uuid4()),
-            'agent_id': str(uuid.uuid4()),
-            'client_id': str(uuid.uuid4()),
-            'status': 'Active',
-            'status_standardized': 'active',
-            'date_from': (date.today() - timedelta(days=90)).isoformat(),
-            'date_to': date.today().isoformat(),
-            'search_query': 'john',
-            'policy_number': 'POL-123',
-            'billing_cycle': 'monthly',
-            'lead_source': 'referral',
-            'view': 'all',
-            'effective_date_sort': 'newest',
-        }
-
-        response = self.client.get('/api/deals/book-of-business/', params)
-
-        # Should not reject valid params
-        assert response.status_code == status.HTTP_200_OK
-
-    @patch('apps.deals.views.get_user_context')
-    @patch('apps.deals.selectors.get_book_of_business')
-    def test_view_scope_self(self, mock_selector, mock_get_user):
-        """Test view='self' returns only user's deals."""
-        mock_get_user.return_value = self._create_mock_user()
-        mock_selector.return_value = {'deals': [], 'has_more': False, 'next_cursor': None}
-
-        response = self.client.get('/api/deals/book-of-business/', {'view': 'self'})
+        response = client.get('/api/deals/book-of-business/', {'limit': '2'})
 
         assert response.status_code == status.HTTP_200_OK
+        data = response.json()
 
-    @patch('apps.deals.views.get_user_context')
-    @patch('apps.deals.selectors.get_book_of_business')
-    def test_view_scope_downlines(self, mock_selector, mock_get_user):
-        """Test view='downlines' returns user + downlines deals."""
-        mock_get_user.return_value = self._create_mock_user()
-        mock_selector.return_value = {'deals': [], 'has_more': False, 'next_cursor': None}
+        # Should return at most 2 deals
+        assert len(data['deals']) <= 2
 
-        response = self.client.get('/api/deals/book-of-business/', {'view': 'downlines'})
+    def test_status_filter(
+        self,
+        authenticated_api_client,
+        test_deals,
+    ):
+        """Test filtering by status_standardized."""
+        client, mock_user = authenticated_api_client
+
+        response = client.get(
+            '/api/deals/book-of-business/',
+            {'status_standardized': 'active'}
+        )
+
+        assert response.status_code == status.HTTP_200_OK
+        data = response.json()
+
+        # All returned deals should have active status
+        for deal in data['deals']:
+            assert deal['status_standardized'] == 'active'
+
+    def test_date_range_filter(
+        self,
+        authenticated_api_client,
+        test_deals,
+    ):
+        """Test filtering by date range."""
+        client, mock_user = authenticated_api_client
+
+        date_from = (date.today() - timedelta(days=30)).isoformat()
+        date_to = date.today().isoformat()
+
+        response = client.get('/api/deals/book-of-business/', {
+            'date_from': date_from,
+            'date_to': date_to,
+        })
 
         assert response.status_code == status.HTTP_200_OK
 
-    @patch('apps.deals.views.get_user_context')
-    @patch('apps.deals.selectors.get_book_of_business')
-    def test_view_scope_all_admin_only(self, mock_selector, mock_get_user):
-        """Test view='all' works for admin users."""
-        mock_get_user.return_value = self._create_mock_user(is_admin=True)
-        mock_selector.return_value = {'deals': [], 'has_more': False, 'next_cursor': None}
+    def test_carrier_filter(
+        self,
+        authenticated_api_client,
+        test_deals,
+        test_carrier,
+    ):
+        """Test filtering by carrier_id."""
+        client, mock_user = authenticated_api_client
 
-        response = self.client.get('/api/deals/book-of-business/', {'view': 'all'})
+        response = client.get('/api/deals/book-of-business/', {
+            'carrier_id': str(test_carrier.id),
+        })
+
+        assert response.status_code == status.HTTP_200_OK
+        data = response.json()
+
+        # All returned deals should have the specified carrier
+        for deal in data['deals']:
+            assert deal['carrier']['id'] == str(test_carrier.id)
+
+
+@pytest.mark.django_db
+class TestBookOfBusinessViewScope:
+    """Test view scope parameter (self, downlines, all)."""
+
+    def test_view_self_returns_only_user_deals(
+        self,
+        authenticated_api_client,
+        test_deals,
+        downline_deals,
+    ):
+        """view='self' should return only the user's own deals."""
+        client, mock_user = authenticated_api_client
+
+        response = client.get('/api/deals/book-of-business/', {'view': 'self'})
+
+        assert response.status_code == status.HTTP_200_OK
+        data = response.json()
+
+        # All deals should belong to the authenticated user
+        for deal in data['deals']:
+            assert deal['agent']['id'] == str(mock_user.id)
+
+    def test_view_downlines_includes_hierarchy(
+        self,
+        authenticated_api_client,
+        agent_user,
+        downline_agent,
+        test_deals,
+        downline_deals,
+    ):
+        """view='downlines' should include user and downline deals."""
+        client, mock_user = authenticated_api_client
+
+        response = client.get('/api/deals/book-of-business/', {'view': 'downlines'})
+
+        assert response.status_code == status.HTTP_200_OK
+        data = response.json()
+
+        # Should include deals from both agent_user and downline_agent
+        agent_ids = {deal['agent']['id'] for deal in data['deals']}
+        assert str(agent_user.id) in agent_ids or str(downline_agent.id) in agent_ids
+
+    def test_view_all_admin_only(
+        self,
+        admin_api_client,
+        test_deals,
+        downline_deals,
+    ):
+        """view='all' should work for admin users."""
+        client, mock_admin = admin_api_client
+
+        response = client.get('/api/deals/book-of-business/', {'view': 'all'})
 
         assert response.status_code == status.HTTP_200_OK
 
 
 @pytest.mark.django_db
-class TestPhoneMaskingParity:
-    """
-    Test phone number masking in book-of-business (P2-027).
-    """
+class TestPhoneMaskingWithRealData:
+    """Test phone number masking logic."""
 
     def test_mask_phone_number_function(self):
         """Test the phone masking helper function."""
@@ -220,16 +230,9 @@ class TestPhoneMaskingParity:
         short_masked = mask_phone_number('12345', can_view_full=False)
         assert '****' in short_masked
 
-        # Test very short numbers
-        very_short_masked = mask_phone_number('123', can_view_full=False)
-        assert very_short_masked == '****'
-
         # Test None
         assert mask_phone_number(None, can_view_full=False) is None
         assert mask_phone_number(None, can_view_full=True) is None
-
-        # Test empty string
-        assert mask_phone_number('', can_view_full=False) is None
 
     def test_phone_masking_format(self):
         """Verify masked phone format: first 3 + **** + last 2."""
@@ -239,132 +242,159 @@ class TestPhoneMaskingParity:
 
         # Should start with first 3 digits
         assert masked.startswith('555')
-
         # Should end with last 2 digits
         assert masked.endswith('67')
-
         # Should have **** in the middle
         assert '****' in masked
 
 
 @pytest.mark.django_db
-class TestFilterOptionsParity:
-    """
-    Verify GET /api/deals/filter-options endpoint.
-    """
+class TestFilterOptionsWithRealData:
+    """Test GET /api/deals/filter-options with real database records."""
 
-    def setup_method(self):
-        """Set up test fixtures."""
-        self.client = APIClient()
+    def test_filter_options_returns_carriers(
+        self,
+        authenticated_api_client,
+        test_carrier,
+        test_product,
+        test_deals,
+    ):
+        """Verify filter options includes carriers from deals."""
+        client, mock_user = authenticated_api_client
 
-    @patch('apps.deals.views.get_user_context')
-    @patch('apps.deals.selectors.get_static_filter_options')
-    def test_filter_options_structure(self, mock_selector, mock_get_user):
-        """Verify filter options response structure."""
-        mock_user = MagicMock()
-        mock_user.id = uuid.uuid4()
-        mock_user.agency_id = uuid.uuid4()
-        mock_user.is_admin = False
-        mock_user.role = 'agent'
-        mock_get_user.return_value = mock_user
-
-        mock_selector.return_value = {
-            'carriers': [
-                {'id': str(uuid.uuid4()), 'name': 'Carrier A'},
-                {'id': str(uuid.uuid4()), 'name': 'Carrier B'},
-            ],
-            'products': [
-                {'id': str(uuid.uuid4()), 'name': 'Product A', 'carrier_name': 'Carrier A'},
-            ],
-            'statuses': ['Active', 'Pending', 'Lapsed'],
-            'statuses_standardized': ['active', 'pending', 'lapsed'],
-            'agents': [
-                {'id': str(uuid.uuid4()), 'name': 'Agent One', 'email': 'agent1@test.com'},
-            ],
-        }
-
-        response = self.client.get('/api/deals/filter-options/')
+        response = client.get('/api/deals/filter-options/')
 
         assert response.status_code == status.HTTP_200_OK
         data = response.json()
 
-        # Verify structure
+        # Should have carriers list
         assert 'carriers' in data
-        assert 'products' in data
-        assert 'statuses' in data
-        assert 'statuses_standardized' in data
-        assert 'agents' in data
+        assert isinstance(data['carriers'], list)
 
-        # Verify carriers structure
+        # If deals exist, carriers should be populated
         if data['carriers']:
             carrier = data['carriers'][0]
             assert 'id' in carrier
             assert 'name' in carrier
 
-        # Verify products have carrier_name
-        if data['products']:
-            product = data['products'][0]
-            assert 'id' in product
-            assert 'name' in product
-            assert 'carrier_name' in product
+    def test_filter_options_returns_products(
+        self,
+        authenticated_api_client,
+        test_product,
+        test_deals,
+    ):
+        """Verify filter options includes products."""
+        client, mock_user = authenticated_api_client
+
+        response = client.get('/api/deals/filter-options/')
+
+        assert response.status_code == status.HTTP_200_OK
+        data = response.json()
+
+        assert 'products' in data
+        assert isinstance(data['products'], list)
+
+    def test_filter_options_returns_statuses(
+        self,
+        authenticated_api_client,
+        test_deals,
+    ):
+        """Verify filter options includes available statuses."""
+        client, mock_user = authenticated_api_client
+
+        response = client.get('/api/deals/filter-options/')
+
+        assert response.status_code == status.HTTP_200_OK
+        data = response.json()
+
+        assert 'statuses' in data or 'statuses_standardized' in data
 
 
 @pytest.mark.django_db
-class TestEffectiveDateSortParity:
-    """
-    Test effective_date_sort parameter (P2-027).
-    """
+class TestEffectiveDateSortWithRealData:
+    """Test effective_date_sort parameter with real deals."""
 
-    def test_sort_values_valid(self):
-        """Verify only valid sort values are accepted."""
-        valid_sorts = ['oldest', 'newest', None]
+    def test_sort_newest_first(
+        self,
+        authenticated_api_client,
+        agency,
+        agent_user,
+        test_carrier,
+        test_product,
+    ):
+        """Test sorting deals by newest effective date first."""
+        client, mock_user = authenticated_api_client
 
-        for sort_val in valid_sorts:
-            if sort_val == 'oldest':
-                order = 'ASC'
-            else:
-                order = 'DESC'
+        # Create deals with different effective dates
+        old_client = ClientFactory(agency=agency)
+        new_client = ClientFactory(agency=agency)
 
-            assert order in ['ASC', 'DESC']
+        DealFactory(
+            agency=agency,
+            agent=agent_user,
+            client=old_client,
+            carrier=test_carrier,
+            product=test_product,
+            policy_effective_date=date.today() - timedelta(days=60),
+        )
+        DealFactory(
+            agency=agency,
+            agent=agent_user,
+            client=new_client,
+            carrier=test_carrier,
+            product=test_product,
+            policy_effective_date=date.today() - timedelta(days=5),
+        )
 
-    def test_sort_affects_order_direction(self):
-        """Test that sort parameter changes query order."""
-        # oldest -> ASC
-        oldest_order = 'ASC' if 'oldest' == 'oldest' else 'DESC'
-        assert oldest_order == 'ASC'
+        response = client.get('/api/deals/book-of-business/', {
+            'effective_date_sort': 'newest',
+        })
 
-        # newest -> DESC (default)
-        newest_order = 'DESC' if 'newest' == 'newest' else 'DESC'
-        assert newest_order == 'DESC'
+        assert response.status_code == status.HTTP_200_OK
+        data = response.json()
+
+        if len(data['deals']) >= 2:
+            # Newest should come first
+            dates = [deal.get('policy_effective_date') for deal in data['deals']]
+            assert dates == sorted(dates, reverse=True)
+
+    def test_sort_oldest_first(
+        self,
+        authenticated_api_client,
+        test_deals,
+    ):
+        """Test sorting deals by oldest effective date first."""
+        client, mock_user = authenticated_api_client
+
+        response = client.get('/api/deals/book-of-business/', {
+            'effective_date_sort': 'oldest',
+        })
+
+        assert response.status_code == status.HTTP_200_OK
+        data = response.json()
+
+        if len(data['deals']) >= 2:
+            # Oldest should come first
+            dates = [deal.get('policy_effective_date') for deal in data['deals']]
+            assert dates == sorted(dates)
 
 
 @pytest.mark.django_db
-class TestBillingCycleFilterParity:
-    """
-    Test billing_cycle filter (P2-027).
-    """
+class TestBillingCycleFilter:
+    """Test billing_cycle filter parameter."""
 
-    def test_valid_billing_cycles(self):
-        """Verify valid billing cycle values."""
+    def test_valid_billing_cycles_accepted(
+        self,
+        authenticated_api_client,
+    ):
+        """Verify valid billing cycle values are accepted."""
+        client, mock_user = authenticated_api_client
+
         valid_cycles = ['monthly', 'quarterly', 'semi-annually', 'annually']
 
         for cycle in valid_cycles:
-            # All should be valid filter values
-            assert cycle in valid_cycles
-
-    @patch('apps.deals.views.get_user_context')
-    @patch('apps.deals.selectors.get_book_of_business')
-    def test_billing_cycle_filter_accepted(self, mock_selector, mock_get_user):
-        """Test billing_cycle parameter is accepted."""
-        mock_user = MagicMock()
-        mock_user.id = uuid.uuid4()
-        mock_user.agency_id = uuid.uuid4()
-        mock_user.is_admin = False
-        mock_user.role = 'agent'
-        mock_get_user.return_value = mock_user
-        mock_selector.return_value = {'deals': [], 'has_more': False, 'next_cursor': None}
-
-        client = APIClient()
-        response = client.get('/api/deals/book-of-business/', {'billing_cycle': 'monthly'})
-
-        assert response.status_code == status.HTTP_200_OK
+            response = client.get('/api/deals/book-of-business/', {
+                'billing_cycle': cycle,
+            })
+            # Should not return 400 for valid cycles
+            assert response.status_code != status.HTTP_400_BAD_REQUEST

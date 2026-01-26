@@ -4,7 +4,6 @@ Agent Services
 Business logic for agent operations.
 """
 import logging
-from typing import Optional
 from uuid import UUID
 
 from django.db import connection, transaction
@@ -109,9 +108,9 @@ def update_agent_position(
 def assign_position_to_agent(
     *,
     agent_id: UUID,
-    position_id: Optional[UUID],
+    position_id: UUID | None,
     agency_id: UUID,
-) -> Optional[dict]:
+) -> dict | None:
     """
     Assign a position to an agent.
 
@@ -143,5 +142,5 @@ def assign_position_to_agent(
         columns = [col[0] for col in cursor.description]
         row = cursor.fetchone()
         if row:
-            return dict(zip(columns, row))
+            return dict(zip(columns, row, strict=False))
         return None

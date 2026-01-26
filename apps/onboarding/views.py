@@ -21,20 +21,21 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.core.authentication import get_user_context
+
 from .selectors import (
-    get_onboarding_progress,
-    get_nipr_job_with_progress,
     check_nipr_already_completed,
+    get_nipr_job_with_progress,
+    get_onboarding_progress,
 )
 from .services import (
-    create_onboarding_progress,
-    update_onboarding_step,
-    update_nipr_status,
     add_pending_invitation,
-    remove_pending_invitation,
     clear_pending_invitations,
     complete_onboarding,
+    create_onboarding_progress,
+    remove_pending_invitation,
     store_nipr_carriers,
+    update_nipr_status,
+    update_onboarding_step,
 )
 
 logger = logging.getLogger(__name__)

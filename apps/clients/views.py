@@ -14,7 +14,8 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.core.authentication import get_user_context
-from .selectors import get_clients_list, get_client_detail
+
+from .selectors import get_client_detail, get_clients_list
 
 logger = logging.getLogger(__name__)
 

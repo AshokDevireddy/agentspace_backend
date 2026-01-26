@@ -6,10 +6,8 @@ DRF Serializers for all core models following best practices:
 - Explicit field definitions (no fields = '__all__')
 - Nested serializers with prefetch optimization
 """
-from decimal import Decimal
 from rest_framework import serializers
 
-from .utils import format_full_name
 from .models import (
     Agency,
     AIConversation,
@@ -28,11 +26,9 @@ from .models import (
     StatusMapping,
     User,
 )
+from .utils import format_full_name
 
-
-# =============================================================================
 # Agency Serializers
-# =============================================================================
 
 class AgencySerializer(serializers.ModelSerializer):
     """Read serializer for Agency."""
@@ -90,9 +86,7 @@ class AgencyMinimalSerializer(serializers.ModelSerializer):
         fields = ['id', 'name', 'display_name']
 
 
-# =============================================================================
 # Position Serializers
-# =============================================================================
 
 class PositionSerializer(serializers.ModelSerializer):
     """Read serializer for Position."""
@@ -128,9 +122,7 @@ class PositionCreateSerializer(serializers.ModelSerializer):
         fields = ['name', 'description', 'level', 'is_active', 'agency']
 
 
-# =============================================================================
 # User/Agent Serializers
-# =============================================================================
 
 class UserMinimalSerializer(serializers.ModelSerializer):
     """Minimal User serializer for nested representations."""
@@ -294,9 +286,7 @@ class AgentWithMetricsSerializer(serializers.Serializer):
     )
 
 
-# =============================================================================
 # Carrier Serializers
-# =============================================================================
 
 class CarrierSerializer(serializers.ModelSerializer):
     """Read serializer for Carrier."""
@@ -336,9 +326,7 @@ class CarrierWithProductsSerializer(serializers.ModelSerializer):
         return ProductMinimalSerializer(products, many=True).data
 
 
-# =============================================================================
 # Product Serializers
-# =============================================================================
 
 class ProductSerializer(serializers.ModelSerializer):
     """Read serializer for Product."""
@@ -384,9 +372,7 @@ class ProductDetailSerializer(serializers.ModelSerializer):
         ]
 
 
-# =============================================================================
 # Client Serializers
-# =============================================================================
 
 class ClientSerializer(serializers.ModelSerializer):
     """Read serializer for Client."""
@@ -431,9 +417,7 @@ class ClientCreateSerializer(serializers.ModelSerializer):
         fields = ['first_name', 'last_name', 'email', 'phone', 'agency']
 
 
-# =============================================================================
 # Deal Serializers
-# =============================================================================
 
 class DealListSerializer(serializers.ModelSerializer):
     """Lightweight Deal serializer for list views."""
@@ -523,9 +507,7 @@ class DealCreateSerializer(serializers.ModelSerializer):
         ]
 
 
-# =============================================================================
 # Beneficiary Serializers
-# =============================================================================
 
 class BeneficiarySerializer(serializers.ModelSerializer):
     """Read serializer for Beneficiary."""
@@ -547,9 +529,7 @@ class BeneficiarySerializer(serializers.ModelSerializer):
         return format_full_name(obj.first_name, obj.last_name)
 
 
-# =============================================================================
 # Position Product Commission Serializers
-# =============================================================================
 
 class PositionProductCommissionSerializer(serializers.ModelSerializer):
     """Read serializer for PositionProductCommission."""
@@ -570,9 +550,7 @@ class PositionProductCommissionSerializer(serializers.ModelSerializer):
         ]
 
 
-# =============================================================================
 # Deal Hierarchy Snapshot Serializers
-# =============================================================================
 
 class DealHierarchySnapshotSerializer(serializers.ModelSerializer):
     """Read serializer for DealHierarchySnapshot."""
@@ -599,9 +577,7 @@ class DealHierarchySnapshotSerializer(serializers.ModelSerializer):
         return None
 
 
-# =============================================================================
 # Status Mapping Serializers
-# =============================================================================
 
 class StatusMappingSerializer(serializers.ModelSerializer):
     """Read serializer for StatusMapping."""
@@ -629,9 +605,7 @@ class StatusMappingCreateSerializer(serializers.ModelSerializer):
         fields = ['carrier', 'raw_status', 'standardized_status', 'impact']
 
 
-# =============================================================================
 # SMS/Conversation Serializers
-# =============================================================================
 
 class ConversationSerializer(serializers.ModelSerializer):
     """Read serializer for Conversation."""
@@ -742,9 +716,7 @@ class DraftMessageSerializer(serializers.ModelSerializer):
         return None
 
 
-# =============================================================================
 # Pagination Serializers
-# =============================================================================
 
 class PaginationSerializer(serializers.Serializer):
     """Standard pagination response structure."""
@@ -756,9 +728,7 @@ class PaginationSerializer(serializers.Serializer):
     hasPrevPage = serializers.BooleanField()
 
 
-# =============================================================================
 # Dashboard/Analytics Serializers
-# =============================================================================
 
 class DashboardSummarySerializer(serializers.Serializer):
     """Dashboard summary data."""
@@ -798,9 +768,7 @@ class ScoreboardSerializer(serializers.Serializer):
     user_production = serializers.DecimalField(max_digits=15, decimal_places=2, allow_null=True)
 
 
-# =============================================================================
 # Filter Options Serializers
-# =============================================================================
 
 class FilterOptionSerializer(serializers.Serializer):
     """Generic filter option."""
@@ -816,9 +784,7 @@ class DealFilterOptionsSerializer(serializers.Serializer):
     statuses = FilterOptionSerializer(many=True)
 
 
-# =============================================================================
 # Expected Payouts Serializers
-# =============================================================================
 
 class ExpectedPayoutSerializer(serializers.Serializer):
     """Expected payout entry."""
@@ -841,9 +807,7 @@ class ExpectedPayoutsResponseSerializer(serializers.Serializer):
     pagination = PaginationSerializer()
 
 
-# =============================================================================
-# AI Conversation/Message Serializers (P1-015)
-# =============================================================================
+# AI Conversation/Message Serializers
 
 class AIConversationListSerializer(serializers.ModelSerializer):
     """Lightweight serializer for list views."""

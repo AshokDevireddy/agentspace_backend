@@ -5,7 +5,6 @@ Validates JWTs issued by Supabase Auth and attaches user context to requests.
 """
 import logging
 from dataclasses import dataclass
-from typing import Optional
 from uuid import UUID
 
 import jwt
@@ -31,8 +30,10 @@ class AuthenticatedUser:
     role: str                     # 'admin', 'agent', 'client'
     is_admin: bool
     status: str                   # 'pre-invite', 'invited', 'onboarding', 'active', 'inactive'
-    perm_level: Optional[str]     # Permission level within agency
-    subscription_tier: Optional[str]  # 'free', 'pro', 'expert'
+    perm_level: str | None     # Permission level within agency
+    subscription_tier: str | None  # 'free', 'pro', 'expert'
+    first_name: str | None = None  # First name from users table
+    last_name: str | None = None   # Last name from users table
 
     @property
     def is_authenticated(self) -> bool:
@@ -101,7 +102,7 @@ class SupabaseJWTAuthentication(authentication.BaseAuthentication):
         """
         return 'Bearer realm="api"'
 
-    def _decode_jwt(self, token: str) -> Optional[dict]:
+    def _decode_jwt(self, token: str) -> dict | None:
         """
         Decode and validate a Supabase JWT.
 
@@ -112,7 +113,7 @@ class SupabaseJWTAuthentication(authentication.BaseAuthentication):
             dict: The decoded payload if valid
             None: If token is invalid or expired
         """
-        jwt_secret = settings.SUPABASE_JWT_SECRET
+        jwt_secret = getattr(settings, 'SUPABASE_JWT_SECRET', None)
 
         if not jwt_secret:
             logger.error('SUPABASE_JWT_SECRET not configured')
@@ -141,7 +142,7 @@ class SupabaseJWTAuthentication(authentication.BaseAuthentication):
             logger.debug(f'JWT validation failed: {e}')
             return None
 
-    def _get_user_from_payload(self, payload: dict) -> Optional[AuthenticatedUser]:
+    def _get_user_from_payload(self, payload: dict) -> AuthenticatedUser | None:
         """
         Look up user in public.users by auth_user_id from JWT sub claim.
 
@@ -168,7 +169,9 @@ class SupabaseJWTAuthentication(authentication.BaseAuthentication):
                         is_admin,
                         status,
                         perm_level,
-                        subscription_tier
+                        subscription_tier,
+                        first_name,
+                        last_name
                     FROM public.users
                     WHERE auth_user_id = %s
                     LIMIT 1
@@ -190,13 +193,15 @@ class SupabaseJWTAuthentication(authentication.BaseAuthentication):
                     status=row[6] or 'active',
                     perm_level=row[7],
                     subscription_tier=row[8],
+                    first_name=row[9],
+                    last_name=row[10],
                 )
         except Exception as e:
             logger.error(f'Database error looking up user: {e}')
             return None
 
 
-def get_user_context(request) -> Optional[AuthenticatedUser]:
+def get_user_context(request) -> AuthenticatedUser | None:
     """
     Utility function to get authenticated user from request.
 

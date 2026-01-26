@@ -4,10 +4,9 @@ Django Base Settings for AgentSpace Backend
 This file contains all shared settings used across environments.
 Environment-specific settings are in development.py and production.py.
 """
-import os
 from pathlib import Path
 
-from decouple import config, Csv
+from decouple import Csv, config
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
@@ -58,6 +57,7 @@ INSTALLED_APPS = [
     'apps.ingest',     # Policy report ingest/processing
     'apps.ai',         # AI conversations (P1-015)
     'apps.onboarding', # Onboarding flow state management
+    'apps.agencies',   # Agency settings and configuration
 ]
 
 MIDDLEWARE = [

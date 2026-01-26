@@ -10,11 +10,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import List, Optional
 from uuid import UUID
 
 from .base import BaseService
-
 
 # ============================================================================
 # Data Transfer Objects (DTOs)
@@ -34,7 +32,7 @@ class AgentSearchResult:
     first_name: str
     last_name: str
     email: str
-    total_prod: Optional[Decimal]
+    total_prod: Decimal | None
     similarity_score: float
     match_type: str  # 'exact', 'fuzzy', 'suggestion'
 
@@ -45,9 +43,9 @@ class ClientSearchResult:
     id: UUID
     first_name: str
     last_name: str
-    email: Optional[str]
-    phone: Optional[str]
-    agent_id: Optional[UUID]
+    email: str | None
+    phone: str | None
+    agent_id: UUID | None
     similarity_score: float
     match_type: str  # 'exact', 'fuzzy', 'suggestion'
 
@@ -56,13 +54,13 @@ class ClientSearchResult:
 class PolicySearchResult:
     """Result from search_policies_fuzzy."""
     id: UUID
-    policy_number: Optional[str]
-    application_number: Optional[str]
+    policy_number: str | None
+    application_number: str | None
     client_name: str
     agent_id: UUID
     carrier_id: UUID
-    annual_premium: Optional[Decimal]
-    status_standardized: Optional[str]
+    annual_premium: Decimal | None
+    status_standardized: str | None
     similarity_score: float
     match_type: str  # 'exact', 'fuzzy', 'suggestion'
 
@@ -89,7 +87,7 @@ class SearchService(BaseService):
         self,
         search_term: str = '',
         limit: int = 20
-    ) -> List[FilterOption]:
+    ) -> list[FilterOption]:
         """
         Translated from Supabase RPC: search_agents_for_filter
 
@@ -142,13 +140,13 @@ class SearchService(BaseService):
         #   AND EXISTS (SELECT 1 FROM deals d WHERE d.agent_id = u.id)
         # ORDER BY u.last_name, u.first_name
         # LIMIT p_limit;
-        pass
+        return []
 
     def search_clients_for_filter(
         self,
         search_term: str = '',
         limit: int = 20
-    ) -> List[FilterOption]:
+    ) -> list[FilterOption]:
         """
         Translated from Supabase RPC: search_clients_for_filter
 
@@ -187,13 +185,13 @@ class SearchService(BaseService):
         #   AND EXISTS (SELECT 1 FROM deals d WHERE d.client_id = u.id)
         # ORDER BY u.last_name, u.first_name
         # LIMIT p_limit;
-        pass
+        return []
 
     def search_policy_numbers_for_filter(
         self,
         search_term: str = '',
         limit: int = 20
-    ) -> List[FilterOption]:
+    ) -> list[FilterOption]:
         """
         Search policy numbers for filter dropdown.
 
@@ -210,7 +208,7 @@ class SearchService(BaseService):
             List[FilterOption]: Policy number options for dropdown
         """
         # TODO: Implement Django ORM equivalent
-        pass
+        return []
 
     # ========================================================================
     # P2 - Fuzzy Search Functions
@@ -219,10 +217,10 @@ class SearchService(BaseService):
     def search_agents_fuzzy(
         self,
         query: str,
-        allowed_agent_ids: Optional[List[UUID]] = None,
+        allowed_agent_ids: list[UUID] | None = None,
         limit: int = 20,
         similarity_threshold: float = 0.3
-    ) -> List[AgentSearchResult]:
+    ) -> list[AgentSearchResult]:
         """
         Translated from Supabase RPC: search_agents_fuzzy
 
@@ -290,15 +288,15 @@ class SearchService(BaseService):
         #   CASE match_type WHEN 'exact' THEN 1 WHEN 'fuzzy' THEN 2 ELSE 3 END,
         #   sim_score DESC
         # LIMIT p_limit;
-        pass
+        return []
 
     def search_clients_fuzzy(
         self,
         query: str,
-        allowed_agent_ids: Optional[List[UUID]] = None,
+        allowed_agent_ids: list[UUID] | None = None,
         limit: int = 20,
         similarity_threshold: float = 0.3
-    ) -> List[ClientSearchResult]:
+    ) -> list[ClientSearchResult]:
         """
         Translated from Supabase RPC: search_clients_fuzzy
 
@@ -346,15 +344,15 @@ class SearchService(BaseService):
         # WHERE sim_score >= p_similarity_threshold
         # ORDER BY match_type priority, sim_score DESC
         # LIMIT p_limit;
-        pass
+        return []
 
     def search_policies_fuzzy(
         self,
         query: str,
-        allowed_agent_ids: Optional[List[UUID]] = None,
+        allowed_agent_ids: list[UUID] | None = None,
         limit: int = 20,
         similarity_threshold: float = 0.3
-    ) -> List[PolicySearchResult]:
+    ) -> list[PolicySearchResult]:
         """
         Translated from Supabase RPC: search_policies_fuzzy
 
@@ -409,7 +407,7 @@ class SearchService(BaseService):
         # WHERE sim_score >= p_similarity_threshold
         # ORDER BY match_type priority, sim_score DESC
         # LIMIT p_limit;
-        pass
+        return []
 
 
 # ============================================================================

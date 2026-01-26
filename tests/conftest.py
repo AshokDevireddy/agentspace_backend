@@ -7,14 +7,11 @@ Key Features:
 - Sets up factory_boy for model factories
 """
 import uuid
-from datetime import date, datetime
-from typing import Any
-from unittest.mock import MagicMock
+from datetime import date
 
 import pytest
 from django.apps import apps
 from rest_framework.test import APIClient
-
 
 # =============================================================================
 # Database Setup - Enable managed=True for unmanaged models

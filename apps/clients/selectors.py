@@ -4,13 +4,12 @@ Client Selectors (P2-037)
 Complex queries for client data retrieval.
 """
 import logging
-from typing import Optional
 from uuid import UUID
 
 from django.db import connection
 
-from apps.core.permissions import get_visible_agent_ids
 from apps.core.authentication import AuthenticatedUser
+from apps.core.permissions import get_visible_agent_ids
 
 logger = logging.getLogger(__name__)
 
@@ -19,8 +18,8 @@ def get_clients_list(
     user: AuthenticatedUser,
     page: int = 1,
     limit: int = 20,
-    search_query: Optional[str] = None,
-    agent_id: Optional[UUID] = None,
+    search_query: str | None = None,
+    agent_id: UUID | None = None,
     include_full_agency: bool = False,
 ) -> dict:
     """
@@ -41,10 +40,11 @@ def get_clients_list(
     offset = (page - 1) * limit
 
     # Build agent filter for deals (to get clients associated with visible agents)
-    if agent_id:
-        visible_ids = [agent_id]
-    else:
-        visible_ids = get_visible_agent_ids(user, include_full_agency=include_full_agency and is_admin)
+    visible_ids = (
+        [agent_id]
+        if agent_id
+        else get_visible_agent_ids(user, include_full_agency=include_full_agency and is_admin)
+    )
 
     if not visible_ids:
         return {'clients': [], 'pagination': _empty_pagination(page, limit)}
@@ -111,7 +111,7 @@ def get_clients_list(
 
         clients = []
         for row in rows:
-            client = dict(zip(columns, row))
+            client = dict(zip(columns, row, strict=False))
             clients.append({
                 'id': str(client['id']),
                 'first_name': client['first_name'],
@@ -123,7 +123,11 @@ def get_clients_list(
                 'deal_count': client['deal_count'] or 0,
                 'active_deals': client['active_deals'] or 0,
                 'total_premium': float(client['total_premium']) if client['total_premium'] else 0,
-                'latest_policy_date': client['latest_policy_date'].isoformat() if client['latest_policy_date'] else None,
+                'latest_policy_date': (
+                    client['latest_policy_date'].isoformat()
+                    if client['latest_policy_date']
+                    else None
+                ),
             })
 
         total_pages = (total_count + limit - 1) // limit if limit > 0 else 0
@@ -148,7 +152,7 @@ def get_clients_list(
 def get_client_detail(
     user: AuthenticatedUser,
     client_id: UUID,
-) -> Optional[dict]:
+) -> dict | None:
     """
     Get detailed information about a client.
 
@@ -193,7 +197,7 @@ def get_client_detail(
             return None
 
         columns = ['id', 'first_name', 'last_name', 'email', 'phone', 'created_at', 'updated_at']
-        client = dict(zip(columns, row))
+        client = dict(zip(columns, row, strict=False))
 
         # Get client's deals
         deals_query = f"""
@@ -224,7 +228,7 @@ def get_client_detail(
 
         deals = []
         for row in deal_rows:
-            deal = dict(zip(deal_columns, row))
+            deal = dict(zip(deal_columns, row, strict=False))
             deals.append({
                 'id': str(deal['id']),
                 'policy_number': deal['policy_number'],

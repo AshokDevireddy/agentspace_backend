@@ -5,7 +5,7 @@ Handles JWT authentication and attaches user context to requests.
 """
 import logging
 import re
-from typing import Callable, List
+from collections.abc import Callable
 
 from django.http import JsonResponse
 
@@ -26,7 +26,7 @@ class SupabaseAuthMiddleware:
     """
 
     # Routes that don't require authentication
-    PUBLIC_ROUTES: List[str] = [
+    PUBLIC_ROUTES: list[str] = [
         r'^/api/health$',
         r'^/api/auth/login$',
         r'^/api/auth/register$',
@@ -87,10 +87,7 @@ class SupabaseAuthMiddleware:
 
     def _is_public_route(self, path: str) -> bool:
         """Check if the given path matches any public route pattern."""
-        for pattern in self._public_patterns:
-            if pattern.match(path):
-                return True
-        return False
+        return any(pattern.match(path) for pattern in self._public_patterns)
 
 
 class AgencyContextMiddleware:

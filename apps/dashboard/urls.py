@@ -9,26 +9,26 @@ from . import views
 
 urlpatterns = [
     # Core dashboard endpoints
-    path('summary', views.DashboardSummaryView.as_view(), name='dashboard_summary'),
-    path('scoreboard', views.ScoreboardView.as_view(), name='dashboard_scoreboard'),
-    path('scoreboard-lapsed', views.ScoreboardLapsedView.as_view(), name='dashboard_scoreboard_lapsed'),
-    path('scoreboard-billing-cycle', views.ScoreboardBillingCycleView.as_view(), name='dashboard_scoreboard_billing_cycle'),
-    path('production', views.ProductionView.as_view(), name='dashboard_production'),
+    path('summary/', views.DashboardSummaryView.as_view(), name='dashboard_summary'),
+    path('scoreboard/', views.ScoreboardView.as_view(), name='dashboard_scoreboard'),
+    path('scoreboard-lapsed/', views.ScoreboardLapsedView.as_view(), name='dashboard_scoreboard_lapsed'),
+    path('scoreboard-billing-cycle/', views.ScoreboardBillingCycleView.as_view(), name='dashboard_scoreboard_billing_cycle'),
+    path('production/', views.ProductionView.as_view(), name='dashboard_production'),
 
     # Widgets (P2-032)
-    path('widgets', views.WidgetsListView.as_view(), name='widgets_list'),
-    path('widgets/reorder', views.WidgetsReorderView.as_view(), name='widgets_reorder'),
-    path('widgets/<str:widget_id>', views.WidgetDetailView.as_view(), name='widget_detail'),
+    path('widgets/', views.WidgetsListView.as_view(), name='widgets_list'),
+    path('widgets/reorder/', views.WidgetsReorderView.as_view(), name='widgets_reorder'),
+    path('widgets/<str:widget_id>/', views.WidgetDetailView.as_view(), name='widget_detail'),
 
     # Reports (P2-033)
-    path('reports', views.ReportsListView.as_view(), name='reports_list'),
-    path('reports/<str:report_id>', views.ReportDetailView.as_view(), name='report_detail'),
-    path('reports/<str:report_id>/generate', views.ReportGenerateView.as_view(), name='report_generate'),
+    path('reports/', views.ReportsListView.as_view(), name='reports_list'),
+    path('reports/<str:report_id>/', views.ReportDetailView.as_view(), name='report_detail'),
+    path('reports/<str:report_id>/generate/', views.ReportGenerateView.as_view(), name='report_generate'),
 
     # Scheduled Reports (P2-034)
-    path('scheduled-reports', views.ScheduledReportsListView.as_view(), name='scheduled_reports_list'),
-    path('scheduled-reports/<str:report_id>', views.ScheduledReportDetailView.as_view(), name='scheduled_report_detail'),
+    path('scheduled-reports/', views.ScheduledReportsListView.as_view(), name='scheduled_reports_list'),
+    path('scheduled-reports/<str:report_id>/', views.ScheduledReportDetailView.as_view(), name='scheduled_report_detail'),
 
     # Export (P2-035)
-    path('export', views.ExportView.as_view(), name='export'),
+    path('export/', views.ExportView.as_view(), name='export'),
 ]

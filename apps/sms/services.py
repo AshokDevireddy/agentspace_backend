@@ -11,7 +11,7 @@ import logging
 import os
 import uuid
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any
 from uuid import UUID
 
 from django.db import connection
@@ -24,6 +24,74 @@ logger = logging.getLogger(__name__)
 TWILIO_ACCOUNT_SID = os.getenv('TWILIO_ACCOUNT_SID')
 TWILIO_AUTH_TOKEN = os.getenv('TWILIO_AUTH_TOKEN')
 TWILIO_PHONE_NUMBER = os.getenv('TWILIO_PHONE_NUMBER')
+
+# Telnyx configuration
+TELNYX_API_KEY = os.getenv('TELNYX_API_KEY')
+TELNYX_API_URL = 'https://api.telnyx.com/v2/messages'
+
+
+def normalize_phone_number(phone: str) -> str:
+    """Normalize a phone number to E.164 format (+1XXXXXXXXXX) for sending SMS."""
+    import re
+    digits = re.sub(r'\D', '', phone)
+    if len(digits) == 10:
+        return f'+1{digits}'
+    if len(digits) == 11 and digits.startswith('1'):
+        return f'+{digits}'
+    if phone.startswith('+'):
+        return f'+{digits}'
+    return f'+{digits}'
+
+
+def send_sms_via_telnyx(from_number: str, to_number: str, text: str) -> dict:
+    """
+    Send an SMS message via Telnyx API.
+
+    Args:
+        from_number: The sender phone number
+        to_number: The recipient phone number
+        text: The message content
+
+    Returns:
+        dict with 'success', 'message_id', and optionally 'error'
+    """
+    import requests  # type: ignore[import-untyped]
+
+    if not TELNYX_API_KEY:
+        return {'success': False, 'error': 'TELNYX_API_KEY is not configured'}
+
+    normalized_from = normalize_phone_number(from_number)
+    normalized_to = normalize_phone_number(to_number)
+
+    try:
+        response = requests.post(
+            TELNYX_API_URL,
+            headers={
+                'Content-Type': 'application/json',
+                'Authorization': f'Bearer {TELNYX_API_KEY}',
+            },
+            json={
+                'from': normalized_from,
+                'to': normalized_to,
+                'text': text,
+            },
+            timeout=30
+        )
+
+        if not response.ok:
+            error_data = response.json()
+            logger.error(f'Telnyx API error: {error_data}')
+            return {'success': False, 'error': f'Telnyx API error: {response.status_code}'}
+
+        data = response.json()
+        return {
+            'success': True,
+            'message_id': data.get('data', {}).get('id'),
+        }
+
+    except Exception as e:
+        logger.error(f'Telnyx send failed: {e}')
+        return {'success': False, 'error': str(e)}
 
 
 def get_twilio_client():
@@ -40,24 +108,24 @@ class SendMessageInput:
     """Input for sending a single SMS message."""
     conversation_id: UUID
     content: str
-    from_number: Optional[str] = None
+    from_number: str | None = None
 
 
 @dataclass
 class SendMessageResult:
     """Result of sending an SMS message."""
     success: bool
-    message_id: Optional[UUID] = None
-    external_id: Optional[str] = None
-    error: Optional[str] = None
+    message_id: UUID | None = None
+    external_id: str | None = None
+    error: str | None = None
 
 
 @dataclass
 class BulkSendInput:
     """Input for bulk SMS sending."""
-    template_id: Optional[UUID] = None
-    content: Optional[str] = None
-    recipient_ids: list[UUID] = None
+    template_id: UUID | None = None
+    content: str | None = None
+    recipient_ids: list[UUID] | None = None
     recipient_type: str = 'client'  # 'client' or 'agent'
 
 
@@ -68,7 +136,7 @@ class BulkSendResult:
     total: int = 0
     sent: int = 0
     failed: int = 0
-    errors: list[dict] = None
+    errors: list[dict[Any, Any]] | None = None
 
 
 def send_message(
@@ -85,11 +153,11 @@ def send_message(
     Returns:
         SendMessageResult with success status and message details
     """
-    from apps.core.models import Conversation, Message
+    from apps.core.models import Conversation
 
     try:
         # Verify conversation access
-        conversation = Conversation.objects.filter(
+        conversation = Conversation.objects.filter(  # type: ignore[attr-defined]
             id=data.conversation_id,
             agency_id=user.agency_id
         ).first()
@@ -238,13 +306,13 @@ def send_bulk_messages(
                     u.id as agent_id,
                     u.first_name,
                     u.last_name,
-                    u.phone,
+                    u.phone_number,
                     NULL as conversation_id,
                     NULL as sms_opt_in_status
                 FROM public.users u
                 WHERE u.id = ANY(%s::uuid[])
                     AND u.agency_id = %s
-                    AND u.phone IS NOT NULL
+                    AND u.phone_number IS NOT NULL
             """, [recipient_ids_str, str(user.agency_id)])
             recipients = cursor.fetchall()
 
@@ -295,7 +363,7 @@ def send_bulk_messages(
                     sent += 1
                 else:
                     failed += 1
-                    errors.append({"recipient_id": str(recipient_id), "error": result.error})
+                    errors.append({"recipient_id": str(recipient_id), "error": result.error or "Unknown error"})
             else:
                 # Direct send without conversation (for agents)
                 client = get_twilio_client()
@@ -352,12 +420,13 @@ def create_template(user: AuthenticatedUser, data: TemplateInput) -> dict:
             data.is_active,
             str(user.id)
         ])
-        row = cursor.fetchone()
+        cursor.fetchone()
 
-    return get_template_by_id(template_id, user)
+    result = get_template_by_id(template_id, user)
+    return result if result is not None else {}
 
 
-def update_template(template_id: UUID, user: AuthenticatedUser, data: TemplateInput) -> Optional[dict]:
+def update_template(template_id: UUID, user: AuthenticatedUser, data: TemplateInput) -> dict | None:
     """Update an existing SMS template."""
     with connection.cursor() as cursor:
         cursor.execute("""
@@ -410,7 +479,7 @@ def _template_row_to_dict(row) -> dict:
     }
 
 
-def get_template_by_id(template_id: UUID, user: AuthenticatedUser) -> Optional[dict]:
+def get_template_by_id(template_id: UUID, user: AuthenticatedUser) -> dict | None:
     """Get a single SMS template by ID."""
     with connection.cursor() as cursor:
         cursor.execute("""
@@ -427,7 +496,7 @@ def get_template_by_id(template_id: UUID, user: AuthenticatedUser) -> Optional[d
     return _template_row_to_dict(row) if row else None
 
 
-def list_templates(user: AuthenticatedUser, template_type: Optional[str] = None) -> list[dict]:
+def list_templates(user: AuthenticatedUser, template_type: str | None = None) -> list[dict]:
     """List all SMS templates for the agency."""
     params = [str(user.agency_id)]
     type_filter = ""
@@ -459,7 +528,7 @@ def update_opt_status(
     user: AuthenticatedUser,
     conversation_id: UUID,
     opt_status: str,
-) -> Optional[dict]:
+) -> dict | None:
     """
     Update SMS opt-in/opt-out status for a conversation.
 
@@ -587,3 +656,187 @@ def handle_start_keyword(phone_number: str, agency_id: UUID) -> bool:
 
     logger.info(f"START keyword: opted in {len(rows)} conversations for {phone_number}")
     return len(rows) > 0
+
+
+# =============================================================================
+# Draft Message Approval/Rejection
+# =============================================================================
+
+
+@dataclass
+class ApproveDraftsResult:
+    """Result of approving draft messages."""
+    success: bool
+    approved: int = 0
+    failed: int = 0
+    results: list[Any] | None = None
+    errors: list[Any] | None = None
+
+
+@dataclass
+class RejectDraftsResult:
+    """Result of rejecting draft messages."""
+    success: bool
+    rejected: int = 0
+
+
+def approve_drafts(
+    user: AuthenticatedUser,
+    message_ids: list[str]
+) -> ApproveDraftsResult:
+    """
+    Approve and send draft SMS messages.
+
+    Args:
+        user: The authenticated user approving the drafts
+        message_ids: List of message IDs to approve
+
+    Returns:
+        ApproveDraftsResult with success counts and details
+    """
+    if not message_ids:
+        return ApproveDraftsResult(success=False, errors=[{'error': 'No message IDs provided'}])
+
+    results = []
+    errors = []
+
+    try:
+        # Fetch draft messages with conversation and agency details
+        message_ids_str = [str(mid) for mid in message_ids]
+        with connection.cursor() as cursor:
+            cursor.execute("""
+                SELECT
+                    m.id,
+                    m.content,
+                    m.conversation_id,
+                    c.phone_number as client_phone,
+                    c.deal_id,
+                    a.phone_number as agency_phone
+                FROM public.messages m
+                JOIN public.conversations c ON c.id = m.conversation_id
+                JOIN public.deals d ON d.id = c.deal_id
+                JOIN public.agencies a ON a.id = d.agency_id
+                WHERE m.id = ANY(%s::uuid[])
+                    AND m.status = 'draft'
+                    AND d.agency_id = %s
+            """, [message_ids_str, str(user.agency_id)])
+            draft_messages = cursor.fetchall()
+
+        if not draft_messages:
+            return ApproveDraftsResult(
+                success=True,
+                approved=0,
+                failed=0,
+                results=[],
+                errors=[{'error': 'No draft messages found with provided IDs'}]
+            )
+
+        for row in draft_messages:
+            message_id, content, conversation_id, client_phone, deal_id, agency_phone = row
+
+            if not agency_phone or not client_phone:
+                errors.append({
+                    'messageId': str(message_id),
+                    'error': 'Missing phone numbers for sending SMS'
+                })
+                continue
+
+            # Send SMS via Telnyx
+            sms_result = send_sms_via_telnyx(
+                from_number=agency_phone,
+                to_number=client_phone,
+                text=content
+            )
+
+            if sms_result['success']:
+                # Update message status to 'sent'
+                with connection.cursor() as cursor:
+                    cursor.execute("""
+                        UPDATE public.messages
+                        SET status = 'sent', sent_at = NOW(), updated_at = NOW()
+                        WHERE id = %s
+                    """, [str(message_id)])
+
+                results.append({
+                    'messageId': str(message_id),
+                    'success': True,
+                    'telnyxMessageId': sms_result.get('message_id'),
+                })
+                logger.info(f"Draft message {message_id} approved and sent")
+            else:
+                errors.append({
+                    'messageId': str(message_id),
+                    'error': sms_result.get('error', 'Unknown error'),
+                })
+
+        return ApproveDraftsResult(
+            success=True,
+            approved=len(results),
+            failed=len(errors),
+            results=results,
+            errors=errors if errors else None
+        )
+
+    except Exception as e:
+        logger.error(f'Error approving drafts: {e}')
+        return ApproveDraftsResult(
+            success=False,
+            errors=[{'error': str(e)}]
+        )
+
+
+def reject_drafts(
+    user: AuthenticatedUser,
+    message_ids: list[str]
+) -> RejectDraftsResult:
+    """
+    Reject (delete) draft SMS messages.
+
+    Args:
+        user: The authenticated user rejecting the drafts
+        message_ids: List of message IDs to reject
+
+    Returns:
+        RejectDraftsResult with rejection count
+    """
+    if not message_ids:
+        return RejectDraftsResult(success=True, rejected=0)
+
+    try:
+        message_ids_str = [str(mid) for mid in message_ids]
+
+        # Verify messages exist and are drafts within user's agency
+        with connection.cursor() as cursor:
+            cursor.execute("""
+                SELECT m.id
+                FROM public.messages m
+                JOIN public.conversations c ON c.id = m.conversation_id
+                JOIN public.deals d ON d.id = c.deal_id
+                WHERE m.id = ANY(%s::uuid[])
+                    AND m.status = 'draft'
+                    AND d.agency_id = %s
+            """, [message_ids_str, str(user.agency_id)])
+            valid_ids = [str(row[0]) for row in cursor.fetchall()]
+
+        if not valid_ids:
+            logger.info("No valid draft messages found to delete")
+            return RejectDraftsResult(success=True, rejected=0)
+
+        # Delete the draft messages
+        with connection.cursor() as cursor:
+            cursor.execute("""
+                DELETE FROM public.messages
+                WHERE id = ANY(%s::uuid[])
+                    AND status = 'draft'
+                RETURNING id
+            """, [valid_ids])
+            deleted = cursor.fetchall()
+
+        deleted_count = len(deleted)
+        logger.info(f"Rejected and deleted {deleted_count} draft messages")
+
+        return RejectDraftsResult(success=True, rejected=deleted_count)
+
+    except Exception as e:
+        logger.error(f'Error rejecting drafts: {e}')
+        return RejectDraftsResult(success=False, rejected=0)

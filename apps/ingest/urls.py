@@ -4,21 +4,21 @@ Ingest URL Configuration
 from django.urls import path
 
 from .views import (
-    EnqueueJobView,
-    OrchestrateIngestView,
-    SyncStagingView,
-    StagingSummaryView,
     CreateClientsFromDealsView,
     CreateClientsFromStagingView,
-    CreateUsersFromStagingView,
     CreateProductsFromStagingView,
+    CreateUsersFromStagingView,
     CreateWritingAgentNumbersView,
     DedupeStagingView,
-    UpsertProductsView,
+    EnqueueJobView,
     FillAgentCarrierNumbersView,
     FillAgentCarrierNumbersWithAuditView,
     LinkStagedAgentNumbersView,
+    OrchestrateIngestView,
+    StagingSummaryView,
     SyncAgentCarrierNumbersView,
+    SyncStagingView,
+    UpsertProductsView,
 )
 
 urlpatterns = [
@@ -39,7 +39,11 @@ urlpatterns = [
 
     # Phase 3: Remaining Ingest Functions
     path('fill-agent-carrier-numbers', FillAgentCarrierNumbersView.as_view(), name='ingest_fill_agent_carrier_numbers'),
-    path('fill-agent-carrier-numbers-with-audit', FillAgentCarrierNumbersWithAuditView.as_view(), name='ingest_fill_agent_carrier_numbers_audit'),
+    path(
+        'fill-agent-carrier-numbers-with-audit',
+        FillAgentCarrierNumbersWithAuditView.as_view(),
+        name='ingest_fill_agent_carrier_numbers_audit',
+    ),
     path('link-staged-agent-numbers', LinkStagedAgentNumbersView.as_view(), name='ingest_link_staged_agent_numbers'),
     path('sync-agent-carrier-numbers', SyncAgentCarrierNumbersView.as_view(), name='ingest_sync_agent_carrier_numbers'),
 ]

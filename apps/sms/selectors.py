@@ -5,15 +5,14 @@ Complex queries for SMS conversations, messages, and drafts.
 Converted to Django ORM for improved maintainability and N+1 prevention.
 """
 import logging
-from typing import Optional, Literal
+from typing import Literal
 from uuid import UUID
 
-from django.db import connection
-from django.db.models import Q, Subquery, OuterRef, Count
 from django.core.paginator import Paginator
+from django.db.models import OuterRef, Q, Subquery
 
-from apps.core.permissions import get_visible_agent_ids
 from apps.core.authentication import AuthenticatedUser
+from apps.core.permissions import get_visible_agent_ids
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +24,7 @@ def get_sms_conversations(
     view_mode: ViewMode = 'self',
     page: int = 1,
     limit: int = 20,
-    search_query: Optional[str] = None,
+    search_query: str | None = None,
 ) -> dict:
     """
     Get SMS conversations based on view mode.
@@ -48,7 +47,7 @@ def get_sms_conversations(
 
     try:
         # Start with base queryset
-        qs = Conversation.objects.filter(agency_id=user.agency_id)
+        qs = Conversation.objects.filter(agency_id=user.agency_id)  # type: ignore[attr-defined]
 
         # Apply view mode filter
         if view_mode == 'all' and is_admin:
@@ -75,7 +74,7 @@ def get_sms_conversations(
 
         # Add last message content via subquery
         last_message_subquery = (
-            Message.objects.filter(conversation_id=OuterRef('id'))
+            Message.objects.filter(conversation_id=OuterRef('id'))  # type: ignore[attr-defined]
             .order_by('-created_at')
             .values('content')[:1]
         )
@@ -164,7 +163,7 @@ def get_sms_messages(
     try:
         # Verify access to conversation
         try:
-            conversation = Conversation.objects.get(id=conversation_id)
+            conversation = Conversation.objects.get(id=conversation_id)  # type: ignore[attr-defined]
         except Conversation.DoesNotExist:
             return {'messages': [], 'pagination': _empty_pagination(page, limit)}
 
@@ -181,7 +180,7 @@ def get_sms_messages(
 
         # Get messages with optimized query
         qs = (
-            Message.objects.filter(conversation_id=conversation_id)
+            Message.objects.filter(conversation_id=conversation_id)  # type: ignore[attr-defined]
             .select_related('sent_by')
             .order_by('created_at')
         )
@@ -256,7 +255,7 @@ def get_draft_messages(
 
     try:
         # Start with base queryset - only pending drafts
-        qs = DraftMessage.objects.filter(
+        qs = DraftMessage.objects.filter(  # type: ignore[attr-defined]
             agency_id=user.agency_id,
             status='pending'
         )
@@ -354,16 +353,16 @@ def get_unread_message_count(
 
     Uses Django ORM with django-cte for downlines.
     """
-    from apps.core.models import Message, User
-    from django.db.models import Value, IntegerField
     from django_cte import With
+
+    from apps.core.models import Message, User
 
     is_admin = user.is_admin or user.role == 'admin'
 
     try:
         if view_mode == 'all' and is_admin:
             return (
-                Message.objects.filter(
+                Message.objects.filter(  # type: ignore[attr-defined]
                     conversation__agent__agency_id=user.agency_id,
                     direction='inbound',
                     is_read=False
@@ -373,7 +372,7 @@ def get_unread_message_count(
 
         elif view_mode == 'self':
             return (
-                Message.objects.filter(
+                Message.objects.filter(  # type: ignore[attr-defined]
                     conversation__agent_id=user.id,
                     direction='inbound',
                     is_read=False
@@ -398,7 +397,7 @@ def get_unread_message_count(
             )
 
             return (
-                Message.objects.filter(
+                Message.objects.filter(  # type: ignore[attr-defined]
                     conversation__agent_id__in=downline_ids,
                     direction='inbound',
                     is_read=False

@@ -9,17 +9,14 @@ Priority: P1 - Analytics (P2-039)
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import date, timedelta
 from decimal import Decimal
-from typing import Any, Dict, List, Optional
+from typing import Any
 from uuid import UUID
 
 from django.db import connection
-from django.db.models import Count, Q, Sum
-from django.db.models.functions import Coalesce, TruncMonth
 
-from apps.core.models import Deal, User
 from .base import BaseService
 from .hierarchy_service import HierarchyService
 
@@ -45,7 +42,7 @@ class DashboardYourDeals:
     monthly_commissions: Decimal
     new_policies: int
     total_clients: int
-    carriers_active: List[CarrierActivePolicy]
+    carriers_active: list[CarrierActivePolicy]
 
 
 @dataclass
@@ -55,7 +52,7 @@ class DashboardDownlineProduction:
     monthly_commissions: Decimal
     new_policies: int
     total_clients: int
-    carriers_active: List[CarrierActivePolicy]
+    carriers_active: list[CarrierActivePolicy]
 
 
 @dataclass
@@ -68,19 +65,19 @@ class DashboardData:
 @dataclass
 class DashboardDataWithRange:
     """Dashboard data with date range filtering."""
-    your_deals: Dict[str, Any]
-    downline_production: Dict[str, Any]
-    leaderboard: List[Dict[str, Any]]
+    your_deals: dict[str, Any]
+    downline_production: dict[str, Any]
+    leaderboard: list[dict[str, Any]]
 
 
 @dataclass
 class PersistencyData:
     """Persistency analytics data."""
-    meta: Dict[str, Any]
-    series: List[Dict[str, Any]]
-    windows_by_carrier: Dict[str, Any]
-    totals: Dict[str, Any]
-    breakdowns_over_time: Dict[str, Any]
+    meta: dict[str, Any]
+    series: list[dict[str, Any]]
+    windows_by_carrier: dict[str, Any]
+    totals: dict[str, Any]
+    breakdowns_over_time: dict[str, Any]
 
 
 @dataclass
@@ -114,7 +111,7 @@ class AnalyticsService(BaseService):
 
     def get_dashboard_data_with_agency_id(
         self,
-        as_of_date: Optional[date] = None
+        as_of_date: date | None = None
     ) -> DashboardData:
         """
         Get dashboard summary data for the current user.
@@ -469,8 +466,8 @@ class AnalyticsService(BaseService):
 
     def analyze_persistency_for_deals(
         self,
-        as_of_date: Optional[date] = None,
-        carrier_id: Optional[UUID] = None
+        as_of_date: date | None = None,
+        carrier_id: UUID | None = None
     ) -> PersistencyData:
         """
         Analyze policy persistency (lapse rates) for deals.
@@ -622,8 +619,8 @@ class AnalyticsService(BaseService):
 
     def get_book_of_business_monthly_stats(
         self,
-        as_of_date: Optional[date] = None
-    ) -> Dict[str, Any]:
+        as_of_date: date | None = None
+    ) -> dict[str, Any]:
         """
         Get monthly statistics for book of business.
 
@@ -701,7 +698,7 @@ class AnalyticsService(BaseService):
         start_date: date,
         end_date: date,
         limit: int = 10
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """
         Get production leaderboard for date range.
 
@@ -750,13 +747,13 @@ class AnalyticsService(BaseService):
             """, [str(self.agency_id), start_date, end_date, limit])
 
             columns = ['rank', 'agent_id', 'agent_name', 'position', 'production', 'deals_count']
-            return [dict(zip(columns, row)) for row in cursor.fetchall()]
+            return [dict(zip(columns, row, strict=False)) for row in cursor.fetchall()]
 
     def get_user_rank(
         self,
         start_date: date,
         end_date: date
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         Get the current user's rank and production.
 

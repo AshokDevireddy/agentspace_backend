@@ -3,9 +3,9 @@ from django.urls import path
 from .views import (
     AcquireJobView,
     CompleteJobView,
-    UpdateProgressView,
-    ReleaseLocksView,
     JobStatusView,
+    ReleaseLocksView,
+    UpdateProgressView,
 )
 
 urlpatterns = [

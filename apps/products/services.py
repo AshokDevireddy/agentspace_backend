@@ -3,7 +3,7 @@ Product Services
 
 Business logic for product operations.
 """
-from typing import Optional
+from typing import Any
 from uuid import UUID
 
 from django.db import connection, transaction
@@ -15,7 +15,7 @@ def create_product(
     carrier_id: UUID,
     agency_id: UUID,
     name: str,
-    product_code: Optional[str] = None,
+    product_code: str | None = None,
     is_active: bool = True,
 ) -> dict:
     """
@@ -52,7 +52,7 @@ def create_product(
             RETURNING id, carrier_id, agency_id, name, product_code, is_active, created_at
         """, [str(carrier_id), str(agency_id), name, product_code, is_active])
         columns = [col[0] for col in cursor.description]
-        product = dict(zip(columns, cursor.fetchone()))
+        product = dict(zip(columns, cursor.fetchone(), strict=False))
 
         # Auto-create commission entries for all positions (set to 0%)
         cursor.execute("""
@@ -70,10 +70,10 @@ def update_product(
     *,
     product_id: UUID,
     agency_id: UUID,
-    name: Optional[str] = None,
-    product_code: Optional[str] = None,
-    is_active: Optional[bool] = None,
-) -> Optional[dict]:
+    name: str | None = None,
+    product_code: str | None = None,
+    is_active: bool | None = None,
+) -> dict | None:
     """
     Update an existing product.
 
@@ -89,7 +89,7 @@ def update_product(
     """
     # Build update fields dynamically
     updates = []
-    params = []
+    params: list[Any] = []
 
     if name is not None:
         updates.append('name = %s')
@@ -119,5 +119,31 @@ def update_product(
         columns = [col[0] for col in cursor.description]
         row = cursor.fetchone()
         if row:
-            return dict(zip(columns, row))
+            return dict(zip(columns, row, strict=False))
         return None
+
+
+@transaction.atomic
+def delete_product(
+    *,
+    product_id: UUID,
+    agency_id: UUID,
+) -> bool:
+    """
+    Delete a product.
+
+    Args:
+        product_id: The product UUID
+        agency_id: The agency UUID for security check
+
+    Returns:
+        True if deleted, False if not found
+    """
+    with connection.cursor() as cursor:
+        # Delete the product (cascade will handle commission entries)
+        cursor.execute("""
+            DELETE FROM products
+            WHERE id = %s AND agency_id = %s
+            RETURNING id
+        """, [str(product_id), str(agency_id)])
+        return cursor.fetchone() is not None

@@ -8,7 +8,6 @@ Policy report processing functions translated from Supabase RPC functions:
 """
 import logging
 from datetime import datetime
-from typing import Optional
 from uuid import UUID
 
 from django.db import connection, transaction
@@ -23,7 +22,7 @@ def enqueue_policy_report_parse_job(
     agency_id: UUID,
     priority: int = 0,
     delay_sec: int = 0,
-) -> Optional[int]:
+) -> int | None:
     """
     Enqueue a policy report parse job.
     Translated from Supabase RPC: enqueue_policy_report_parse_job

@@ -4,12 +4,12 @@ AI URL Configuration (P1-015, P2-036, P2-037, P2-038)
 from django.urls import path
 
 from .views import (
-    AIConversationsView,
+    AIAnalyticsInsightsView,
     AIConversationDetailView,
+    AIConversationsView,
     AIMessagesView,
     AIQuickChatView,
     AISuggestionsView,
-    AIAnalyticsInsightsView,
 )
 
 urlpatterns = [

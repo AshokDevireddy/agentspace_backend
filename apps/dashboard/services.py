@@ -13,11 +13,11 @@ import logging
 import uuid
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
-from typing import Optional
 from uuid import UUID
 
 from django.db import connection
 from django.utils import timezone
+from psycopg2.extras import Json
 
 from apps.core.constants import EXPORT
 from services.hierarchy_service import HierarchyService
@@ -35,7 +35,7 @@ class UserContext:
     is_admin: bool
 
 
-def get_user_context_from_auth_id(auth_user_id: UUID) -> Optional[UserContext]:
+def get_user_context_from_auth_id(auth_user_id: UUID) -> UserContext | None:
     """
     Get user context from auth_user_id.
 
@@ -50,7 +50,7 @@ def get_user_context_from_auth_id(auth_user_id: UUID) -> Optional[UserContext]:
     from apps.core.models import User
 
     try:
-        user = User.objects.filter(auth_user_id=auth_user_id).first()
+        user = User.objects.filter(auth_user_id=auth_user_id).first()  # type: ignore[attr-defined]
 
         if not user:
             return None
@@ -74,7 +74,7 @@ def get_user_context_from_auth_id(auth_user_id: UUID) -> Optional[UserContext]:
         return None
 
 
-def get_dashboard_summary(user_ctx: UserContext, as_of_date: Optional[date] = None) -> dict:
+def get_dashboard_summary(user_ctx: UserContext, as_of_date: date | None = None) -> dict:
     """
     Get dashboard summary data.
 
@@ -697,11 +697,11 @@ def get_scoreboard_lapsed_deals(
                 'submitted': submitted,
             }
 
-            cursor.execute(query, params)
+            cursor.execute(query, params)  # type: ignore[arg-type]
             row = cursor.fetchone()
 
-            leaderboard = row[0] if row and row[0] else []
-            stats = row[1] if row and row[1] else {
+            leaderboard: list = row[0] if row and row[0] else []
+            stats: dict = row[1] if row and row[1] else {
                 'totalProduction': 0,
                 'totalDeals': 0,
                 'activeAgents': 0,
@@ -1119,7 +1119,7 @@ class WidgetInput:
     widget_type: str
     title: str
     position: int = 0
-    config: dict = None
+    config: dict | None = None
     is_visible: bool = True
 
 
@@ -1166,14 +1166,14 @@ def create_widget(user_id: UUID, data: WidgetInput) -> dict:
             data.widget_type,
             data.title,
             data.position,
-            data.config or {},
+            Json(data.config or {}),  # type: ignore[arg-type]
             data.is_visible,
         ])
 
-    return get_widget_by_id(widget_id, user_id)
+    return get_widget_by_id(widget_id, user_id)  # type: ignore[return-value]
 
 
-def update_widget(widget_id: UUID, user_id: UUID, data: WidgetInput) -> Optional[dict]:
+def update_widget(widget_id: UUID, user_id: UUID, data: WidgetInput) -> dict | None:
     """Update an existing widget."""
     with connection.cursor() as cursor:
         cursor.execute("""
@@ -1185,12 +1185,12 @@ def update_widget(widget_id: UUID, user_id: UUID, data: WidgetInput) -> Optional
             data.widget_type,
             data.title,
             data.position,
-            data.config or {},
+            Json(data.config or {}),  # type: ignore[arg-type]
             data.is_visible,
             str(widget_id),
             str(user_id),
         ])
-        row = cursor.fetchone()
+        row = cursor.fetchone()  # type: ignore[assignment]
 
     if not row:
         return None
@@ -1211,7 +1211,7 @@ def delete_widget(widget_id: UUID, user_id: UUID) -> bool:
     return row is not None
 
 
-def get_widget_by_id(widget_id: UUID, user_id: UUID) -> Optional[dict]:
+def get_widget_by_id(widget_id: UUID, user_id: UUID) -> dict | None:
     """Get a single widget by ID."""
     with connection.cursor() as cursor:
         cursor.execute("""
@@ -1279,14 +1279,14 @@ def create_report(user_ctx: UserContext, data: ReportInput) -> dict:
             str(user_ctx.internal_user_id),
             data.report_type,
             data.title,
-            data.parameters,
+            Json(data.parameters),  # type: ignore[arg-type]
             data.format,
         ])
 
-    return get_report_by_id(report_id, user_ctx)
+    return get_report_by_id(report_id, user_ctx)  # type: ignore[return-value]
 
 
-def get_report_by_id(report_id: UUID, user_ctx: UserContext) -> Optional[dict]:
+def get_report_by_id(report_id: UUID, user_ctx: UserContext) -> dict | None:
     """Get a report by ID."""
     with connection.cursor() as cursor:
         cursor.execute("""
@@ -1352,7 +1352,7 @@ def list_reports(user_ctx: UserContext, limit: int = 50) -> list[dict]:
     ]
 
 
-def generate_report(report_id: UUID, user_ctx: UserContext) -> Optional[dict]:
+def generate_report(report_id: UUID, user_ctx: UserContext) -> dict | None:
     """
     Generate a report and return its data.
 
@@ -1373,7 +1373,7 @@ def generate_report(report_id: UUID, user_ctx: UserContext) -> Optional[dict]:
     try:
         report_type = report['report_type']
         params = report['parameters']
-        report_format = report['format']
+        report['format']
 
         # Generate report data based on type
         if report_type == 'production':
@@ -1447,7 +1447,7 @@ def _generate_production_report(user_ctx: UserContext, params: dict) -> list[dic
         columns = [col[0] for col in cursor.description]
         rows = cursor.fetchall()
 
-    return [dict(zip(columns, row)) for row in rows]
+    return [dict(zip(columns, row, strict=False)) for row in rows]
 
 
 def _generate_pipeline_report(user_ctx: UserContext, params: dict) -> list[dict]:
@@ -1468,7 +1468,7 @@ def _generate_pipeline_report(user_ctx: UserContext, params: dict) -> list[dict]
         columns = [col[0] for col in cursor.description]
         rows = cursor.fetchall()
 
-    return [dict(zip(columns, row)) for row in rows]
+    return [dict(zip(columns, row, strict=False)) for row in rows]
 
 
 def _generate_team_performance_report(user_ctx: UserContext, params: dict) -> list[dict]:
@@ -1498,7 +1498,7 @@ def _generate_team_performance_report(user_ctx: UserContext, params: dict) -> li
         columns = [col[0] for col in cursor.description]
         rows = cursor.fetchall()
 
-    return [dict(zip(columns, row)) for row in rows]
+    return [dict(zip(columns, row, strict=False)) for row in rows]
 
 
 def _generate_revenue_report(user_ctx: UserContext, params: dict) -> list[dict]:
@@ -1523,7 +1523,7 @@ def _generate_revenue_report(user_ctx: UserContext, params: dict) -> list[dict]:
         columns = [col[0] for col in cursor.description]
         rows = cursor.fetchall()
 
-    return [dict(zip(columns, row)) for row in rows]
+    return [dict(zip(columns, row, strict=False)) for row in rows]
 
 
 def _generate_commission_report(user_ctx: UserContext, params: dict) -> list[dict]:
@@ -1554,7 +1554,7 @@ def _generate_commission_report(user_ctx: UserContext, params: dict) -> list[dic
         columns = [col[0] for col in cursor.description]
         rows = cursor.fetchall()
 
-    return [dict(zip(columns, row)) for row in rows]
+    return [dict(zip(columns, row, strict=False)) for row in rows]
 
 
 # =============================================================================
@@ -1582,7 +1582,7 @@ def export_to_excel(data: list[dict], sheet_name: str = 'Report') -> bytes:
     ws.title = sheet_name
 
     if not data:
-        return io.BytesIO()
+        return io.BytesIO().getvalue()  # type: ignore[return-value]
 
     # Write header
     headers = list(data[0].keys())
@@ -1602,9 +1602,9 @@ def export_to_excel(data: list[dict], sheet_name: str = 'Report') -> bytes:
 def export_to_pdf(data: list[dict], title: str = 'Report') -> bytes:
     """Export data to PDF format."""
     from reportlab.lib import colors
-    from reportlab.lib.pagesizes import letter, landscape
+    from reportlab.lib.pagesizes import landscape, letter
     from reportlab.lib.styles import getSampleStyleSheet
-    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+    from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
     output = io.BytesIO()
     doc = SimpleDocTemplate(output, pagesize=landscape(letter))
@@ -1682,7 +1682,7 @@ def create_scheduled_report(user_ctx: UserContext, data: ScheduledReportInput) -
             str(user_ctx.internal_user_id),
             data.report_type,
             data.title,
-            data.parameters,
+            Json(data.parameters),  # type: ignore[arg-type]
             data.format,
             data.frequency,
             data.email_recipients,
@@ -1690,10 +1690,10 @@ def create_scheduled_report(user_ctx: UserContext, data: ScheduledReportInput) -
             next_run,
         ])
 
-    return get_scheduled_report_by_id(report_id, user_ctx)
+    return get_scheduled_report_by_id(report_id, user_ctx)  # type: ignore[return-value]
 
 
-def get_scheduled_report_by_id(report_id: UUID, user_ctx: UserContext) -> Optional[dict]:
+def get_scheduled_report_by_id(report_id: UUID, user_ctx: UserContext) -> dict | None:
     """Get a scheduled report by ID."""
     with connection.cursor() as cursor:
         cursor.execute("""
@@ -1760,7 +1760,7 @@ def update_scheduled_report(
     report_id: UUID,
     user_ctx: UserContext,
     data: ScheduledReportInput
-) -> Optional[dict]:
+) -> dict | None:
     """Update a scheduled report."""
     next_run = _calculate_next_run(data.frequency)
 
@@ -1775,7 +1775,7 @@ def update_scheduled_report(
         """, [
             data.report_type,
             data.title,
-            data.parameters,
+            Json(data.parameters),  # type: ignore[arg-type]
             data.format,
             data.frequency,
             data.email_recipients,
@@ -1784,7 +1784,7 @@ def update_scheduled_report(
             str(report_id),
             str(user_ctx.agency_id),
         ])
-        row = cursor.fetchone()
+        row = cursor.fetchone()  # type: ignore[assignment]
 
     if not row:
         return None

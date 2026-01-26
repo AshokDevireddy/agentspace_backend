@@ -4,19 +4,27 @@ Permission Unit Tests (P1-021)
 Tests for permission classes and access control.
 """
 import uuid
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
-from django.test import TestCase, RequestFactory
+from django.test import RequestFactory, TestCase
 from rest_framework.views import APIView
 
 from apps.core.authentication import AuthenticatedUser
 from apps.core.permissions import (
-    IsAuthenticated, IsActiveUser, IsAdmin, IsAdminOrSelf,
-    HasSubscriptionTier, IsSameAgency, IsAgencyMember,
-    IsAdminOrSelfOrDownline, SubscriptionTierPermission,
-    CanAccessConversation, HasUnlimitedSMS,
-    check_hierarchy_access, get_visible_agent_ids,
-    get_tier_limits, check_feature_access, TIER_LIMITS,
+    TIER_LIMITS,
+    CanAccessConversation,
+    HasSubscriptionTier,
+    IsActiveUser,
+    IsAdmin,
+    IsAdminOrSelfOrDownline,
+    IsAgencyMember,
+    IsAuthenticated,
+    IsSameAgency,
+    SubscriptionTierPermission,
+    check_feature_access,
+    check_hierarchy_access,
+    get_tier_limits,
+    get_visible_agent_ids,
 )
 
 

@@ -5,16 +5,16 @@ Routes for onboarding flow management endpoints.
 """
 from django.urls import path
 
-from .views import (
-    OnboardingProgressView,
-    NiprStatusView,
-    NiprJobStatusView,
-    InvitationsView,
-    InvitationDetailView,
-    SendInvitationsView,
-    CompleteOnboardingView,
-)
 from .sse import NiprProgressSSEView
+from .views import (
+    CompleteOnboardingView,
+    InvitationDetailView,
+    InvitationsView,
+    NiprJobStatusView,
+    NiprStatusView,
+    OnboardingProgressView,
+    SendInvitationsView,
+)
 
 urlpatterns = [
     # Progress management

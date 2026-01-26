@@ -51,5 +51,6 @@ DATABASES['default']['OPTIONS']['sslmode'] = 'require'  # noqa: F405
 # Logging - Less verbose in production
 # =============================================================================
 
-LOGGING['root']['level'] = 'INFO'  # noqa: F405
-LOGGING['loggers']['django']['level'] = 'WARNING'  # noqa: F405
+LOGGING = LOGGING.copy()  # noqa: F405  # type: ignore[name-defined]
+LOGGING['root']['level'] = 'INFO'  # type: ignore[index]
+LOGGING['loggers']['django']['level'] = 'WARNING'  # type: ignore[index]

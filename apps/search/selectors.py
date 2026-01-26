@@ -4,7 +4,7 @@ Search Selectors
 Query functions for search operations.
 Translates Supabase RPC functions to Django queries.
 """
-from typing import List, Optional
+from typing import Any
 from uuid import UUID
 
 from django.db import connection
@@ -15,8 +15,8 @@ def search_agents_downline(
     search_query: str,
     limit: int = 10,
     search_type: str = 'downline',
-    agency_id: Optional[UUID] = None,
-) -> List[dict]:
+    agency_id: UUID | None = None,
+) -> list[dict]:
     """
     Search for agents within user's downline or agency.
     Translated from Supabase RPC: get_agent_downline + search
@@ -102,14 +102,14 @@ def search_agents_downline(
             ])
 
         columns = [col[0] for col in cursor.description]
-        return [dict(zip(columns, row)) for row in cursor.fetchall()]
+        return [dict(zip(columns, row, strict=False)) for row in cursor.fetchall()]
 
 
 def search_agents_all(
     user_id: UUID,
     agency_id: UUID,
     limit: int = 50,
-) -> List[dict]:
+) -> list[dict]:
     """
     Get all agents for options dropdown (no search filter).
 
@@ -148,14 +148,14 @@ def search_agents_all(
         """, [str(user_id), limit])
 
         columns = [col[0] for col in cursor.description]
-        return [dict(zip(columns, row)) for row in cursor.fetchall()]
+        return [dict(zip(columns, row, strict=False)) for row in cursor.fetchall()]
 
 
 def search_clients_for_filter(
     user_id: UUID,
     search_term: str,
     limit: int = 20,
-) -> List[dict]:
+) -> list[dict]:
     """
     Search clients for filter dropdown.
     Translated from Supabase RPC: search_clients_for_filter
@@ -210,14 +210,14 @@ def search_clients_for_filter(
         ])
 
         columns = [col[0] for col in cursor.description]
-        return [dict(zip(columns, row)) for row in cursor.fetchall()]
+        return [dict(zip(columns, row, strict=False)) for row in cursor.fetchall()]
 
 
 def search_agents_for_filter(
     user_id: UUID,
     search_term: str = '',
     limit: int = 20,
-) -> List[dict]:
+) -> list[dict]:
     """
     Search agents for filter dropdown.
     Translated from Supabase RPC: search_agents_for_filter
@@ -290,16 +290,16 @@ def search_agents_for_filter(
         ])
 
         columns = [col[0] for col in cursor.description]
-        return [dict(zip(columns, row)) for row in cursor.fetchall()]
+        return [dict(zip(columns, row, strict=False)) for row in cursor.fetchall()]
 
 
 def search_agents_fuzzy(
     query: str,
     agency_id: UUID,
-    allowed_agent_ids: Optional[List[UUID]] = None,
+    allowed_agent_ids: list[UUID] | None = None,
     limit: int = 20,
     similarity_threshold: float = 0.3,
-) -> List[dict]:
+) -> list[dict]:
     """
     Fuzzy search for agents using pg_trgm similarity.
     Translated from Supabase RPC: search_agents_fuzzy
@@ -317,12 +317,12 @@ def search_agents_fuzzy(
     with connection.cursor() as cursor:
         # Build agent filter
         agent_filter = ""
-        params = [str(agency_id), query, query, query, query, query, query, query, query]
+        params: list[Any] = [str(agency_id), query, query, query, query, query, query, query, query]
 
         if allowed_agent_ids:
             agent_ids_str = [str(aid) for aid in allowed_agent_ids]
             agent_filter = "AND u.id = ANY(%s::uuid[])"
-            params.append(agent_ids_str)
+            params.append(agent_ids_str)  # type: ignore[arg-type]
 
         cursor.execute(f"""
             WITH search_results AS (
@@ -391,16 +391,16 @@ def search_agents_fuzzy(
         ])
 
         columns = [col[0] for col in cursor.description]
-        return [dict(zip(columns, row)) for row in cursor.fetchall()]
+        return [dict(zip(columns, row, strict=False)) for row in cursor.fetchall()]
 
 
 def search_clients_fuzzy(
     query: str,
     agency_id: UUID,
-    allowed_agent_ids: Optional[List[UUID]] = None,
+    allowed_agent_ids: list[UUID] | None = None,
     limit: int = 20,
     similarity_threshold: float = 0.3,
-) -> List[dict]:
+) -> list[dict]:
     """
     Fuzzy search for clients using pg_trgm similarity.
     Translated from Supabase RPC: search_clients_fuzzy
@@ -493,16 +493,16 @@ def search_clients_fuzzy(
         ])
 
         columns = [col[0] for col in cursor.description]
-        return [dict(zip(columns, row)) for row in cursor.fetchall()]
+        return [dict(zip(columns, row, strict=False)) for row in cursor.fetchall()]
 
 
 def search_policies_fuzzy(
     query: str,
     agency_id: UUID,
-    allowed_agent_ids: Optional[List[UUID]] = None,
+    allowed_agent_ids: list[UUID] | None = None,
     limit: int = 20,
     similarity_threshold: float = 0.3,
-) -> List[dict]:
+) -> list[dict]:
     """
     Fuzzy search for policies/deals using pg_trgm similarity.
     Translated from Supabase RPC: search_policies_fuzzy
@@ -592,14 +592,14 @@ def search_policies_fuzzy(
         ])
 
         columns = [col[0] for col in cursor.description]
-        return [dict(zip(columns, row)) for row in cursor.fetchall()]
+        return [dict(zip(columns, row, strict=False)) for row in cursor.fetchall()]
 
 
 def search_policy_numbers_for_filter(
     user_id: UUID,
     search_term: str = '',
     limit: int = 20,
-) -> List[dict]:
+) -> list[dict]:
     """
     Search policy numbers for filter dropdown.
     Translated from Supabase RPC: search_policy_numbers_for_filter
@@ -669,4 +669,4 @@ def search_policy_numbers_for_filter(
         ])
 
         columns = [col[0] for col in cursor.description]
-        return [dict(zip(columns, row)) for row in cursor.fetchall()]
+        return [dict(zip(columns, row, strict=False)) for row in cursor.fetchall()]

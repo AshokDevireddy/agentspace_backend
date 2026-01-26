@@ -5,13 +5,12 @@ Complex queries for commission payout calculations.
 """
 import logging
 from datetime import date
-from typing import Optional
 from uuid import UUID
 
 from django.db import connection
 
-from apps.core.permissions import get_visible_agent_ids
 from apps.core.authentication import AuthenticatedUser
+from apps.core.permissions import get_visible_agent_ids
 
 logger = logging.getLogger(__name__)
 
@@ -22,12 +21,12 @@ DEFAULT_CHARGEBACK_RATE = 0.1
 
 def get_expected_payouts(
     user: AuthenticatedUser,
-    start_date: Optional[date] = None,
-    end_date: Optional[date] = None,
-    agent_id: Optional[UUID] = None,
-    carrier_id: Optional[UUID] = None,
+    start_date: date | None = None,
+    end_date: date | None = None,
+    agent_id: UUID | None = None,
+    carrier_id: UUID | None = None,
     include_full_agency: bool = False,
-    production_type: Optional[str] = None,  # 'personal', 'downline', or None for all
+    production_type: str | None = None,  # 'personal', 'downline', or None for all
 ) -> dict:
     """
     Calculate expected commission payouts using historical hierarchy snapshots.
@@ -50,10 +49,11 @@ def get_expected_payouts(
     is_admin = user.is_admin or user.role == 'admin'
 
     # Build visible agent filter
-    if agent_id:
-        visible_ids = [agent_id]
-    else:
-        visible_ids = get_visible_agent_ids(user, include_full_agency=include_full_agency and is_admin)
+    visible_ids = (
+        [agent_id]
+        if agent_id
+        else get_visible_agent_ids(user, include_full_agency=include_full_agency and is_admin)
+    )
 
     if not visible_ids:
         return {'payouts': [], 'total_expected': 0, 'total_premium': 0, 'deal_count': 0, 'summary': {}}
@@ -87,7 +87,7 @@ def get_expected_payouts(
         hierarchy_level_filter = "AND dhs.hierarchy_level > 0"
 
     # Add visible_ids_list to params for the first use in query
-    params.append(visible_ids_list)
+    params.extend(visible_ids_list)  # type: ignore[arg-type]
 
     query = f"""
         WITH
@@ -200,7 +200,7 @@ def get_expected_payouts(
     """
 
     # Add visible_ids_list again for the second usage in agent_payouts CTE
-    params.append(visible_ids_list)
+    params.extend(visible_ids_list)  # type: ignore[arg-type]
 
     try:
         with connection.cursor() as cursor:
@@ -209,20 +209,20 @@ def get_expected_payouts(
             rows = cursor.fetchall()
 
         payouts = []
-        total_expected = 0
-        total_premium = 0
+        total_expected: float = 0.0
+        total_premium: float = 0.0
         seen_deals = set()  # Track unique deals for premium calculation
         by_carrier = {}
         by_agent = {}
-        personal_production = 0
-        downline_production = 0
+        personal_production: float = 0.0
+        downline_production: float = 0.0
 
         for row in rows:
-            payout = dict(zip(columns, row))
-            expected = float(payout['expected_payout']) if payout['expected_payout'] else 0
-            premium = float(payout['annual_premium']) if payout['annual_premium'] else 0
+            payout = dict(zip(columns, row, strict=False))
+            expected = float(payout['expected_payout']) if payout['expected_payout'] else 0.0
+            premium = float(payout['annual_premium']) if payout['annual_premium'] else 0.0
             deal_id = str(payout['deal_id'])
-            hierarchy_level = payout['hierarchy_level'] or 0
+            hierarchy_level = int(payout['hierarchy_level'] or 0)
 
             total_expected += expected
 
@@ -240,23 +240,23 @@ def get_expected_payouts(
             # Aggregate by carrier
             carrier = payout['carrier_name'] or 'Unknown'
             if carrier not in by_carrier:
-                by_carrier[carrier] = {'premium': 0, 'payout': 0, 'count': 0}
+                by_carrier[carrier] = {'premium': 0.0, 'payout': 0.0, 'count': 0}
             if deal_id not in seen_deals:
-                by_carrier[carrier]['premium'] += premium
-            by_carrier[carrier]['payout'] += expected
-            by_carrier[carrier]['count'] += 1
+                by_carrier[carrier]['premium'] += premium  # type: ignore[operator]
+            by_carrier[carrier]['payout'] += expected  # type: ignore[operator]
+            by_carrier[carrier]['count'] += 1  # type: ignore[operator]
 
             # Aggregate by agent
             agent_name = f"{payout['agent_first_name'] or ''} {payout['agent_last_name'] or ''}".strip() or 'Unknown'
             agent_key = str(payout['agent_id'])
             if agent_key not in by_agent:
-                by_agent[agent_key] = {'name': agent_name, 'premium': 0, 'payout': 0, 'count': 0, 'personal': 0, 'downline': 0}
-            by_agent[agent_key]['payout'] += expected
-            by_agent[agent_key]['count'] += 1
+                by_agent[agent_key] = {'name': agent_name, 'premium': 0.0, 'payout': 0.0, 'count': 0, 'personal': 0.0, 'downline': 0.0}
+            by_agent[agent_key]['payout'] += expected  # type: ignore[operator]
+            by_agent[agent_key]['count'] += 1  # type: ignore[operator]
             if hierarchy_level == 0:
-                by_agent[agent_key]['personal'] += expected
+                by_agent[agent_key]['personal'] += expected  # type: ignore[operator]
             else:
-                by_agent[agent_key]['downline'] += expected
+                by_agent[agent_key]['downline'] += expected  # type: ignore[operator]
 
             payouts.append({
                 'deal_id': deal_id,
@@ -288,13 +288,24 @@ def get_expected_payouts(
             'downline_production': round(downline_production, 2),
             'summary': {
                 'by_carrier': [
-                    {'carrier': k, 'premium': round(v['premium'], 2), 'payout': round(v['payout'], 2), 'count': v['count']}
-                    for k, v in sorted(by_carrier.items(), key=lambda x: -x[1]['payout'])
+                    {  # type: ignore[arg-type,call-overload]
+                        'carrier': k,
+                        'premium': round(float(v['premium']), 2),
+                        'payout': round(float(v['payout']), 2),
+                        'count': int(v['count'])
+                    }
+                    for k, v in sorted(by_carrier.items(), key=lambda x: -float(x[1]['payout']))
                 ],
                 'by_agent': [
-                    {'agent_id': k, 'name': v['name'], 'payout': round(v['payout'], 2), 'count': v['count'],
-                     'personal': round(v['personal'], 2), 'downline': round(v['downline'], 2)}
-                    for k, v in sorted(by_agent.items(), key=lambda x: -x[1]['payout'])
+                    {
+                        'agent_id': k,
+                        'name': str(v['name']),
+                        'payout': round(float(v['payout']), 2),  # type: ignore[arg-type]
+                        'count': int(v['count']),  # type: ignore[call-overload]
+                        'personal': round(float(v['personal']), 2),  # type: ignore[arg-type]
+                        'downline': round(float(v['downline']), 2)  # type: ignore[arg-type]
+                    }
+                    for k, v in sorted(by_agent.items(), key=lambda x: -float(x[1]['payout']))  # type: ignore[arg-type]
                 ],
             },
         }
@@ -306,7 +317,7 @@ def get_expected_payouts(
 
 def get_agent_debt(
     user: AuthenticatedUser,
-    agent_id: Optional[UUID] = None,
+    agent_id: UUID | None = None,
 ) -> dict:
     """
     Get agent debt (negative balance from chargebacks, lapses, etc.).
@@ -334,7 +345,7 @@ def get_agent_debt(
     try:
         # Use Django ORM with select_related to prevent N+1 queries
         deals_qs = (
-            Deal.objects
+            Deal.objects  # type: ignore[attr-defined]
             .filter(
                 agent_id=target_agent_id,
                 agency_id=user.agency_id,
@@ -345,11 +356,11 @@ def get_agent_debt(
             .order_by('-policy_effective_date')
         )
 
-        total_debt = 0
+        total_debt = 0.0
         deals = []
 
         for deal in deals_qs:
-            premium = float(deal.annual_premium) if deal.annual_premium else 0
+            premium = float(deal.annual_premium) if deal.annual_premium else 0.0
             debt_amount = premium * DEFAULT_CHARGEBACK_RATE
 
             total_debt += debt_amount

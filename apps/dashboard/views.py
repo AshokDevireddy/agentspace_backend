@@ -12,7 +12,6 @@ Endpoints:
 """
 import logging
 from datetime import date, datetime
-from uuid import UUID
 
 from django.http import HttpResponse
 from rest_framework import status
@@ -20,36 +19,37 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from apps.core.constants import PAGINATION, EXPORT_FORMATS
+from apps.core.constants import EXPORT_FORMATS
 from apps.core.mixins import AuthenticatedAPIView
+
 from .services import (
-    UserContext,
-    get_dashboard_summary,
-    get_scoreboard_data,
-    get_scoreboard_lapsed_deals,
-    get_scoreboard_with_billing_cycle,
-    get_production_data,
-    WidgetInput,
-    get_user_widgets,
-    create_widget,
-    update_widget,
-    delete_widget,
-    get_widget_by_id,
-    reorder_widgets,
     ReportInput,
-    create_report,
-    get_report_by_id,
-    list_reports,
-    generate_report,
     ScheduledReportInput,
+    UserContext,
+    WidgetInput,
+    create_report,
     create_scheduled_report,
-    get_scheduled_report_by_id,
-    list_scheduled_reports,
-    update_scheduled_report,
+    create_widget,
     delete_scheduled_report,
+    delete_widget,
     export_to_csv,
     export_to_excel,
     export_to_pdf,
+    generate_report,
+    get_dashboard_summary,
+    get_production_data,
+    get_report_by_id,
+    get_scheduled_report_by_id,
+    get_scoreboard_data,
+    get_scoreboard_lapsed_deals,
+    get_scoreboard_with_billing_cycle,
+    get_user_widgets,
+    get_widget_by_id,
+    list_reports,
+    list_scheduled_reports,
+    reorder_widgets,
+    update_scheduled_report,
+    update_widget,
 )
 
 logger = logging.getLogger(__name__)

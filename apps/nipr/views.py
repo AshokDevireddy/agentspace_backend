@@ -17,12 +17,13 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.core.authentication import get_user_context
+
 from .services import (
     acquire_job,
     complete_job,
-    update_job_progress,
-    release_stale_locks,
     get_job_status,
+    release_stale_locks,
+    update_job_progress,
 )
 
 logger = logging.getLogger(__name__)

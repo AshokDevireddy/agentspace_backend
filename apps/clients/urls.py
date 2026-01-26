@@ -3,7 +3,7 @@ Clients URL Configuration
 """
 from django.urls import path
 
-from .views import ClientsListView, ClientDetailView
+from .views import ClientDetailView, ClientsListView
 
 urlpatterns = [
     path('', ClientsListView.as_view(), name='clients-list'),

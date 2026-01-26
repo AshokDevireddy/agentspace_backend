@@ -8,12 +8,11 @@ Complex analytics queries translated from Supabase RPC functions:
 """
 import logging
 from datetime import date
-from decimal import Decimal
-from typing import Any, Optional
+from typing import Any
 from uuid import UUID
 
 from django.db import connection
-from django.db.models import Sum, Q, F, Value, Exists, OuterRef
+from django.db.models import Exists, OuterRef, Q, Sum
 from django_cte import With
 
 from apps.core.authentication import AuthenticatedUser
@@ -23,14 +22,14 @@ logger = logging.getLogger(__name__)
 
 def get_downline_production_distribution(
     agent_id: UUID,
-    start_date: Optional[date] = None,
-    end_date: Optional[date] = None,
+    start_date: date | None = None,
+    end_date: date | None = None,
 ) -> list[dict]:
     """
     Get production distribution for direct downlines.
     Uses django-cte for hierarchy traversal, ORM for aggregation.
     """
-    from apps.core.models import User, Deal, DealHierarchySnapshot, StatusMapping
+    from apps.core.models import DealHierarchySnapshot, StatusMapping, User
 
     def make_downline_cte(cte):
         base = User.objects.filter(upline_id=agent_id).values('id')
@@ -44,7 +43,7 @@ def get_downline_production_distribution(
         .values_list('id', flat=True)
     )
 
-    snapshot_qs = DealHierarchySnapshot.objects.filter(upline_id=agent_id)
+    snapshot_qs = DealHierarchySnapshot.objects.filter(upline_id=agent_id)  # type: ignore[attr-defined]
 
     deal_filter = Q()
     if start_date:
@@ -52,7 +51,7 @@ def get_downline_production_distribution(
     if end_date:
         deal_filter &= Q(deal__policy_effective_date__lte=end_date)
 
-    positive_status_subq = StatusMapping.objects.filter(
+    positive_status_subq = StatusMapping.objects.filter(  # type: ignore[attr-defined]
         carrier_id=OuterRef('deal__carrier_id'),
         raw_status=OuterRef('deal__status'),
         impact='positive'
@@ -75,11 +74,11 @@ def get_downline_production_distribution(
     agent_ids = [p['agent_id'] for p in production_by_agent]
     agents = {
         u.id: u for u in
-        User.objects.filter(id__in=agent_ids).select_related()
+        User.objects.filter(id__in=agent_ids).select_related()  # type: ignore[attr-defined]
     }
 
     agents_with_downlines = set(
-        User.objects.filter(upline_id__in=agent_ids).values_list('upline_id', flat=True).distinct()
+        User.objects.filter(upline_id__in=agent_ids).values_list('upline_id', flat=True).distinct()  # type: ignore[attr-defined]
     )
 
     result = []
@@ -100,10 +99,10 @@ def get_downline_production_distribution(
 
 def get_analytics_split_view(
     user: AuthenticatedUser,
-    as_of: Optional[date] = None,
+    as_of: date | None = None,
     all_time_months: int = 24,
     top_states: int = 5,
-    carrier_ids: Optional[list[UUID]] = None,
+    carrier_ids: list[UUID] | None = None,
 ) -> dict[str, Any]:
     """
     Get analytics split view data for the user.
@@ -126,7 +125,6 @@ def get_analytics_split_view(
     if as_of is None:
         as_of = date.today()
 
-    is_admin = user.is_admin or user.role == 'admin' or user.perm_level == 'admin'
     carrier_ids_array = [str(cid) for cid in carrier_ids] if carrier_ids else None
 
     with connection.cursor() as cursor:
@@ -288,9 +286,11 @@ def get_analytics_split_view(
                 -- Downline summary
                 (SELECT row_to_json(ds) FROM downline_summary ds) as downline_summary,
                 -- Your carrier breakdown
-                (SELECT coalesce(json_agg(row_to_json(ycb)), '[]'::json) FROM your_carrier_breakdown ycb) as your_carrier_breakdown,
+                (SELECT coalesce(json_agg(row_to_json(ycb)), '[]'::json)
+                 FROM your_carrier_breakdown ycb) as your_carrier_breakdown,
                 -- Downline carrier breakdown
-                (SELECT coalesce(json_agg(row_to_json(dcb)), '[]'::json) FROM downline_carrier_breakdown dcb) as downline_carrier_breakdown,
+                (SELECT coalesce(json_agg(row_to_json(dcb)), '[]'::json)
+                 FROM downline_carrier_breakdown dcb) as downline_carrier_breakdown,
                 -- Metadata
                 (SELECT json_build_object(
                     'as_of', %s::date,
@@ -381,9 +381,9 @@ def get_analytics_split_view(
 
 def get_analytics_from_deals(
     agency_id: UUID,
-    as_of: Optional[date] = None,
+    as_of: date | None = None,
     all_time_months: int = 24,
-    carrier_ids: Optional[list[UUID]] = None,
+    carrier_ids: list[UUID] | None = None,
 ) -> dict[str, Any]:
     """
     Get analytics from deals for an agency.
@@ -546,8 +546,8 @@ def get_analytics_from_deals(
 
 def get_persistency_analytics(
     agency_id: UUID,
-    as_of: Optional[date] = None,
-    carrier_id: Optional[UUID] = None,
+    as_of: date | None = None,
+    carrier_id: UUID | None = None,
 ) -> dict[str, Any]:
     """
     Get persistency analytics for an agency.

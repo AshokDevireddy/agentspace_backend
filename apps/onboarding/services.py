@@ -5,7 +5,6 @@ Business logic for onboarding operations.
 Uses @transaction.atomic for database consistency.
 """
 import logging
-from typing import Optional
 from uuid import UUID
 
 from django.db import connection, transaction
@@ -79,9 +78,9 @@ def update_onboarding_step(user_id: UUID, step: str) -> bool:
 def update_nipr_status(
     user_id: UUID,
     status: str,
-    job_id: Optional[UUID] = None,
-    carriers: Optional[list[str]] = None,
-    licensed_states: Optional[dict] = None,
+    job_id: UUID | None = None,
+    carriers: list[str] | None = None,
+    licensed_states: dict | None = None,
 ) -> bool:
     """
     Update NIPR verification status.
@@ -109,11 +108,11 @@ def update_nipr_status(
 
     if carriers is not None:
         update_parts.append('nipr_carriers = %s')
-        params.append(carriers)
+        params.append(carriers)  # type: ignore[arg-type]
 
     if licensed_states is not None:
         update_parts.append('nipr_licensed_states = %s')
-        params.append(licensed_states)
+        params.append(licensed_states)  # type: ignore[arg-type]
 
     params.append(str(user_id))
 

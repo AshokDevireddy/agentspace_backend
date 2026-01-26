@@ -1,11 +1,9 @@
 """
 Conversation QuerySet and Manager for optimized SMS conversation queries.
 """
-from typing import Optional
 
 from django.db import models
-from django.db.models import Q, Subquery, OuterRef, Max
-from django.db.models.functions import Coalesce
+from django.db.models import OuterRef, Q, Subquery
 
 from apps.core.querysets import HierarchyQuerySetMixin, ViewModeQuerySetMixin
 
@@ -91,7 +89,7 @@ class ConversationQuerySet(HierarchyQuerySetMixin, ViewModeQuerySetMixin, models
             for_agent: If True, count unread by agent. If False, count unread by client.
         """
         from django.db.models import Count
-        from apps.core.models import Message
+
 
         if for_agent:
             # Count messages from client that agent hasn't read

@@ -4,15 +4,12 @@ API Integration Tests (P2-040)
 Integration tests for all API endpoints.
 These tests verify API response formats and basic functionality.
 """
-import json
 import uuid
 from datetime import date, timedelta
-from decimal import Decimal
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
-from django.test import TestCase, TransactionTestCase, override_settings
-from django.db import connection
-from rest_framework.test import APIClient, APITestCase
+from django.test import TestCase
+from rest_framework.test import APIClient
 
 from apps.core.authentication import AuthenticatedUser
 

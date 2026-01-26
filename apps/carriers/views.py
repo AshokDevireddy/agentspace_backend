@@ -14,13 +14,14 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.core.authentication import get_user_context
+
 from .selectors import (
     get_active_carriers,
     get_carrier_names,
     get_carriers_for_agency,
     get_carriers_with_products_for_agency,
-    get_status_mappings,
     get_standardized_statuses,
+    get_status_mappings,
 )
 
 logger = logging.getLogger(__name__)
