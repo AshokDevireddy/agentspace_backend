@@ -9,7 +9,11 @@ DRF Serializers for all core models following best practices:
 from rest_framework import serializers
 
 from .models import (
+    ACNLoadAudit,
     Agency,
+    AgentCarrierNumber,
+    AgentNameCollisionLog,
+    AIAuditLog,
     AIConversation,
     AIMessage,
     Beneficiary,
@@ -19,7 +23,13 @@ from .models import (
     Deal,
     DealHierarchySnapshot,
     DraftMessage,
+    IngestJob,
+    IngestJobFile,
+    LapseNotificationQueue,
     Message,
+    NIProJob,
+    ParsingInfo,
+    PolicyReportStagingSyncLog,
     Position,
     PositionProductCommission,
     Product,
@@ -42,10 +52,9 @@ class AgencySerializer(serializers.ModelSerializer):
             'logo_url',
             'primary_color',
             'whitelabel_domain',
-            'sms_enabled',
             'created_at',
             'updated_at',
-            # New fields (P1-010)
+            # Core fields (P1-010)
             'code',
             'is_active',
             'phone_number',
@@ -54,6 +63,8 @@ class AgencySerializer(serializers.ModelSerializer):
             'discord_webhook_url',
             'discord_notification_enabled',
             'discord_notification_template',
+            'discord_bot_username',
+            'deactivated_post_a_deal',
             'theme_mode',
             'default_scoreboard_start_date',
             'lapse_email_notifications_enabled',
@@ -296,12 +307,11 @@ class CarrierSerializer(serializers.ModelSerializer):
         fields = [
             'id',
             'name',
-            'code',
+            'display_name',
             'is_active',
             'created_at',
-            'updated_at',
         ]
-        read_only_fields = ['id', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'created_at']
 
 
 class CarrierMinimalSerializer(serializers.ModelSerializer):
@@ -309,7 +319,7 @@ class CarrierMinimalSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Carrier
-        fields = ['id', 'name', 'code']
+        fields = ['id', 'name', 'display_name']
 
 
 class CarrierWithProductsSerializer(serializers.ModelSerializer):
@@ -318,7 +328,7 @@ class CarrierWithProductsSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Carrier
-        fields = ['id', 'name', 'code', 'is_active', 'products']
+        fields = ['id', 'name', 'display_name', 'is_active', 'products']
 
     def get_products(self, obj):
         # Use prefetched products if available
@@ -337,6 +347,7 @@ class ProductSerializer(serializers.ModelSerializer):
         fields = [
             'id',
             'name',
+            'product_code',
             'carrier_id',
             'carrier_name',
             'agency_id',
@@ -352,7 +363,7 @@ class ProductMinimalSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Product
-        fields = ['id', 'name']
+        fields = ['id', 'name', 'product_code']
 
 
 class ProductDetailSerializer(serializers.ModelSerializer):
@@ -364,6 +375,7 @@ class ProductDetailSerializer(serializers.ModelSerializer):
         fields = [
             'id',
             'name',
+            'product_code',
             'carrier',
             'agency_id',
             'is_active',
@@ -521,8 +533,8 @@ class BeneficiarySerializer(serializers.ModelSerializer):
             'last_name',
             'full_name',
             'relationship',
-            'percentage',
             'deal_id',
+            'agency_id',
         ]
 
     def get_full_name(self, obj):
@@ -555,18 +567,16 @@ class PositionProductCommissionSerializer(serializers.ModelSerializer):
 class DealHierarchySnapshotSerializer(serializers.ModelSerializer):
     """Read serializer for DealHierarchySnapshot."""
     agent_name = serializers.SerializerMethodField()
-    position_name = serializers.CharField(source='position.name', read_only=True, allow_null=True)
+    upline_name = serializers.SerializerMethodField()
 
     class Meta:
         model = DealHierarchySnapshot
         fields = [
-            'id',
             'deal_id',
             'agent_id',
             'agent_name',
-            'position_id',
-            'position_name',
-            'hierarchy_level',
+            'upline_id',
+            'upline_name',
             'commission_percentage',
             'created_at',
         ]
@@ -574,6 +584,11 @@ class DealHierarchySnapshotSerializer(serializers.ModelSerializer):
     def get_agent_name(self, obj):
         if obj.agent:
             return format_full_name(obj.agent.first_name, obj.agent.last_name)
+        return None
+
+    def get_upline_name(self, obj):
+        if obj.upline:
+            return format_full_name(obj.upline.first_name, obj.upline.last_name)
         return None
 
 
@@ -592,6 +607,7 @@ class StatusMappingSerializer(serializers.ModelSerializer):
             'raw_status',
             'standardized_status',
             'impact',
+            'placement',
             'created_at',
             'updated_at',
         ]
@@ -610,8 +626,6 @@ class StatusMappingCreateSerializer(serializers.ModelSerializer):
 class ConversationSerializer(serializers.ModelSerializer):
     """Read serializer for Conversation."""
     agent_name = serializers.SerializerMethodField()
-    client_name = serializers.SerializerMethodField()
-    last_message_preview = serializers.CharField(read_only=True, allow_null=True)
 
     class Meta:
         model = Conversation
@@ -620,17 +634,13 @@ class ConversationSerializer(serializers.ModelSerializer):
             'agency_id',
             'agent_id',
             'agent_name',
-            'client_id',
-            'client_name',
             'deal_id',
-            'phone_number',
-            'unread_count',
-            'is_archived',
+            'client_phone',
+            'type',
+            'is_active',
             'last_message_at',
-            'last_message_preview',
             'created_at',
-            'updated_at',
-            # SMS opt-in tracking (P1-014)
+            # SMS opt-in tracking
             'sms_opt_in_status',
             'opted_in_at',
             'opted_out_at',
@@ -641,37 +651,38 @@ class ConversationSerializer(serializers.ModelSerializer):
             return format_full_name(obj.agent.first_name, obj.agent.last_name)
         return None
 
-    def get_client_name(self, obj):
-        if obj.client:
-            return format_full_name(obj.client.first_name, obj.client.last_name)
-        return None
-
 
 class MessageSerializer(serializers.ModelSerializer):
     """Read serializer for Message."""
-    sent_by_name = serializers.SerializerMethodField()
+    sender_name = serializers.SerializerMethodField()
+    is_read = serializers.SerializerMethodField()
 
     class Meta:
         model = Message
         fields = [
             'id',
             'conversation_id',
+            'sender_id',
+            'sender_name',
+            'receiver_id',
+            'body',
             'direction',
-            'content',
+            'message_type',
+            'sent_at',
             'status',
-            'external_id',
-            'sent_by_id',
-            'sent_by_name',
+            'metadata',
+            'read_at',
             'is_read',
-            'sent_at',  # Delivery tracking (P1-014)
-            'created_at',
-            'updated_at',
         ]
 
-    def get_sent_by_name(self, obj):
-        if obj.sent_by:
-            return format_full_name(obj.sent_by.first_name, obj.sent_by.last_name)
+    def get_sender_name(self, obj):
+        if obj.sender:
+            return format_full_name(obj.sender.first_name, obj.sender.last_name)
         return None
+
+    def get_is_read(self, obj):
+        """Derive is_read from read_at for API compatibility."""
+        return obj.read_at is not None
 
 
 class MessageCreateSerializer(serializers.ModelSerializer):
@@ -679,7 +690,7 @@ class MessageCreateSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Message
-        fields = ['conversation', 'direction', 'content']
+        fields = ['conversation', 'sender', 'receiver', 'body', 'direction']
 
 
 class DraftMessageSerializer(serializers.ModelSerializer):
@@ -815,7 +826,7 @@ class AIConversationListSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = AIConversation
-        fields = ['id', 'title', 'user_id', 'is_active',
+        fields = ['id', 'title', 'user_id',
                   'message_count', 'created_at', 'updated_at']
         read_only_fields = ['id', 'created_at', 'updated_at']
 
@@ -834,11 +845,8 @@ class AIMessageSerializer(serializers.ModelSerializer):
             'role',
             'content',
             'tool_calls',
-            'tool_results',
             'created_at',
             # Token tracking (P1-015)
-            'input_tokens',
-            'output_tokens',
             'tokens_used',
             # Chart generation (P1-015)
             'chart_code',
@@ -853,7 +861,7 @@ class AIConversationDetailSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = AIConversation
-        fields = ['id', 'title', 'user_id', 'agency_id', 'is_active',
+        fields = ['id', 'title', 'user_id', 'agency_id',
                   'messages', 'created_at', 'updated_at']
         read_only_fields = ['id', 'created_at', 'updated_at']
 
@@ -871,4 +879,255 @@ class AIMessageCreateSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = AIMessage
-        fields = ['conversation', 'role', 'content', 'tool_calls', 'tool_results']
+        fields = ['conversation', 'role', 'content', 'tool_calls']
+
+
+# =============================================================================
+# NEW SERIALIZERS - For Supabase DB Sync Models
+# =============================================================================
+
+
+class NIProJobSerializer(serializers.ModelSerializer):
+    """Serializer for NIPR license verification jobs."""
+
+    class Meta:
+        model = NIProJob
+        fields = [
+            'id',
+            'user_id',
+            'last_name',
+            'npn',
+            'ssn_last4',
+            'dob',
+            'status',
+            'progress',
+            'progress_message',
+            'result_files',
+            'result_carriers',
+            'error_message',
+            'created_at',
+            'started_at',
+            'completed_at',
+        ]
+        read_only_fields = ['id', 'created_at', 'started_at', 'completed_at']
+
+
+class NIProJobCreateSerializer(serializers.ModelSerializer):
+    """Write serializer for creating NIPR jobs."""
+
+    class Meta:
+        model = NIProJob
+        fields = ['last_name', 'npn', 'ssn_last4', 'dob']
+
+
+class IngestJobFileSerializer(serializers.ModelSerializer):
+    """Serializer for ingest job files."""
+
+    class Meta:
+        model = IngestJobFile
+        fields = [
+            'file_id',
+            'job_id',
+            'file_name',
+            'status',
+            'parsed_rows',
+            'error_message',
+            'created_at',
+            'updated_at',
+        ]
+        read_only_fields = ['file_id', 'created_at', 'updated_at']
+
+
+class IngestJobSerializer(serializers.ModelSerializer):
+    """Serializer for ingest jobs with nested files."""
+    files = IngestJobFileSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = IngestJob
+        fields = [
+            'job_id',
+            'agency_id',
+            'expected_files',
+            'parsed_files',
+            'status',
+            'created_at',
+            'updated_at',
+            'client_job_id',
+            'files',
+        ]
+        read_only_fields = ['job_id', 'created_at', 'updated_at']
+
+
+class IngestJobListSerializer(serializers.ModelSerializer):
+    """Lightweight serializer for ingest job lists."""
+
+    class Meta:
+        model = IngestJob
+        fields = [
+            'job_id',
+            'agency_id',
+            'expected_files',
+            'parsed_files',
+            'status',
+            'created_at',
+            'updated_at',
+        ]
+
+
+class AgentCarrierNumberSerializer(serializers.ModelSerializer):
+    """Serializer for agent carrier numbers."""
+    agent_name = serializers.SerializerMethodField()
+    carrier_name = serializers.CharField(source='carrier.name', read_only=True, allow_null=True)
+
+    class Meta:
+        model = AgentCarrierNumber
+        fields = [
+            'id',
+            'agent_id',
+            'agent_name',
+            'carrier_id',
+            'carrier_name',
+            'agency_id',
+            'agent_number',
+            'is_active',
+            'notes',
+            'loa',
+            'start_date',
+            'created_at',
+            'updated_at',
+        ]
+        read_only_fields = ['id', 'created_at', 'updated_at']
+
+    def get_agent_name(self, obj):
+        if obj.agent:
+            return format_full_name(obj.agent.first_name, obj.agent.last_name)
+        return None
+
+
+class AgentCarrierNumberCreateSerializer(serializers.ModelSerializer):
+    """Write serializer for creating agent carrier numbers."""
+
+    class Meta:
+        model = AgentCarrierNumber
+        fields = ['agent', 'carrier', 'agency', 'agent_number', 'is_active', 'notes', 'loa', 'start_date']
+
+
+class ACNLoadAuditSerializer(serializers.ModelSerializer):
+    """Serializer for ACN load audit entries."""
+
+    class Meta:
+        model = ACNLoadAudit
+        fields = [
+            'id',
+            'run_id',
+            'agency_id',
+            'carrier_id',
+            'agent_number',
+            'agent_id',
+            'reason',
+            'details',
+            'created_at',
+        ]
+        read_only_fields = ['id', 'created_at']
+
+
+class AgentNameCollisionLogSerializer(serializers.ModelSerializer):
+    """Serializer for agent name collision logs."""
+
+    class Meta:
+        model = AgentNameCollisionLog
+        fields = [
+            'id',
+            'agency_id',
+            'carrier_id',
+            'agent_number',
+            'first_name',
+            'last_name',
+            'matched_user_ids',
+            'chosen_user_id',
+            'created_at',
+        ]
+        read_only_fields = ['id', 'created_at']
+
+
+class AIAuditLogSerializer(serializers.ModelSerializer):
+    """Serializer for AI audit log entries."""
+    user_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = AIAuditLog
+        fields = [
+            'id',
+            'user_id',
+            'user_name',
+            'agency_id',
+            'tool_name',
+            'input_summary',
+            'was_allowed',
+            'error_message',
+            'scope',
+            'execution_time_ms',
+            'created_at',
+        ]
+        read_only_fields = ['id', 'created_at']
+
+    def get_user_name(self, obj):
+        if obj.user:
+            return format_full_name(obj.user.first_name, obj.user.last_name)
+        return None
+
+
+class LapseNotificationQueueSerializer(serializers.ModelSerializer):
+    """Serializer for lapse notification queue entries."""
+
+    class Meta:
+        model = LapseNotificationQueue
+        fields = [
+            'id',
+            'deal_id',
+            'agency_id',
+            'status',
+            'created_at',
+            'processed_at',
+            'error_message',
+        ]
+        read_only_fields = ['id', 'created_at']
+
+
+class ParsingInfoSerializer(serializers.ModelSerializer):
+    """
+    Serializer for parsing info.
+
+    WARNING: Password field is explicitly excluded for security.
+    """
+    carrier_name = serializers.CharField(source='carrier.name', read_only=True, allow_null=True)
+
+    class Meta:
+        model = ParsingInfo
+        fields = [
+            'id',
+            'carrier_id',
+            'carrier_name',
+            'agent_id',
+            'agency_id',
+            'login',
+            'created_at',
+        ]
+        read_only_fields = ['id', 'created_at']
+        # IMPORTANT: Never include 'password' field
+
+
+class PolicyReportStagingSyncLogSerializer(serializers.ModelSerializer):
+    """Serializer for policy report staging sync logs."""
+
+    class Meta:
+        model = PolicyReportStagingSyncLog
+        fields = [
+            'id',
+            'run_id',
+            'staging_id',
+            'reason',
+            'details',
+            'created_at',
+        ]
+        read_only_fields = ['id', 'created_at']

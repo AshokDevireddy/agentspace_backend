@@ -71,7 +71,7 @@ class MessageFactory(factory.django.DjangoModelFactory):
         UserFactory,
         agency=factory.SelfAttribute('..conversation.agency')
     )
-    is_read = False
+    read_at = None
     sent_at = factory.LazyAttribute(lambda _: timezone.now())
 
     class Params:

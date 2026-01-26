@@ -200,7 +200,7 @@ def get_sms_messages(
                 'content': msg.content,
                 'direction': msg.direction,
                 'status': msg.status,
-                'is_read': msg.is_read or False,
+                'is_read': msg.read_at is not None,
                 'created_at': msg.created_at.isoformat() if msg.created_at else None,
                 'sent_at': msg.sent_at.isoformat() if msg.sent_at else None,
                 'external_id': msg.external_id,
@@ -365,7 +365,7 @@ def get_unread_message_count(
                 Message.objects.filter(  # type: ignore[attr-defined]
                     conversation__agent__agency_id=user.agency_id,
                     direction='inbound',
-                    is_read=False
+                    read_at__isnull=True
                 )
                 .count()
             )
@@ -375,7 +375,7 @@ def get_unread_message_count(
                 Message.objects.filter(  # type: ignore[attr-defined]
                     conversation__agent_id=user.id,
                     direction='inbound',
-                    is_read=False
+                    read_at__isnull=True
                 )
                 .count()
             )
@@ -400,7 +400,7 @@ def get_unread_message_count(
                 Message.objects.filter(  # type: ignore[attr-defined]
                     conversation__agent_id__in=downline_ids,
                     direction='inbound',
-                    is_read=False
+                    read_at__isnull=True
                 )
                 .count()
             )

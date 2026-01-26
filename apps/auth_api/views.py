@@ -764,7 +764,7 @@ class UserProfileView(APIView):
                         u.id, u.email, u.first_name, u.last_name,
                         u.agency_id, a.name as agency_name,
                         u.role, u.is_admin, u.status, u.perm_level,
-                        u.subscription_tier, u.phone, u.start_date,
+                        u.subscription_tier, u.phone_number, u.start_date,
                         u.annual_goal, u.total_prod, u.total_policies_sold,
                         u.created_at
                     FROM public.users u

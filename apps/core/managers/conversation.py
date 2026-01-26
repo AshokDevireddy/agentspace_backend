@@ -98,7 +98,7 @@ class ConversationQuerySet(HierarchyQuerySetMixin, ViewModeQuerySetMixin, models
                     'messages',
                     filter=Q(
                         messages__direction='inbound',
-                        messages__is_read=False
+                        messages__read_at__isnull=True
                     )
                 )
             )
@@ -109,7 +109,7 @@ class ConversationQuerySet(HierarchyQuerySetMixin, ViewModeQuerySetMixin, models
                     'messages',
                     filter=Q(
                         messages__direction='outbound',
-                        messages__is_read=False
+                        messages__read_at__isnull=True
                     )
                 )
             )

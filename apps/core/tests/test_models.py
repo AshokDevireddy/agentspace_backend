@@ -560,7 +560,7 @@ class DefaultValueTests(TestCase):
             direction='outbound'
         )
         self.assertEqual(message.status, 'pending')
-        self.assertFalse(message.is_read)
+        self.assertIsNone(message.read_at)
 
     def test_draft_message_defaults(self):
         """DraftMessage model has correct defaults."""

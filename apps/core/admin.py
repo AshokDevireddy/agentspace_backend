@@ -12,8 +12,8 @@ from .models import Agency, Carrier, Client, Deal, Position, Product, User
 @admin.register(Agency)
 class AgencyAdmin(admin.ModelAdmin):
     """Admin interface for agencies."""
-    list_display = ['name', 'display_name', 'whitelabel_domain', 'sms_enabled', 'created_at']
-    list_filter = ['sms_enabled', 'created_at']
+    list_display = ['name', 'display_name', 'whitelabel_domain', 'messaging_enabled', 'created_at']
+    list_filter = ['messaging_enabled', 'created_at']
     search_fields = ['name', 'display_name', 'whitelabel_domain']
     readonly_fields = ['id', 'created_at', 'updated_at']
     ordering = ['name']
@@ -64,10 +64,10 @@ class PositionAdmin(admin.ModelAdmin):
 @admin.register(Carrier)
 class CarrierAdmin(admin.ModelAdmin):
     """Admin interface for carriers."""
-    list_display = ['name', 'code', 'is_active', 'created_at']
+    list_display = ['name', 'display_name', 'is_active', 'created_at']
     list_filter = ['is_active']
-    search_fields = ['name', 'code']
-    readonly_fields = ['id', 'created_at', 'updated_at']
+    search_fields = ['name', 'display_name']
+    readonly_fields = ['id', 'created_at']
     ordering = ['name']
 
 

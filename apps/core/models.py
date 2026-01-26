@@ -27,8 +27,6 @@ class Agency(models.Model):
     logo_url = models.TextField(null=True, blank=True)
     primary_color = models.CharField(max_length=50, null=True, blank=True)
     whitelabel_domain = models.CharField(max_length=255, null=True, blank=True)
-    sms_enabled = models.BooleanField(default=False)
-    sms_template_id = models.CharField(max_length=255, null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -43,6 +41,10 @@ class Agency(models.Model):
     discord_webhook_url = models.TextField(null=True, blank=True)
     discord_notification_enabled = models.BooleanField(default=False)
     discord_notification_template = models.TextField(null=True, blank=True)
+    discord_bot_username = models.TextField(null=True, blank=True)
+
+    # Deactivation tracking
+    deactivated_post_a_deal = models.BooleanField(null=True, blank=True)
 
     # Display settings
     theme_mode = models.TextField(null=True, blank=True)
@@ -53,20 +55,20 @@ class Agency(models.Model):
     lapse_email_subject = models.TextField(null=True, blank=True)
     lapse_email_body = models.TextField(null=True, blank=True)
 
-    # SMS templates (P1-010)
-    sms_welcome_enabled = models.BooleanField(default=False)
+    # SMS templates (P1-010) - DB defaults all enabled to true
+    sms_welcome_enabled = models.BooleanField(default=True)
     sms_welcome_template = models.TextField(null=True, blank=True)
-    sms_billing_reminder_enabled = models.BooleanField(default=False)
+    sms_billing_reminder_enabled = models.BooleanField(default=True)
     sms_billing_reminder_template = models.TextField(null=True, blank=True)
-    sms_lapse_reminder_enabled = models.BooleanField(default=False)
+    sms_lapse_reminder_enabled = models.BooleanField(default=True)
     sms_lapse_reminder_template = models.TextField(null=True, blank=True)
-    sms_birthday_enabled = models.BooleanField(default=False)
+    sms_birthday_enabled = models.BooleanField(default=True)
     sms_birthday_template = models.TextField(null=True, blank=True)
-    sms_holiday_enabled = models.BooleanField(default=False)
+    sms_holiday_enabled = models.BooleanField(default=True)
     sms_holiday_template = models.TextField(null=True, blank=True)
-    sms_quarterly_enabled = models.BooleanField(default=False)
+    sms_quarterly_enabled = models.BooleanField(default=True)
     sms_quarterly_template = models.TextField(null=True, blank=True)
-    sms_policy_packet_enabled = models.BooleanField(default=False)
+    sms_policy_packet_enabled = models.BooleanField(default=True)
     sms_policy_packet_template = models.TextField(null=True, blank=True)
 
     class Meta:
@@ -261,10 +263,8 @@ class Carrier(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4)
     name = models.CharField(max_length=255)
     display_name = models.CharField(max_length=255, null=True, blank=True)
-    code = models.CharField(max_length=50, null=True, blank=True)
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         managed = False
@@ -281,6 +281,7 @@ class Product(models.Model):
     """
     id = models.UUIDField(primary_key=True, default=uuid.uuid4)
     name = models.CharField(max_length=255)
+    product_code = models.TextField(null=True, blank=True)
     carrier = models.ForeignKey(
         Carrier,
         on_delete=models.CASCADE,
@@ -447,12 +448,14 @@ class DealHierarchySnapshot(models.Model):
     """
     Captures the agent hierarchy at the time a deal was created.
     Used for commission calculations to preserve historical hierarchy.
-    Maps to: public.deal_hierarchy_snapshots
+    Maps to: public.deal_hierarchy_snapshot (singular, composite PK)
     """
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4)
+    # Note: DB uses composite primary key (deal_id, agent_id), not UUID
+    # Django doesn't support composite PKs natively, so we use deal as PK for ORM
     deal = models.ForeignKey(
         Deal,
         on_delete=models.CASCADE,
+        primary_key=True,
         related_name='hierarchy_snapshots'
     )
     agent = models.ForeignKey(
@@ -461,27 +464,26 @@ class DealHierarchySnapshot(models.Model):
         null=True,
         related_name='deal_hierarchy_entries'
     )
-    position = models.ForeignKey(
-        Position,
+    upline = models.ForeignKey(
+        User,
         on_delete=models.SET_NULL,
         null=True,
-        related_name='deal_hierarchy_entries'
-    )
-    hierarchy_level = models.IntegerField(
-        help_text='Level in hierarchy (0 = writing agent, 1 = direct upline, etc.)'
+        blank=True,
+        related_name='deal_hierarchy_downlines',
+        db_column='upline_id'
     )
     commission_percentage = models.DecimalField(
-        max_digits=5, decimal_places=2, null=True, blank=True
+        max_digits=10, decimal_places=2
     )
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         managed = False
-        db_table = 'deal_hierarchy_snapshots'
-        ordering = ['deal', 'hierarchy_level']
+        db_table = 'deal_hierarchy_snapshot'
+        unique_together = [['deal', 'agent']]
 
     def __str__(self):
-        return f"Deal {self.deal_id} - Level {self.hierarchy_level}: {self.agent}"
+        return f"Deal {self.deal_id} - Agent {self.agent}: {self.commission_percentage}%"
 
 
 class Beneficiary(models.Model):
@@ -495,15 +497,17 @@ class Beneficiary(models.Model):
         on_delete=models.CASCADE,
         related_name='beneficiaries'
     )
+    agency = models.ForeignKey(
+        Agency,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name='beneficiaries'
+    )
     first_name = models.CharField(max_length=255, null=True, blank=True)
     last_name = models.CharField(max_length=255, null=True, blank=True)
     relationship = models.CharField(max_length=100, null=True, blank=True)
-    percentage = models.DecimalField(
-        max_digits=5, decimal_places=2, null=True, blank=True,
-        help_text='Percentage of benefit (e.g., 100.00 for 100%)'
-    )
     created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         managed = False
@@ -537,6 +541,7 @@ class StatusMapping(models.Model):
     )
     standardized_status = models.CharField(
         max_length=50, null=True, blank=True,
+        db_column='status_standardized',
         help_text='The normalized status (active, pending, cancelled, lapsed, terminated)'
     )
     impact = models.CharField(
@@ -545,6 +550,7 @@ class StatusMapping(models.Model):
         default='neutral',
         help_text='Impact on persistency calculations'
     )
+    placement = models.TextField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -568,6 +574,10 @@ class Conversation(models.Model):
         ('pending', 'Pending'),
     ]
 
+    TYPE_CHOICES = [
+        ('sms', 'SMS'),
+    ]
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4)
     agency = models.ForeignKey(
         Agency,
@@ -581,13 +591,6 @@ class Conversation(models.Model):
         blank=True,
         related_name='conversations'
     )
-    client = models.ForeignKey(
-        Client,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name='conversations'
-    )
     deal = models.ForeignKey(
         Deal,
         on_delete=models.SET_NULL,
@@ -595,18 +598,23 @@ class Conversation(models.Model):
         blank=True,
         related_name='conversations'
     )
-    phone_number = models.CharField(max_length=50)
+    # DB column is 'client_phone', not 'phone_number'
+    client_phone = models.TextField(null=True, blank=True)
+    type = models.CharField(
+        max_length=20,
+        choices=TYPE_CHOICES,
+        default='sms'
+    )
     last_message_at = models.DateTimeField(null=True, blank=True)
-    unread_count = models.IntegerField(default=0)
-    is_archived = models.BooleanField(default=False)
+    # DB uses is_active (default true), not is_archived
+    is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
 
-    # SMS opt-in tracking (P1-014)
+    # SMS opt-in tracking - DB defaults to 'opted_in'
     sms_opt_in_status = models.CharField(
         max_length=20,
         choices=SMS_OPT_IN_CHOICES,
-        default='pending',
+        default='opted_in',
         null=True,
         blank=True
     )
@@ -618,8 +626,7 @@ class Conversation(models.Model):
         db_table = 'conversations'
 
     def __str__(self):
-        client_name = format_full_name(self.client.first_name, self.client.last_name) if self.client else self.phone_number
-        return f"Conversation with {client_name or self.phone_number}"
+        return f"Conversation {self.client_phone or self.id}"
 
 
 class Message(models.Model):
@@ -640,47 +647,56 @@ class Message(models.Model):
         ('received', 'Received'),
     ]
 
+    MESSAGE_TYPE_CHOICES = [
+        ('sms', 'SMS'),
+    ]
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4)
     conversation = models.ForeignKey(
         Conversation,
         on_delete=models.CASCADE,
         related_name='messages'
     )
-    content = models.TextField()
+    sender = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        related_name='sent_messages',
+        db_column='sender_id'
+    )
+    receiver = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        related_name='received_messages',
+        db_column='receiver_id'
+    )
+    body = models.TextField()
     direction = models.CharField(
         max_length=20,
         choices=DIRECTION_CHOICES
     )
+    message_type = models.CharField(
+        max_length=20,
+        choices=MESSAGE_TYPE_CHOICES,
+        default='sms'
+    )
+    sent_at = models.DateTimeField(null=True, blank=True)
     status = models.CharField(
         max_length=20,
         choices=STATUS_CHOICES,
-        default='pending'
+        default='delivered'
     )
-    external_id = models.CharField(
-        max_length=255, null=True, blank=True,
-        help_text='External message ID from Telnyx/Twilio'
-    )
-    sent_by = models.ForeignKey(
-        User,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name='sent_messages'
-    )
-    is_read = models.BooleanField(default=False)
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
-
-    # Delivery tracking (P1-014)
-    sent_at = models.DateTimeField(null=True, blank=True)
+    metadata = models.JSONField(default=dict, blank=True)
+    read_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         managed = False
         db_table = 'messages'
-        ordering = ['created_at']
+        ordering = ['sent_at']
 
     def __str__(self):
-        return f"{self.direction}: {self.content[:50]}..."
+        return f"{self.direction}: {self.body[:50]}..."
 
 
 class DraftMessage(models.Model):
@@ -982,7 +998,6 @@ class AIConversation(models.Model):
         related_name='ai_conversations'
     )
     title = models.CharField(max_length=255, null=True, blank=True)
-    is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -1017,12 +1032,9 @@ class AIMessage(models.Model):
     )
     content = models.TextField()
     tool_calls = models.JSONField(null=True, blank=True)
-    tool_results = models.JSONField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     # Token tracking (P1-015)
-    input_tokens = models.IntegerField(null=True, blank=True)
-    output_tokens = models.IntegerField(null=True, blank=True)
     tokens_used = models.IntegerField(null=True, blank=True)
 
     # Chart generation (P1-015)
@@ -1071,6 +1083,331 @@ class FeatureFlag(models.Model):
         scope = f"Agency: {self.agency.name}" if self.agency else "Global"
         return f"{self.name} ({scope}) - {'Enabled' if self.is_enabled else 'Disabled'}"
 
+
+# =============================================================================
+# NEW MODELS - Added for Supabase DB Sync
+# =============================================================================
+
+
+class NIProJob(models.Model):
+    """
+    NIPR license verification job.
+    Maps to: public.nipr_jobs
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4)
+    user = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name='nipr_jobs'
+    )
+    last_name = models.CharField(max_length=255)
+    npn = models.CharField(max_length=50)
+    ssn_last4 = models.CharField(max_length=4)
+    dob = models.CharField(max_length=50)
+    status = models.CharField(max_length=50, default='pending')
+    progress = models.IntegerField(default=0)
+    progress_message = models.TextField(null=True, blank=True)
+    result_files = models.JSONField(default=list, null=True, blank=True)
+    result_carriers = models.JSONField(default=list, null=True, blank=True)
+    error_message = models.TextField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    started_at = models.DateTimeField(null=True, blank=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+    locked_until = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        managed = False
+        db_table = 'nipr_jobs'
+
+    def __str__(self):
+        return f"NIPR Job {self.id} - {self.last_name} ({self.status})"
+
+
+class IngestJob(models.Model):
+    """
+    File ingestion job for processing uploaded files.
+    Maps to: public.ingest_job
+    """
+    job_id = models.UUIDField(primary_key=True, default=uuid.uuid4)
+    agency = models.ForeignKey(
+        Agency,
+        on_delete=models.CASCADE,
+        related_name='ingest_jobs'
+    )
+    expected_files = models.IntegerField()
+    parsed_files = models.IntegerField(default=0)
+    status = models.CharField(max_length=50, default='pending')
+    created_at = models.DateTimeField(auto_now_add=True, null=True, blank=True)
+    updated_at = models.DateTimeField(auto_now=True, null=True, blank=True)
+    client_job_id = models.CharField(max_length=255, null=True, blank=True)
+    watcher_created_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        managed = False
+        db_table = 'ingest_job'
+
+    def __str__(self):
+        return f"Ingest Job {self.job_id} - {self.status}"
+
+
+class IngestJobFile(models.Model):
+    """
+    Individual file within an ingestion job.
+    Maps to: public.ingest_job_file
+    """
+    file_id = models.UUIDField(primary_key=True, default=uuid.uuid4)
+    job = models.ForeignKey(
+        IngestJob,
+        on_delete=models.CASCADE,
+        to_field='job_id',
+        related_name='files'
+    )
+    file_name = models.CharField(max_length=255)
+    status = models.CharField(max_length=50, default='received')
+    parsed_rows = models.IntegerField(null=True, blank=True)
+    error_message = models.TextField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True, null=True, blank=True)
+    updated_at = models.DateTimeField(auto_now=True, null=True, blank=True)
+
+    class Meta:
+        managed = False
+        db_table = 'ingest_job_file'
+
+    def __str__(self):
+        return f"{self.file_name} ({self.status})"
+
+
+class AgentCarrierNumber(models.Model):
+    """
+    Agent's carrier-specific identification number.
+    Maps to: public.agent_carrier_numbers
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4)
+    agent = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name='carrier_numbers'
+    )
+    carrier = models.ForeignKey(
+        Carrier,
+        on_delete=models.CASCADE,
+        related_name='agent_numbers'
+    )
+    agency = models.ForeignKey(
+        Agency,
+        on_delete=models.CASCADE,
+        related_name='agent_carrier_numbers'
+    )
+    agent_number = models.CharField(max_length=255)
+    is_active = models.BooleanField(null=True, blank=True, default=True)
+    notes = models.TextField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True, null=True, blank=True)
+    updated_at = models.DateTimeField(auto_now=True, null=True, blank=True)
+    loa = models.TextField(null=True, blank=True)
+    start_date = models.DateField(null=True, blank=True)
+
+    class Meta:
+        managed = False
+        db_table = 'agent_carrier_numbers'
+
+    def __str__(self):
+        return f"{self.agent} - {self.carrier}: {self.agent_number}"
+
+
+class ACNLoadAudit(models.Model):
+    """
+    Audit log for Agent Carrier Number loading operations.
+    Maps to: public.acn_load_audit
+    """
+    id = models.BigAutoField(primary_key=True)
+    run_id = models.UUIDField()
+    created_at = models.DateTimeField(auto_now_add=True)
+    agency = models.ForeignKey(
+        Agency,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='acn_load_audits'
+    )
+    carrier = models.ForeignKey(
+        Carrier,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='acn_load_audits'
+    )
+    agent_number = models.CharField(max_length=255, null=True, blank=True)
+    agent = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='acn_load_audits'
+    )
+    reason = models.TextField()
+    details = models.TextField(null=True, blank=True)
+
+    class Meta:
+        managed = False
+        db_table = 'acn_load_audit'
+
+    def __str__(self):
+        return f"ACN Audit {self.id} - {self.reason[:50]}"
+
+
+class AgentNameCollisionLog(models.Model):
+    """
+    Log of agent name collisions during matching.
+    Maps to: public.agent_name_collision_log
+    """
+    id = models.BigAutoField(primary_key=True)
+    agency = models.ForeignKey(
+        Agency,
+        on_delete=models.CASCADE,
+        related_name='name_collision_logs'
+    )
+    carrier = models.ForeignKey(
+        Carrier,
+        on_delete=models.CASCADE,
+        related_name='name_collision_logs'
+    )
+    agent_number = models.CharField(max_length=255)
+    first_name = models.CharField(max_length=255)
+    last_name = models.CharField(max_length=255)
+    matched_user_ids = models.JSONField()
+    chosen_user_id = models.UUIDField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        managed = False
+        db_table = 'agent_name_collision_log'
+
+    def __str__(self):
+        return f"Collision: {self.first_name} {self.last_name} ({self.agent_number})"
+
+
+class AIAuditLog(models.Model):
+    """
+    Audit log for AI tool usage.
+    Maps to: public.ai_audit_log
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4)
+    user = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name='ai_audit_logs'
+    )
+    agency = models.ForeignKey(
+        Agency,
+        on_delete=models.CASCADE,
+        related_name='ai_audit_logs'
+    )
+    tool_name = models.TextField()
+    input_summary = models.JSONField(null=True, blank=True)
+    was_allowed = models.BooleanField(default=True)
+    error_message = models.TextField(null=True, blank=True)
+    scope = models.TextField(null=True, blank=True)
+    execution_time_ms = models.IntegerField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        managed = False
+        db_table = 'ai_audit_log'
+
+    def __str__(self):
+        return f"AI Audit: {self.tool_name} by {self.user}"
+
+
+class LapseNotificationQueue(models.Model):
+    """
+    Queue for lapse notification processing.
+    Maps to: public.lapse_notification_queue
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4)
+    deal = models.ForeignKey(
+        Deal,
+        on_delete=models.CASCADE,
+        related_name='lapse_notifications'
+    )
+    agency = models.ForeignKey(
+        Agency,
+        on_delete=models.CASCADE,
+        related_name='lapse_notifications'
+    )
+    status = models.CharField(max_length=50, default='pending')
+    created_at = models.DateTimeField(auto_now_add=True)
+    processed_at = models.DateTimeField(null=True, blank=True)
+    error_message = models.TextField(null=True, blank=True)
+    http_request_id = models.BigIntegerField(null=True, blank=True)
+
+    class Meta:
+        managed = False
+        db_table = 'lapse_notification_queue'
+
+    def __str__(self):
+        return f"Lapse Notification {self.id} - {self.status}"
+
+
+class ParsingInfo(models.Model):
+    """
+    Carrier portal parsing credentials.
+    Maps to: public.parsing_info
+
+    WARNING: Contains sensitive credential data.
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4)
+    created_at = models.DateTimeField(auto_now_add=True)
+    carrier = models.ForeignKey(
+        Carrier,
+        on_delete=models.CASCADE,
+        related_name='parsing_info'
+    )
+    agent = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name='parsing_info'
+    )
+    agency = models.ForeignKey(
+        Agency,
+        on_delete=models.CASCADE,
+        related_name='parsing_info'
+    )
+    login = models.CharField(max_length=255)
+    password = models.CharField(max_length=255)  # SENSITIVE - never expose in API
+
+    class Meta:
+        managed = False
+        db_table = 'parsing_info'
+
+    def __str__(self):
+        return f"Parsing Info: {self.carrier} - {self.login}"
+
+
+class PolicyReportStagingSyncLog(models.Model):
+    """
+    Sync log for policy report staging operations.
+    Maps to: public.policy_report_staging_sync_log
+    """
+    id = models.BigAutoField(primary_key=True)
+    run_id = models.UUIDField()
+    staging_id = models.UUIDField()
+    reason = models.TextField()
+    details = models.JSONField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        managed = False
+        db_table = 'policy_report_staging_sync_log'
+
+    def __str__(self):
+        return f"Staging Sync {self.id} - {self.reason[:50]}"
+
+
+# =============================================================================
+# Manager Assignments
+# =============================================================================
 
 # Import and assign managers after all models are defined
 from apps.core.managers.conversation import ConversationManager
