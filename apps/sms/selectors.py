@@ -46,8 +46,8 @@ def get_sms_conversations(
     is_admin = user.is_admin or user.role == 'admin'
 
     try:
-        # Start with base queryset
-        qs = Conversation.objects.filter(agency_id=user.agency_id)  # type: ignore[attr-defined]
+        # Start with base queryset - filter for SMS type only
+        qs = Conversation.objects.filter(agency_id=user.agency_id, type='sms')  # type: ignore[attr-defined]
 
         # Apply view mode filter
         if view_mode == 'all' and is_admin:
@@ -67,7 +67,7 @@ def get_sms_conversations(
         # Apply search filter
         if search_query:
             qs = qs.filter(
-                Q(phone_number__icontains=search_query) |
+                Q(client_phone__icontains=search_query) |
                 Q(client__first_name__icontains=search_query) |
                 Q(client__last_name__icontains=search_query)
             )
@@ -80,8 +80,9 @@ def get_sms_conversations(
         )
 
         # Optimize with select_related and annotate
+        # Note: Conversation has no client FK, client info comes from deal
         qs = (
-            qs.select_related('client', 'agent')
+            qs.select_related('agent', 'deal')
             .annotate(last_message_content=Subquery(last_message_subquery))
             .order_by('-last_message_at', '-id')
         )
@@ -96,21 +97,37 @@ def get_sms_conversations(
         # Format results
         conversations = []
         for conv in page_obj:
+            # Use client_phone field (model uses client_phone, not phone_number)
+            phone = getattr(conv, 'client_phone', None) or getattr(conv, 'phone_number', None)
+            # unread_count comes from annotation, is_archived may not exist
+            unread = getattr(conv, 'unread_count', 0) or 0
+            is_archived = getattr(conv, 'is_archived', False) or False
+
+            # Client info comes from deal (conversations don't have direct client FK)
+            client_name = conv.deal.client_name if conv.deal else None
+            client_email = conv.deal.client_email if conv.deal else None
+            client_first = client_name.split(' ', 1)[0] if client_name else None
+            client_last = client_name.split(' ', 1)[1] if client_name and ' ' in client_name else None
+
             conversations.append({
                 'id': str(conv.id),
-                'phone_number': conv.phone_number,
+                'phone_number': phone,
+                'deal_id': str(conv.deal_id) if conv.deal_id else None,
                 'last_message_at': conv.last_message_at.isoformat() if conv.last_message_at else None,
-                'unread_count': conv.unread_count or 0,
-                'is_archived': conv.is_archived or False,
+                'unread_count': unread,
+                'is_archived': is_archived,
                 'created_at': conv.created_at.isoformat() if conv.created_at else None,
                 'last_message': conv.last_message_content,
+                'sms_opt_in_status': conv.sms_opt_in_status,
+                'opted_in_at': conv.opted_in_at.isoformat() if conv.opted_in_at else None,
+                'opted_out_at': conv.opted_out_at.isoformat() if conv.opted_out_at else None,
+                'status_standardized': conv.deal.status_standardized if conv.deal else None,
                 'client': {
-                    'id': str(conv.client.id) if conv.client else None,
-                    'first_name': conv.client.first_name if conv.client else None,
-                    'last_name': conv.client.last_name if conv.client else None,
-                    'email': conv.client.email if conv.client else None,
-                    'name': f"{conv.client.first_name or ''} {conv.client.last_name or ''}".strip() if conv.client else '',
-                } if conv.client else None,
+                    'name': client_name or '',
+                    'first_name': client_first,
+                    'last_name': client_last,
+                    'email': client_email,
+                } if client_name or client_email else None,
                 'agent': {
                     'id': str(conv.agent.id) if conv.agent else None,
                     'first_name': conv.agent.first_name if conv.agent else None,
@@ -238,7 +255,7 @@ def get_draft_messages(
     """
     Get draft messages based on view mode.
 
-    Uses Django ORM with select_related for N+1 prevention.
+    Drafts are messages in the messages table with status='draft'.
 
     Args:
         user: The authenticated user
@@ -249,15 +266,15 @@ def get_draft_messages(
     Returns:
         Dictionary with drafts and pagination
     """
-    from apps.core.models import DraftMessage
+    from apps.core.models import Message
 
     is_admin = user.is_admin or user.role == 'admin'
 
     try:
-        # Start with base queryset - only pending drafts
-        qs = DraftMessage.objects.filter(  # type: ignore[attr-defined]
-            agency_id=user.agency_id,
-            status='pending'
+        # Start with base queryset - draft messages in the agency
+        qs = Message.objects.filter(  # type: ignore[attr-defined]
+            conversation__agency_id=user.agency_id,
+            status='draft'
         )
 
         # Apply view mode filter
@@ -270,18 +287,18 @@ def get_draft_messages(
             visible_ids = [vid for vid in visible_ids if str(vid) != str(user.id)]
             if not visible_ids:
                 return {'drafts': [], 'pagination': _empty_pagination(page, limit)}
-            qs = qs.filter(agent_id__in=visible_ids)
+            qs = qs.filter(conversation__agent_id__in=visible_ids)
         else:  # 'self'
             # User sees only their own drafts
-            qs = qs.filter(agent_id=user.id)
+            qs = qs.filter(conversation__agent_id=user.id)
 
-        # Optimize with select_related (include deal via conversation)
+        # Optimize with select_related
         qs = (
-            qs.select_related('agent', 'conversation', 'conversation__client', 'conversation__deal')
+            qs.select_related('conversation', 'conversation__client', 'conversation__agent', 'sent_by')
             .order_by('-created_at')
         )
 
-        # Get total count
+        # Get total count before pagination
         total_count = qs.count()
 
         # Apply pagination
@@ -290,39 +307,31 @@ def get_draft_messages(
 
         # Format results
         drafts = []
-        for draft in page_obj:
-            # Build recipient name from conversation's client
-            client_name = ''
-            phone_number = None
-            deal_info = None
-            if draft.conversation:
-                phone_number = draft.conversation.phone_number
-                if draft.conversation.client:
-                    client = draft.conversation.client
-                    client_name = f"{client.first_name or ''} {client.last_name or ''}".strip()
-                # Include deal association info
-                if draft.conversation.deal:
-                    deal = draft.conversation.deal
-                    deal_info = {
-                        'id': str(deal.id),
-                        'policy_number': deal.policy_number,
-                        'status': deal.status,
-                        'status_standardized': deal.status_standardized,
-                    }
-
+        for msg in page_obj:
+            conv = msg.conversation
             drafts.append({
-                'id': str(draft.id),
-                'content': draft.content,
-                'status': draft.status,
-                'created_at': draft.created_at.isoformat() if draft.created_at else None,
-                'recipient_name': client_name or phone_number or '',
+                'id': str(msg.id),
+                'content': msg.content,
+                'created_at': msg.created_at.isoformat() if msg.created_at else None,
+                'updated_at': msg.updated_at.isoformat() if msg.updated_at else None,
+                'conversation_id': str(conv.id) if conv else None,
+                'phone_number': conv.phone_number if conv else None,
+                'client': {
+                    'id': str(conv.client.id) if conv and conv.client else None,
+                    'first_name': conv.client.first_name if conv and conv.client else None,
+                    'last_name': conv.client.last_name if conv and conv.client else None,
+                    'name': f"{conv.client.first_name or ''} {conv.client.last_name or ''}".strip() if conv and conv.client else '',
+                } if conv and conv.client else None,
                 'agent': {
-                    'id': str(draft.agent.id) if draft.agent else None,
-                    'name': f"{draft.agent.first_name or ''} {draft.agent.last_name or ''}".strip() if draft.agent else '',
-                } if draft.agent else None,
-                'conversation_id': str(draft.conversation.id) if draft.conversation else None,
-                'phone_number': phone_number,
-                'deal': deal_info,
+                    'id': str(conv.agent.id) if conv and conv.agent else None,
+                    'first_name': conv.agent.first_name if conv and conv.agent else None,
+                    'last_name': conv.agent.last_name if conv and conv.agent else None,
+                    'name': f"{conv.agent.first_name or ''} {conv.agent.last_name or ''}".strip() if conv and conv.agent else '',
+                } if conv and conv.agent else None,
+                'sent_by': {
+                    'id': str(msg.sent_by.id) if msg.sent_by else None,
+                    'name': f"{msg.sent_by.first_name or ''} {msg.sent_by.last_name or ''}".strip() if msg.sent_by else '',
+                } if msg.sent_by else None,
             })
 
         total_pages = paginator.num_pages

@@ -9,6 +9,7 @@ from . import views
 
 urlpatterns = [
     path('', views.PositionsListView.as_view(), name='positions_list'),
+    path('all-commissions', views.AllPositionCommissionsView.as_view(), name='all_position_commissions'),
     path('product-commissions', views.PositionCommissionsView.as_view(), name='position_commissions'),
     path('product-commissions/sync', views.SyncCommissionsView.as_view(), name='sync_commissions'),
     path('product-commissions/<str:commission_id>', views.PositionCommissionDetailView.as_view(), name='commission_detail'),

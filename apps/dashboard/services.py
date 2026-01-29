@@ -25,6 +25,24 @@ from services.hierarchy_service import HierarchyService
 logger = logging.getLogger(__name__)
 
 
+def _ensure_list(value) -> list:
+    """Ensure JSONB value is a Python list.
+
+    PostgreSQL/psycopg2 sometimes returns JSONB as strings depending on
+    database configuration. This helper safely parses them.
+    """
+    if isinstance(value, list):
+        return value
+    if isinstance(value, str):
+        import json
+        try:
+            parsed = json.loads(value)
+            return parsed if isinstance(parsed, list) else []
+        except (json.JSONDecodeError, TypeError):
+            return []
+    return []
+
+
 @dataclass
 class UserContext:
     """User context derived from authenticated request."""
@@ -74,11 +92,24 @@ def get_user_context_from_auth_id(auth_user_id: UUID) -> UserContext | None:
         return None
 
 
-def get_dashboard_summary(user_ctx: UserContext, as_of_date: date | None = None) -> dict:
+def get_dashboard_summary(
+    user_ctx: UserContext,
+    as_of_date: date | None = None,
+    start_date: date | None = None,
+    end_date: date | None = None,
+    production_mode: str = 'submitted',
+) -> dict:
     """
     Get dashboard summary data.
 
-    Mirrors: get_dashboard_data_with_agency_id RPC function.
+    Mirrors: get_dashboard_data_with_agency_id and get_dashboard_data_with_date_range RPC functions.
+
+    Args:
+        user_ctx: User context
+        as_of_date: Single date reference (legacy mode, used if start_date/end_date not provided)
+        start_date: Start of date range for filtering
+        end_date: End of date range for filtering
+        production_mode: 'submitted' (use submission_date) or 'issue_paid' (use policy_effective_date with 7-day cutoff)
 
     Returns:
         {
@@ -87,17 +118,45 @@ def get_dashboard_summary(user_ctx: UserContext, as_of_date: date | None = None)
             'totals': { pending_positions }
         }
     """
-    if as_of_date is None:
+    # Default to as_of_date mode if no date range provided
+    if as_of_date is None and start_date is None:
         as_of_date = date.today()
+
+    # If date range provided, use it; otherwise derive from as_of_date
+    if start_date is not None and end_date is not None:
+        use_date_range = True
+    else:
+        use_date_range = False
+        if as_of_date is None:
+            as_of_date = date.today()
 
     internal_id = str(user_ctx.internal_user_id)
     agency_id = str(user_ctx.agency_id)
     is_admin = user_ctx.is_admin
 
+    # Determine date field and range filter based on production_mode
+    if production_mode == 'issue_paid':
+        date_field = "COALESCE(d.policy_effective_date, d.submission_date)"
+        # For issue_paid mode, only count deals where effective date is at least 7 days ago
+        cutoff_condition = f"AND ({date_field} <= CURRENT_DATE - INTERVAL '7 days')"
+    else:  # 'submitted'
+        date_field = "d.submission_date"
+        cutoff_condition = ""
+
+    # Build date range filter
+    if use_date_range:
+        date_filter = f"AND {date_field} BETWEEN %s AND %s"
+        date_params = [start_date.isoformat(), end_date.isoformat()]  # type: ignore[union-attr]
+        reference_date = end_date  # type: ignore[assignment]
+    else:
+        date_filter = ""
+        date_params = []
+        reference_date = as_of_date  # type: ignore[assignment]
+
     try:
         with connection.cursor() as cursor:
             # ==================== YOUR DEALS ====================
-            cursor.execute("""
+            your_query = f"""
                 WITH
                 your_base AS (
                     SELECT
@@ -105,7 +164,7 @@ def get_dashboard_summary(user_ctx: UserContext, as_of_date: date | None = None)
                         d.carrier_id,
                         c.name as carrier_name,
                         d.status as raw_status,
-                        d.policy_effective_date,
+                        {date_field} as relevant_date,
                         d.monthly_premium,
                         COALESCE(m.impact, 'neutral') as impact
                     FROM deals d
@@ -115,6 +174,8 @@ def get_dashboard_summary(user_ctx: UserContext, as_of_date: date | None = None)
                         AND m.raw_status = d.status
                     WHERE d.agency_id = %s
                         AND d.agent_id = %s
+                        {date_filter}
+                        {cutoff_condition}
                 ),
                 your_active AS (
                     SELECT * FROM your_base WHERE impact = 'positive'
@@ -124,7 +185,7 @@ def get_dashboard_summary(user_ctx: UserContext, as_of_date: date | None = None)
                         COUNT(*)::int AS active_policies,
                         COALESCE(SUM(monthly_premium), 0)::numeric(12,2) AS monthly_commissions,
                         COUNT(*) FILTER (
-                            WHERE policy_effective_date >= (%s::date - interval '1 week')
+                            WHERE relevant_date >= (%s::date - interval '1 week')
                         )::int AS new_policies
                     FROM your_active
                 ),
@@ -134,6 +195,8 @@ def get_dashboard_summary(user_ctx: UserContext, as_of_date: date | None = None)
                     WHERE d.agency_id = %s
                         AND d.agent_id = %s
                         AND d.client_id IS NOT NULL
+                        {date_filter}
+                        {cutoff_condition}
                 ),
                 your_carriers_active AS (
                     SELECT
@@ -155,7 +218,10 @@ def get_dashboard_summary(user_ctx: UserContext, as_of_date: date | None = None)
                     )
                 FROM your_totals t
                 CROSS JOIN your_clients c
-            """, [agency_id, internal_id, as_of_date.isoformat(), agency_id, internal_id])
+            """
+            # Build params list
+            your_params = [agency_id, internal_id] + date_params + [reference_date.isoformat(), agency_id, internal_id] + date_params
+            cursor.execute(your_query, your_params)
             your_row = cursor.fetchone()
 
             your_deals = {
@@ -169,11 +235,11 @@ def get_dashboard_summary(user_ctx: UserContext, as_of_date: date | None = None)
             # ==================== DOWNLINE PRODUCTION ====================
             if is_admin:
                 # Admins see all deals in agency
-                downline_filter = "d.agency_id = %s"
-                downline_params = [agency_id, as_of_date.isoformat(), agency_id]
+                base_downline_filter = "d.agency_id = %s"
+                base_downline_params = [agency_id]
             else:
                 # Agents see only their downline deals (excluding their own)
-                downline_filter = """
+                base_downline_filter = """
                     d.agency_id = %s
                     AND d.id IN (
                         SELECT deal_id
@@ -182,9 +248,9 @@ def get_dashboard_summary(user_ctx: UserContext, as_of_date: date | None = None)
                     )
                     AND d.agent_id != %s
                 """
-                downline_params = [agency_id, internal_id, internal_id, as_of_date.isoformat(), agency_id, internal_id, internal_id]
+                base_downline_params = [agency_id, internal_id, internal_id]
 
-            cursor.execute(f"""
+            downline_query = f"""
                 WITH
                 downline_base AS (
                     SELECT
@@ -192,7 +258,7 @@ def get_dashboard_summary(user_ctx: UserContext, as_of_date: date | None = None)
                         d.carrier_id,
                         c.name as carrier_name,
                         d.status as raw_status,
-                        d.policy_effective_date,
+                        {date_field} as relevant_date,
                         d.monthly_premium,
                         COALESCE(m.impact, 'neutral') as impact
                     FROM deals d
@@ -200,7 +266,9 @@ def get_dashboard_summary(user_ctx: UserContext, as_of_date: date | None = None)
                     LEFT JOIN status_mapping m
                         ON m.carrier_id = d.carrier_id
                         AND m.raw_status = d.status
-                    WHERE {downline_filter}
+                    WHERE {base_downline_filter}
+                        {date_filter}
+                        {cutoff_condition}
                 ),
                 downline_active AS (
                     SELECT * FROM downline_base WHERE impact = 'positive'
@@ -210,15 +278,17 @@ def get_dashboard_summary(user_ctx: UserContext, as_of_date: date | None = None)
                         COUNT(*)::int AS active_policies,
                         COALESCE(SUM(monthly_premium), 0)::numeric(12,2) AS monthly_commissions,
                         COUNT(*) FILTER (
-                            WHERE policy_effective_date >= (%s::date - interval '1 week')
+                            WHERE relevant_date >= (%s::date - interval '1 week')
                         )::int AS new_policies
                     FROM downline_active
                 ),
                 downline_clients AS (
                     SELECT COUNT(DISTINCT d.client_id)::int AS total_clients
                     FROM deals d
-                    WHERE {downline_filter.replace('%s', '%s', 1) if is_admin else downline_filter}
+                    WHERE {base_downline_filter}
                         AND d.client_id IS NOT NULL
+                        {date_filter}
+                        {cutoff_condition}
                 ),
                 downline_carriers_active AS (
                     SELECT
@@ -240,7 +310,10 @@ def get_dashboard_summary(user_ctx: UserContext, as_of_date: date | None = None)
                     )
                 FROM downline_totals t
                 CROSS JOIN downline_clients c
-            """, downline_params)
+            """
+            # Build params: base_filter + date_params (for downline_base) + reference_date + base_filter + date_params (for downline_clients)
+            downline_params = base_downline_params + date_params + [reference_date.isoformat()] + base_downline_params + date_params
+            cursor.execute(downline_query, downline_params)
             downline_row = cursor.fetchone()
 
             downline_production = {
@@ -443,7 +516,7 @@ def get_scoreboard_data(
             """, [agency_id, start_date.isoformat(), end_date.isoformat(), start_date.isoformat(), agency_id])
 
             row = cursor.fetchone()
-            leaderboard = row[0] if row and row[0] else []
+            leaderboard = _ensure_list(row[0]) if row else []
             stats = row[1] if row and row[1] else {
                 'totalProduction': 0,
                 'totalDeals': 0,
@@ -700,7 +773,7 @@ def get_scoreboard_lapsed_deals(
             cursor.execute(query, params)  # type: ignore[arg-type]
             row = cursor.fetchone()
 
-            leaderboard: list = row[0] if row and row[0] else []
+            leaderboard: list = _ensure_list(row[0]) if row else []
             stats: dict = row[1] if row and row[1] else {
                 'totalProduction': 0,
                 'totalDeals': 0,
@@ -974,7 +1047,7 @@ def get_scoreboard_with_billing_cycle(
             cursor.execute(query, params)
             row = cursor.fetchone()
 
-            leaderboard = row[0] if row and row[0] else []
+            leaderboard = _ensure_list(row[0]) if row else []
             stats = row[1] if row and row[1] else {
                 'totalProduction': 0,
                 'totalDeals': 0,

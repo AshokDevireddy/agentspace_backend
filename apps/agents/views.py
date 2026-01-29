@@ -17,7 +17,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from apps.core.authentication import get_user_context
+from apps.core.authentication import CronSecretAuthentication, SupabaseJWTAuthentication, get_user_context
 
 from .selectors import (
     check_agent_upline_positions,
@@ -31,7 +31,7 @@ from .selectors import (
     get_agents_table,
     get_agents_without_positions,
 )
-from .services import assign_position_to_agent, update_agent_position
+from .services import assign_position_to_agent, invite_agent, update_agent_position
 
 logger = logging.getLogger(__name__)
 
@@ -296,7 +296,10 @@ class AgentDetailView(APIView):
 
     Get full agent details including profile, performance stats, and hierarchy info.
     Implements P1-007.
+
+    Supports CronSecretAuthentication for server-to-server calls.
     """
+    authentication_classes = [CronSecretAuthentication, SupabaseJWTAuthentication]
     permission_classes = [IsAuthenticated]
 
     def get(self, request, agent_id):
@@ -805,5 +808,100 @@ class GetAgentUplineChainView(APIView):
             logger.error(f'Get agent upline chain failed: {e}')
             return Response(
                 {'error': 'Failed to get upline chain', 'detail': str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
+class AgentInviteView(APIView):
+    """
+    POST /api/agents/invite
+
+    Invite a new agent to join the agency.
+    Creates a user record with status='invited' and sets upline to the inviter.
+
+    Request body:
+        {
+            "email": "agent@example.com",
+            "first_name": "John",
+            "last_name": "Doe",
+            "phone_number": "+1234567890",  // optional
+            "position_id": "uuid"           // optional
+        }
+
+    Response (201):
+        {
+            "success": true,
+            "user_id": "uuid",
+            "email": "agent@example.com",
+            ...
+        }
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        user = get_user_context(request)
+        if not user:
+            return Response(
+                {'error': 'Unauthorized'},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
+        data = request.data
+        email = data.get('email', '').strip()
+        first_name = data.get('first_name', '').strip()
+        last_name = data.get('last_name', '').strip()
+        phone_number = data.get('phone_number')
+        position_id_str = data.get('position_id')
+
+        # Validate required fields
+        if not email:
+            return Response(
+                {'error': 'email is required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        if not first_name:
+            return Response(
+                {'error': 'first_name is required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        if not last_name:
+            return Response(
+                {'error': 'last_name is required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        position_id = None
+        if position_id_str:
+            try:
+                position_id = UUID(position_id_str)
+            except ValueError:
+                return Response(
+                    {'error': 'Invalid position_id format'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+        try:
+            result = invite_agent(
+                inviter_id=user.id,
+                agency_id=user.agency_id,
+                email=email,
+                first_name=first_name,
+                last_name=last_name,
+                phone_number=phone_number,
+                position_id=position_id,
+            )
+
+            if not result.get('success'):
+                return Response(
+                    {'error': result.get('error', 'Failed to invite agent')},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            return Response(result, status=status.HTTP_201_CREATED)
+
+        except Exception as e:
+            logger.error(f'Agent invite failed: {e}')
+            return Response(
+                {'error': 'Failed to invite agent', 'detail': str(e)},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )

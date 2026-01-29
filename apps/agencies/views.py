@@ -2,9 +2,12 @@
 Agency Settings API Views
 
 Endpoints:
+- GET /api/agencies/{id} - Get agency details (authenticated)
 - GET /api/agencies/{id}/settings - Get agency settings
 - PATCH /api/agencies/{id}/settings - Update agency settings
 - POST /api/agencies/{id}/logo - Upload agency logo
+- GET /api/agencies/{id}/phone - Get agency phone number
+- GET /api/agencies/by-phone - Find agency by phone number (server-side only)
 """
 import logging
 import os
@@ -17,6 +20,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from apps.core.authentication import CronSecretAuthentication, SupabaseJWTAuthentication
 from apps.core.mixins import AuthenticatedAPIView
 
 logger = logging.getLogger(__name__)
@@ -193,6 +197,102 @@ class AgencySettingsView(AuthenticatedAPIView, APIView):
             )
 
 
+class AgencyByDomainView(APIView):
+    """
+    GET /api/agencies/by-domain?domain= - Get agency by whitelabel domain (public)
+    """
+    # Public endpoint - no authentication required
+
+    def get(self, request):
+        """Get agency by whitelabel domain."""
+        domain = request.query_params.get('domain', '').strip()
+        if not domain:
+            return Response(
+                {'error': 'ValidationError', 'message': 'domain query parameter is required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute("""
+                    SELECT
+                        id, name, display_name, logo_url, primary_color,
+                        whitelabel_domain, theme_mode, default_scoreboard_start_date
+                    FROM public.agencies
+                    WHERE LOWER(whitelabel_domain) = LOWER(%s)
+                """, [domain])
+                row = cursor.fetchone()
+
+            if not row:
+                return Response(
+                    {'error': 'NotFound', 'message': 'Agency not found for domain'},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+
+            return Response({
+                'id': str(row[0]),
+                'name': row[1],
+                'display_name': row[2],
+                'logo_url': row[3],
+                'primary_color': row[4],
+                'whitelabel_domain': row[5],
+                'theme_mode': row[6],
+                'default_scoreboard_start_date': str(row[7]) if row[7] else None,
+            })
+
+        except Exception as e:
+            logger.error(f'Error getting agency by domain: {e}')
+            return Response(
+                {'error': 'ServerError', 'message': 'Failed to get agency'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
+class AgencyScoreboardSettingsView(AuthenticatedAPIView, APIView):
+    """
+    GET /api/agencies/{agency_id}/scoreboard-settings - Get agency scoreboard settings
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, agency_id: str):
+        """Get agency scoreboard settings."""
+        user = self.get_user(request)
+
+        # Verify user belongs to this agency
+        if str(user.agency_id) != agency_id:
+            return Response(
+                {'error': 'Forbidden', 'message': 'You can only access your own agency settings'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute("""
+                    SELECT
+                        default_scoreboard_start_date
+                    FROM public.agencies
+                    WHERE id = %s
+                """, [agency_id])
+                row = cursor.fetchone()
+
+            if not row:
+                return Response(
+                    {'error': 'NotFound', 'message': 'Agency not found'},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+
+            return Response({
+                'default_scoreboard_start_date': str(row[0]) if row[0] else None,
+            })
+
+        except Exception as e:
+            logger.error(f'Error getting agency scoreboard settings: {e}')
+            return Response(
+                {'error': 'ServerError', 'message': 'Failed to get scoreboard settings'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
 class AgencyLogoUploadView(AuthenticatedAPIView, APIView):
     """
     POST /api/agencies/{agency_id}/logo - Upload agency logo
@@ -288,5 +388,173 @@ class AgencyLogoUploadView(AuthenticatedAPIView, APIView):
             logger.error(f'Error uploading logo: {e}')
             return Response(
                 {'error': 'ServerError', 'message': 'Failed to upload logo'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
+class AgencyDetailView(AuthenticatedAPIView, APIView):
+    """
+    GET /api/agencies/{agency_id} - Get agency details (name and phone number)
+
+    Supports CronSecretAuthentication for server-to-server calls.
+    """
+    authentication_classes = [CronSecretAuthentication, SupabaseJWTAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, agency_id: str):
+        """Get agency details."""
+        user = self.get_user(request)
+
+        # System users (from CronSecretAuthentication) can access any agency
+        is_system_user = user.email == 'system@internal' and user.is_admin
+
+        # Verify user belongs to this agency (unless system user)
+        if not is_system_user and str(user.agency_id) != agency_id:
+            return Response(
+                {'error': 'Forbidden', 'message': 'You can only access your own agency'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute("""
+                    SELECT id, name, display_name, phone_number
+                    FROM public.agencies
+                    WHERE id = %s
+                """, [agency_id])
+                row = cursor.fetchone()
+
+            if not row:
+                return Response(
+                    {'error': 'NotFound', 'message': 'Agency not found'},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+
+            return Response({
+                'id': str(row[0]),
+                'name': row[1],
+                'display_name': row[2],
+                'phone_number': row[3],
+            })
+
+        except Exception as e:
+            logger.error(f'Error getting agency details: {e}')
+            return Response(
+                {'error': 'ServerError', 'message': 'Failed to get agency details'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
+class AgencyPhoneView(AuthenticatedAPIView, APIView):
+    """
+    GET /api/agencies/{agency_id}/phone - Get agency phone number
+
+    Supports CronSecretAuthentication for server-to-server calls.
+    """
+    authentication_classes = [CronSecretAuthentication, SupabaseJWTAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, agency_id: str):
+        """Get agency phone number."""
+        user = self.get_user(request)
+
+        # System users (from CronSecretAuthentication) can access any agency
+        is_system_user = user.email == 'system@internal' and user.is_admin
+
+        # Verify user belongs to this agency (unless system user)
+        if not is_system_user and str(user.agency_id) != agency_id:
+            return Response(
+                {'error': 'Forbidden', 'message': 'You can only access your own agency'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute("""
+                    SELECT phone_number FROM public.agencies WHERE id = %s
+                """, [agency_id])
+                row = cursor.fetchone()
+
+            if not row:
+                return Response(
+                    {'error': 'NotFound', 'message': 'Agency not found'},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+
+            return Response({
+                'phone_number': row[0],
+            })
+
+        except Exception as e:
+            logger.error(f'Error getting agency phone: {e}')
+            return Response(
+                {'error': 'ServerError', 'message': 'Failed to get agency phone'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
+class AgencyByPhoneView(AuthenticatedAPIView, APIView):
+    """
+    GET /api/agencies/by-phone?phone= - Find agency by phone number
+
+    This endpoint is used by server-side code (webhooks, cron jobs) to find
+    the agency that owns a phone number.
+
+    Supports CronSecretAuthentication for server-to-server calls.
+    """
+    authentication_classes = [CronSecretAuthentication, SupabaseJWTAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        """Find agency by phone number."""
+        self.get_user(request)  # Just verify authentication
+
+        phone = request.query_params.get('phone', '').strip()
+        if not phone:
+            return Response(
+                {'error': 'ValidationError', 'message': 'phone query parameter is required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            # Normalize phone number for comparison (remove all non-digits)
+            import re
+            normalized = re.sub(r'\D', '', phone)
+
+            # Try multiple phone format variations
+            phone_variations = [
+                phone,                           # Original format
+                normalized,                      # Digits only
+                f'+1{normalized}' if len(normalized) == 10 else f'+{normalized}',  # E.164
+            ]
+
+            for variation in phone_variations:
+                with connection.cursor() as cursor:
+                    cursor.execute("""
+                        SELECT id, name, phone_number
+                        FROM public.agencies
+                        WHERE phone_number = %s
+                    """, [variation])
+                    row = cursor.fetchone()
+
+                if row:
+                    return Response({
+                        'found': True,
+                        'agency': {
+                            'id': str(row[0]),
+                            'name': row[1],
+                            'phone_number': row[2],
+                        }
+                    })
+
+            return Response({
+                'found': False,
+                'agency': None
+            })
+
+        except Exception as e:
+            logger.error(f'Error finding agency by phone: {e}')
+            return Response(
+                {'error': 'ServerError', 'message': 'Failed to find agency'},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )

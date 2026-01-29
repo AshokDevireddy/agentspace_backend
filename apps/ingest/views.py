@@ -14,7 +14,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from apps.core.authentication import get_user_context
+from apps.core.authentication import CronSecretAuthentication, SupabaseJWTAuthentication, get_user_context
 
 from .services import (
     create_clients_from_deals,
@@ -51,6 +51,7 @@ class EnqueueJobView(APIView):
         priority: Job priority (optional, default 0)
         delay_sec: Delay in seconds (optional, default 0)
     """
+    authentication_classes = [CronSecretAuthentication, SupabaseJWTAuthentication]
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
@@ -124,6 +125,7 @@ class OrchestrateIngestView(APIView):
     5. Sync staging to deals
     6. Link/create clients
     """
+    authentication_classes = [CronSecretAuthentication, SupabaseJWTAuthentication]
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
@@ -618,5 +620,459 @@ class SyncAgentCarrierNumbersView(APIView):
             logger.error(f'Sync agent carrier numbers failed: {e}')
             return Response(
                 {'error': 'Failed to sync agent carrier numbers', 'detail': str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
+# =============================================================================
+# Ingest Job CRUD Views
+# =============================================================================
+
+
+class IngestJobsView(APIView):
+    """
+    GET /api/ingest/jobs - List ingest jobs for the user's agency
+    POST /api/ingest/jobs - Create a new ingest job
+
+    Query params (GET):
+        days: Number of days to look back (default 30)
+        limit: Maximum number of jobs (default 50)
+
+    Request body (POST):
+        expected_files: Number of expected files (required)
+        client_job_id: Optional client-provided job ID for idempotency
+    """
+    authentication_classes = [CronSecretAuthentication, SupabaseJWTAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = get_user_context(request)
+        if not user:
+            return Response(
+                {'error': 'Unauthorized'},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
+        try:
+            days = int(request.query_params.get('days', 30))
+            limit = int(request.query_params.get('limit', 50))
+        except (ValueError, TypeError):
+            days = 30
+            limit = 50
+
+        try:
+            from .services import list_ingest_jobs, list_ingest_job_files
+
+            jobs = list_ingest_jobs(
+                agency_id=user.agency_id,
+                days=days,
+                limit=limit,
+            )
+
+            # Also fetch files for these jobs
+            job_ids = [j['job_id'] for j in jobs]
+            files = list_ingest_job_files(job_ids) if job_ids else []
+
+            # Group files by job
+            files_by_job = {}
+            for f in files:
+                job_id = f['job_id']
+                if job_id not in files_by_job:
+                    files_by_job[job_id] = []
+                files_by_job[job_id].append(f)
+
+            # Format response to match frontend expectation
+            formatted_files = []
+            for job in jobs:
+                job_files = files_by_job.get(job['job_id'], [])
+                for f in job_files:
+                    formatted_files.append({
+                        'id': f['file_id'],
+                        'name': f['file_name'],
+                        'job_id': f['job_id'],
+                        'status': f['status'],
+                        'parsed_rows': f['parsed_rows'],
+                        'error_message': f['error_message'],
+                        'created_at': f['created_at'],
+                        'job_status': job['status'],
+                        'job_expected_files': job['expected_files'],
+                        'job_parsed_files': job['parsed_files'],
+                        'job_created_at': job['created_at'],
+                    })
+
+            return Response({
+                'files': formatted_files,
+                'jobs': jobs,
+            })
+
+        except Exception as e:
+            logger.error(f'List ingest jobs failed: {e}')
+            return Response(
+                {'error': 'Failed to list ingest jobs', 'detail': str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+    def post(self, request):
+        user = get_user_context(request)
+        if not user:
+            return Response(
+                {'error': 'Unauthorized'},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
+        expected_files = request.data.get('expected_files')
+        client_job_id = request.data.get('client_job_id')
+
+        if expected_files is None:
+            return Response(
+                {'error': 'expected_files is required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            expected_files = int(expected_files)
+            if expected_files < 0:
+                raise ValueError('expected_files must be non-negative')
+        except (ValueError, TypeError) as e:
+            return Response(
+                {'error': f'Invalid expected_files: {e}'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            from .services import create_ingest_job
+
+            job = create_ingest_job(
+                agency_id=user.agency_id,
+                expected_files=expected_files,
+                client_job_id=client_job_id,
+            )
+
+            # Return 200 for existing job, 201 for new job
+            is_existing = job.get('existing', False)
+            status_code = status.HTTP_200_OK if is_existing else status.HTTP_201_CREATED
+
+            response_data = {
+                'job': {
+                    'jobId': job['job_id'],
+                    'agencyId': job['agency_id'],
+                    'expectedFiles': job['expected_files'],
+                    'parsedFiles': job['parsed_files'],
+                    'status': job['status'],
+                    'createdAt': job['created_at'],
+                    'updatedAt': job['updated_at'],
+                    'clientJobId': job['client_job_id'],
+                }
+            }
+            if is_existing:
+                response_data['existing'] = True
+
+            return Response(response_data, status=status_code)
+
+        except ValueError as e:
+            return Response(
+                {'error': str(e)},
+                status=status.HTTP_409_CONFLICT
+            )
+        except Exception as e:
+            logger.error(f'Create ingest job failed: {e}')
+            return Response(
+                {'error': 'Failed to create ingest job', 'detail': str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
+class IngestJobDetailView(APIView):
+    """
+    GET /api/ingest/jobs/{job_id} - Get a specific ingest job
+
+    Returns job details including files.
+    """
+    authentication_classes = [CronSecretAuthentication, SupabaseJWTAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, job_id: str):
+        user = get_user_context(request)
+        if not user:
+            return Response(
+                {'error': 'Unauthorized'},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
+        try:
+            from uuid import UUID
+            job_uuid = UUID(job_id)
+        except (ValueError, TypeError):
+            return Response(
+                {'error': 'Invalid job_id format'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            from .services import get_ingest_job, list_ingest_job_files
+
+            job = get_ingest_job(job_id=job_uuid, agency_id=user.agency_id)
+
+            if not job:
+                return Response(
+                    {'error': 'Job not found'},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+
+            # Also fetch files for this job
+            files = list_ingest_job_files([job_uuid])
+
+            return Response({
+                'job': job,
+                'files': files,
+            })
+
+        except Exception as e:
+            logger.error(f'Get ingest job failed: {e}')
+            return Response(
+                {'error': 'Failed to get ingest job', 'detail': str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
+# =============================================================================
+# Policy Report Staging Views
+# =============================================================================
+
+
+class StagingBulkInsertView(APIView):
+    """
+    POST /api/ingest/staging/bulk - Bulk insert staging records
+
+    Request body:
+        records: Array of staging records to insert
+            Each record should have:
+            - client_name, policy_number, writing_agent_number, agent_name
+            - status, policy_effective_date, carrier_name
+            - Optional: product, date_of_birth, issue_age, face_value, etc.
+    """
+    authentication_classes = [CronSecretAuthentication, SupabaseJWTAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        user = get_user_context(request)
+        if not user:
+            return Response(
+                {'error': 'Unauthorized'},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
+        records = request.data.get('records', [])
+
+        if not records:
+            return Response(
+                {'error': 'No records provided'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if not isinstance(records, list):
+            return Response(
+                {'error': 'records must be an array'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Validate each record has minimum required fields
+        for i, record in enumerate(records):
+            if not isinstance(record, dict):
+                return Response(
+                    {'error': f'Record {i} is not an object'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            if not record.get('carrier_name'):
+                return Response(
+                    {'error': f'Record {i} missing carrier_name'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+        try:
+            from .services import bulk_insert_staging_records
+
+            result = bulk_insert_staging_records(
+                agency_id=user.agency_id,
+                records=records,
+            )
+
+            if result['success']:
+                return Response({
+                    'success': True,
+                    'insertedCount': result['inserted_count'],
+                })
+            else:
+                return Response(
+                    {'error': result.get('error', 'Insert failed')},
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                )
+
+        except Exception as e:
+            logger.error(f'Bulk insert staging failed: {e}')
+            return Response(
+                {'error': 'Failed to insert staging records', 'detail': str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
+class UpsertJobFileView(APIView):
+    """
+    POST /api/ingest/jobs/{job_id}/files - Upsert a file record for an ingest job
+
+    Request body:
+        file_id: UUID for the file
+        file_name: Original file name
+        status: File status (default 'received')
+    """
+    authentication_classes = [CronSecretAuthentication, SupabaseJWTAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, job_id: str):
+        user = get_user_context(request)
+        if not user:
+            return Response(
+                {'error': 'Unauthorized'},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
+        try:
+            from uuid import UUID
+            job_uuid = UUID(job_id)
+        except (ValueError, TypeError):
+            return Response(
+                {'error': 'Invalid job_id format'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        file_id = request.data.get('file_id')
+        file_name = request.data.get('file_name')
+        file_status = request.data.get('status', 'received')
+
+        if not file_id or not file_name:
+            return Response(
+                {'error': 'file_id and file_name are required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            from .services import verify_job_exists, upsert_ingest_job_file
+
+            # Verify job exists and belongs to user's agency
+            if not verify_job_exists(job_uuid, user.agency_id):
+                return Response(
+                    {'error': 'Job not found'},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+
+            # Upsert the file record
+            result = upsert_ingest_job_file(
+                job_id=job_uuid,
+                file_id=file_id,
+                file_name=file_name,
+                status=file_status,
+            )
+
+            return Response(result)
+
+        except Exception as e:
+            logger.error(f'Upsert job file failed: {e}')
+            return Response(
+                {'error': 'Failed to upsert file', 'detail': str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
+class VerifyJobExistsView(APIView):
+    """
+    GET /api/ingest/jobs/{job_id}/verify - Verify a job exists
+
+    Returns 200 if job exists, 404 if not.
+    """
+    authentication_classes = [CronSecretAuthentication, SupabaseJWTAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, job_id: str):
+        user = get_user_context(request)
+        if not user:
+            return Response(
+                {'error': 'Unauthorized'},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
+        try:
+            from uuid import UUID
+            job_uuid = UUID(job_id)
+        except (ValueError, TypeError):
+            return Response(
+                {'error': 'Invalid job_id format'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            from .services import verify_job_exists
+
+            if verify_job_exists(job_uuid, user.agency_id):
+                return Response({'exists': True})
+            else:
+                return Response(
+                    {'error': 'Job not found'},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+
+        except Exception as e:
+            logger.error(f'Verify job exists failed: {e}')
+            return Response(
+                {'error': 'Failed to verify job', 'detail': str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
+class StagingRecordsView(APIView):
+    """
+    GET /api/ingest/staging - Get staging records
+
+    Query params:
+        carrier: Filter by carrier name (optional)
+        limit: Maximum records to return (default 100)
+    """
+    authentication_classes = [CronSecretAuthentication, SupabaseJWTAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = get_user_context(request)
+        if not user:
+            return Response(
+                {'error': 'Unauthorized'},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
+        carrier = request.query_params.get('carrier')
+        try:
+            limit = int(request.query_params.get('limit', 100))
+        except (ValueError, TypeError):
+            limit = 100
+
+        try:
+            from .services import get_staging_records
+
+            records = get_staging_records(
+                agency_id=user.agency_id,
+                carrier=carrier,
+                limit=limit,
+            )
+
+            return Response({
+                'success': True,
+                'agencyId': str(user.agency_id),
+                'carrier': carrier or 'all',
+                'records': records,
+                'count': len(records),
+            })
+
+        except Exception as e:
+            logger.error(f'Get staging records failed: {e}')
+            return Response(
+                {'error': 'Failed to fetch records', 'detail': str(e)},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )

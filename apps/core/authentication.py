@@ -217,3 +217,57 @@ def get_user_context(request) -> AuthenticatedUser | None:
     if isinstance(user, AuthenticatedUser):
         return user
     return None
+
+
+class CronSecretAuthentication(authentication.BaseAuthentication):
+    """
+    Authenticates requests using a shared CRON_SECRET.
+
+    Used by cron jobs and internal services that don't have user context.
+    Returns a system-level AuthenticatedUser with admin privileges.
+
+    The secret is passed via the X-Cron-Secret header.
+    """
+
+    def authenticate(self, request):
+        """
+        Authenticate the request using the CRON_SECRET header.
+
+        Returns:
+            tuple: (AuthenticatedUser, None) if authenticated
+            None: If no cron secret header provided
+
+        Raises:
+            AuthenticationFailed: If secret is invalid
+        """
+        cron_secret = request.META.get('HTTP_X_CRON_SECRET', '')
+
+        if not cron_secret:
+            return None
+
+        expected_secret = getattr(settings, 'CRON_SECRET', None)
+
+        if not expected_secret:
+            logger.error('CRON_SECRET not configured in settings')
+            return None
+
+        if cron_secret != expected_secret:
+            raise exceptions.AuthenticationFailed('Invalid cron secret')
+
+        # Return a system-level user for cron jobs
+        # This user has admin privileges but isn't tied to a real user
+        system_user = AuthenticatedUser(
+            id=UUID('00000000-0000-0000-0000-000000000000'),  # System user ID
+            auth_user_id=UUID('00000000-0000-0000-0000-000000000000'),
+            email='system@internal',
+            agency_id=UUID('00000000-0000-0000-0000-000000000000'),  # Will be overridden per-agency
+            role='admin',
+            is_admin=True,
+            status='active',
+            perm_level='admin',
+            subscription_tier='expert',
+            first_name='System',
+            last_name='Cron',
+        )
+
+        return (system_user, None)

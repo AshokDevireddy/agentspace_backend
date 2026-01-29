@@ -12,7 +12,6 @@ from faker import Faker
 from apps.core.models import (
     Agency,
     Carrier,
-    Client,
     Position,
     PositionProductCommission,
     Product,
@@ -114,20 +113,6 @@ class ProductFactory(factory.django.DjangoModelFactory):
     agency = factory.SubFactory(AgencyFactory)
     name = factory.LazyAttribute(lambda _: f"{fake.word().title()} Life Insurance")
     is_active = True
-
-
-class ClientFactory(factory.django.DjangoModelFactory):
-    """Factory for Client model."""
-
-    class Meta:
-        model = Client
-
-    id = factory.LazyFunction(uuid.uuid4)
-    agency = factory.SubFactory(AgencyFactory)
-    first_name = factory.LazyAttribute(lambda _: fake.first_name())
-    last_name = factory.LazyAttribute(lambda _: fake.last_name())
-    email = factory.LazyAttribute(lambda _: fake.unique.email())
-    phone = factory.LazyAttribute(lambda _: fake.phone_number()[:20])
 
 
 class PositionProductCommissionFactory(factory.django.DjangoModelFactory):

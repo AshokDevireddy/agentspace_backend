@@ -6,7 +6,6 @@ Import all factories here for easy access in tests.
 from tests.factories.core import (
     AgencyFactory,
     CarrierFactory,
-    ClientFactory,
     PositionFactory,
     PositionProductCommissionFactory,
     ProductFactory,
@@ -19,9 +18,7 @@ from tests.factories.deals import (
 )
 from tests.factories.sms import (
     ConversationFactory,
-    DraftMessageFactory,
     MessageFactory,
-    SmsTemplateFactory,
 )
 
 __all__ = [
@@ -31,7 +28,6 @@ __all__ = [
     'PositionFactory',
     'CarrierFactory',
     'ProductFactory',
-    'ClientFactory',
     'PositionProductCommissionFactory',
     # Deals
     'DealFactory',
@@ -40,6 +36,4 @@ __all__ = [
     # SMS
     'ConversationFactory',
     'MessageFactory',
-    'DraftMessageFactory',
-    'SmsTemplateFactory',
 ]

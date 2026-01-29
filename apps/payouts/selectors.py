@@ -14,9 +14,6 @@ from apps.core.permissions import get_visible_agent_ids
 
 logger = logging.getLogger(__name__)
 
-# Simplified chargeback rate for debt calculation
-# Real implementation would use actual chargeback amounts from carrier data
-DEFAULT_CHARGEBACK_RATE = 0.1
 
 
 def get_expected_payouts(
@@ -322,17 +319,21 @@ def get_agent_debt(
     """
     Get agent debt (negative balance from chargebacks, lapses, etc.).
 
-    Uses Django ORM with select_related for optimized queries.
+    Uses deal_hierarchy_snapshot for proper commission calculation.
+
+    Debt Formula (from RPC get_agent_debt):
+    1. Calculate original commission = annual_premium * 0.75 * (agent_commission_pct / hierarchy_total_pct)
+    2. Early lapse (<=30 days): full commission is debt
+    3. Late lapse (>30 days): prorated based on 9-month vesting
+       debt = (commission / 9) * max(0, 9 - months_active)
 
     Args:
         user: The authenticated user
         agent_id: Filter by specific agent (defaults to user)
 
     Returns:
-        Dictionary with debt information
+        Dictionary with debt information including total_debt, deal_count, and breakdown
     """
-    from apps.core.models import Deal
-
     target_agent_id = agent_id or user.id
 
     # Verify access
@@ -340,46 +341,127 @@ def get_agent_debt(
         is_admin = user.is_admin or user.role == 'admin'
         visible_ids = get_visible_agent_ids(user, include_full_agency=is_admin)
         if target_agent_id not in visible_ids:
-            return {'debt': 0, 'deals': []}
+            return {'debt': 0, 'deal_count': 0, 'deals': []}
 
     try:
-        # Use Django ORM with select_related to prevent N+1 queries
-        deals_qs = (
-            Deal.objects  # type: ignore[attr-defined]
-            .filter(
-                agent_id=target_agent_id,
-                agency_id=user.agency_id,
-                status_standardized__in=['lapsed', 'cancelled', 'terminated'],
-                annual_premium__isnull=False
+        query = """
+            WITH lapsed_deals AS (
+                -- Get all deals where this agent is in the hierarchy AND status has negative impact
+                SELECT
+                    d.id AS deal_id,
+                    d.annual_premium,
+                    d.policy_effective_date,
+                    d.updated_at AS lapse_date,
+                    d.status,
+                    d.carrier_id,
+                    d.client_name,
+                    d.policy_number,
+                    ca.name AS carrier_name,
+                    dhs.commission_percentage AS agent_commission_pct,
+                    (
+                        SELECT SUM(dhs2.commission_percentage)
+                        FROM deal_hierarchy_snapshot dhs2
+                        WHERE dhs2.deal_id = d.id
+                        AND dhs2.commission_percentage IS NOT NULL
+                    ) AS hierarchy_total_pct
+                FROM deals d
+                INNER JOIN deal_hierarchy_snapshot dhs ON dhs.deal_id = d.id
+                INNER JOIN status_mapping sm ON sm.carrier_id = d.carrier_id
+                    AND LOWER(sm.raw_status) = LOWER(d.status)
+                    AND sm.impact = 'negative'
+                LEFT JOIN carriers ca ON ca.id = d.carrier_id
+                WHERE dhs.agent_id = %s
+                    AND d.annual_premium IS NOT NULL
+                    AND d.policy_effective_date IS NOT NULL
+                    AND dhs.commission_percentage IS NOT NULL
+            ),
+            debt_calculations AS (
+                SELECT
+                    deal_id,
+                    annual_premium,
+                    policy_effective_date,
+                    lapse_date,
+                    client_name,
+                    policy_number,
+                    carrier_name,
+                    status,
+                    agent_commission_pct,
+                    hierarchy_total_pct,
+                    -- Calculate original commission: annual_premium * 0.75 * (agent_pct / total_pct)
+                    (annual_premium * 0.75 * (agent_commission_pct / NULLIF(hierarchy_total_pct, 0))) AS original_commission,
+                    -- Calculate days active
+                    GREATEST(0, EXTRACT(EPOCH FROM (lapse_date - policy_effective_date)) / 86400)::INTEGER AS days_active,
+                    -- Calculate months active (floor of days / 30)
+                    GREATEST(0, FLOOR(EXTRACT(EPOCH FROM (lapse_date - policy_effective_date)) / 86400 / 30))::INTEGER AS months_active
+                FROM lapsed_deals
+                WHERE hierarchy_total_pct > 0
+            ),
+            final_debt AS (
+                SELECT
+                    dc.deal_id,
+                    dc.client_name,
+                    dc.policy_number,
+                    dc.carrier_name,
+                    dc.status,
+                    dc.annual_premium,
+                    dc.policy_effective_date,
+                    dc.original_commission,
+                    dc.days_active,
+                    dc.months_active,
+                    -- Determine if early lapse (within 30 days)
+                    (dc.days_active <= 30) AS is_early_lapse,
+                    CASE
+                        -- Early lapse (within 30 days): full commission is debt
+                        WHEN dc.days_active <= 30 THEN dc.original_commission
+                        -- Late lapse (after 30 days): prorate based on 9 months
+                        -- Cap months_active at 9 to prevent negative debt
+                        ELSE (dc.original_commission / 9) * GREATEST(0, 9 - LEAST(dc.months_active, 9))
+                    END AS debt_amount
+                FROM debt_calculations dc
             )
-            .select_related('client', 'carrier')
-            .order_by('-policy_effective_date')
-        )
+            SELECT
+                deal_id,
+                client_name,
+                policy_number,
+                carrier_name,
+                status,
+                annual_premium,
+                policy_effective_date,
+                ROUND(original_commission::numeric, 2) AS original_commission,
+                ROUND(debt_amount::numeric, 2) AS debt_amount,
+                days_active,
+                months_active,
+                is_early_lapse
+            FROM final_debt
+            ORDER BY policy_effective_date DESC NULLS LAST
+        """
+
+        with connection.cursor() as cursor:
+            cursor.execute(query, [str(target_agent_id)])
+            columns = [col[0] for col in cursor.description]
+            rows = cursor.fetchall()
 
         total_debt = 0.0
         deals = []
 
-        for deal in deals_qs:
-            premium = float(deal.annual_premium) if deal.annual_premium else 0.0
-            debt_amount = premium * DEFAULT_CHARGEBACK_RATE
-
-            total_debt += debt_amount
-
-            # Build client name
-            client_name = ''
-            if deal.client:
-                client_name = f"{deal.client.first_name or ''} {deal.client.last_name or ''}".strip()
+        for row in rows:
+            row_dict = dict(zip(columns, row, strict=False))
+            debt_amt = float(row_dict['debt_amount']) if row_dict['debt_amount'] else 0.0
+            total_debt += debt_amt
 
             deals.append({
-                'deal_id': str(deal.id),
-                'policy_number': deal.policy_number,
-                'client_name': client_name,
-                'carrier_name': deal.carrier.name if deal.carrier else None,
-                'premium': premium,
-                'debt_amount': round(debt_amount, 2),
-                'status': deal.status,
-                'status_standardized': deal.status_standardized,
-                'policy_effective_date': deal.policy_effective_date.isoformat() if deal.policy_effective_date else None,
+                'deal_id': str(row_dict['deal_id']),
+                'policy_number': row_dict['policy_number'],
+                'client_name': row_dict['client_name'] or '',
+                'carrier_name': row_dict['carrier_name'],
+                'premium': float(row_dict['annual_premium'] or 0),
+                'original_commission': float(row_dict['original_commission'] or 0),
+                'debt_amount': debt_amt,
+                'status': row_dict['status'],
+                'policy_effective_date': row_dict['policy_effective_date'].isoformat() if row_dict['policy_effective_date'] else None,
+                'days_active': row_dict['days_active'],
+                'months_active': row_dict['months_active'],
+                'is_early_lapse': row_dict['is_early_lapse'],
             })
 
         return {

@@ -6,7 +6,7 @@ All models are read-only by default (unmanaged tables).
 """
 from django.contrib import admin
 
-from .models import Agency, Carrier, Client, Deal, Position, Product, User
+from .models import Agency, Carrier, Deal, Position, Product, User
 
 
 @admin.register(Agency)
@@ -81,22 +81,12 @@ class ProductAdmin(admin.ModelAdmin):
     ordering = ['carrier', 'name']
 
 
-@admin.register(Client)
-class ClientAdmin(admin.ModelAdmin):
-    """Admin interface for clients."""
-    list_display = ['__str__', 'email', 'phone', 'agency', 'created_at']
-    list_filter = ['agency', 'created_at']
-    search_fields = ['first_name', 'last_name', 'email', 'phone']
-    readonly_fields = ['id', 'created_at', 'updated_at']
-    ordering = ['-created_at']
-
-
 @admin.register(Deal)
 class DealAdmin(admin.ModelAdmin):
     """Admin interface for deals."""
     list_display = ['policy_number', 'client_name', 'carrier', 'status_standardized', 'annual_premium', 'agent', 'submission_date']
     list_filter = ['status_standardized', 'carrier', 'agency', 'submission_date']
-    search_fields = ['policy_number', 'client__first_name', 'client__last_name', 'agent__first_name', 'agent__last_name']
+    search_fields = ['policy_number', 'client_name', 'client_email', 'agent__first_name', 'agent__last_name']
     readonly_fields = ['id', 'created_at', 'updated_at']
     ordering = ['-submission_date', '-created_at']
     date_hierarchy = 'submission_date'
@@ -106,7 +96,10 @@ class DealAdmin(admin.ModelAdmin):
             'fields': ('id', 'policy_number', 'status', 'status_standardized')
         }),
         ('Parties', {
-            'fields': ('agency', 'agent', 'client', 'carrier', 'product')
+            'fields': ('agency', 'agent', 'carrier', 'product')
+        }),
+        ('Client Info', {
+            'fields': ('client_name', 'client_email', 'client_phone')
         }),
         ('Financials', {
             'fields': ('annual_premium', 'monthly_premium')

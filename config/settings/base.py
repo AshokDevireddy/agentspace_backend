@@ -26,15 +26,14 @@ ALLOWED_HOSTS = config('ALLOWED_HOSTS', default='localhost,127.0.0.1', cast=Csv(
 # =============================================================================
 
 INSTALLED_APPS = [
-    # Django core apps (admin requires these)
     'django.contrib.admin',
     'django.contrib.contenttypes',
     'django.contrib.auth',
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
+    'django.contrib.postgres',
 
-    # Third-party apps
     'rest_framework',
     'corsheaders',
 
@@ -58,6 +57,7 @@ INSTALLED_APPS = [
     'apps.ai',         # AI conversations (P1-015)
     'apps.onboarding', # Onboarding flow state management
     'apps.agencies',   # Agency settings and configuration
+    'apps.webhooks',   # Stripe and other webhooks
 ]
 
 MIDDLEWARE = [
@@ -68,6 +68,7 @@ MIDDLEWARE = [
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'apps.core.middleware.SupabaseAuthMiddleware',
+    'apps.core.middleware.AgencyContextMiddleware',  # Sets request.agency_id for multi-tenancy
 ]
 
 ROOT_URLCONF = 'config.urls'
@@ -122,6 +123,9 @@ SUPABASE_URL = config('NEXT_PUBLIC_SUPABASE_URL', default='')
 SUPABASE_ANON_KEY = config('NEXT_PUBLIC_SUPABASE_ANON_KEY', default='')
 SUPABASE_SERVICE_ROLE_KEY = config('SUPABASE_SERVICE_ROLE_KEY', default='')
 SUPABASE_JWT_SECRET = config('SUPABASE_JWT_SECRET', default='')
+
+# Cron authentication secret (shared with frontend)
+CRON_SECRET = config('CRON_SECRET', default='')
 
 # =============================================================================
 # REST Framework

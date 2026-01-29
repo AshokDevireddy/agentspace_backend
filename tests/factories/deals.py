@@ -18,7 +18,6 @@ from apps.core.models import (
 from tests.factories.core import (
     AgencyFactory,
     CarrierFactory,
-    ClientFactory,
     PositionFactory,
     ProductFactory,
     UserFactory,
@@ -36,12 +35,15 @@ class DealFactory(factory.django.DjangoModelFactory):
     id = factory.LazyFunction(uuid.uuid4)
     agency = factory.SubFactory(AgencyFactory)
     agent = factory.SubFactory(UserFactory, agency=factory.SelfAttribute('..agency'))
-    client = factory.SubFactory(ClientFactory, agency=factory.SelfAttribute('..agency'))
     carrier = factory.SubFactory(CarrierFactory)
     product = factory.SubFactory(ProductFactory, agency=factory.SelfAttribute('..agency'))
     policy_number = factory.LazyAttribute(lambda _: fake.bothify(text='POL-########'))
     status = 'Active'
     status_standardized = 'active'
+    # Client info stored directly on Deal (no separate Client table)
+    client_name = factory.LazyAttribute(lambda _: f"{fake.first_name()} {fake.last_name()}")
+    client_email = factory.LazyAttribute(lambda _: fake.unique.email())
+    client_phone = factory.LazyAttribute(lambda _: fake.phone_number()[:20])
     annual_premium = factory.LazyAttribute(
         lambda _: Decimal(str(fake.pydecimal(min_value=1000, max_value=50000, right_digits=2)))
     )

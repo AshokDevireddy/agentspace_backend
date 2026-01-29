@@ -586,3 +586,450 @@ def sync_agent_carrier_numbers_from_staging() -> dict:
     except Exception as e:
         logger.error(f'Sync agent carrier numbers failed: {e}')
         raise
+
+
+# =============================================================================
+# Ingest Job CRUD Operations
+# =============================================================================
+
+
+def create_ingest_job(
+    agency_id: UUID,
+    expected_files: int,
+    client_job_id: str | None = None,
+) -> dict:
+    """
+    Create a new ingest job.
+
+    Args:
+        agency_id: Agency ID
+        expected_files: Number of expected files
+        client_job_id: Optional client-provided job ID for idempotency
+
+    Returns:
+        Dictionary with job details
+    """
+    import uuid
+
+    try:
+        # If client_job_id provided, check for existing job first
+        if client_job_id:
+            with connection.cursor() as cursor:
+                cursor.execute("""
+                    SELECT job_id, agency_id, expected_files, parsed_files, status,
+                           client_job_id, created_at, updated_at
+                    FROM public.ingest_job
+                    WHERE client_job_id = %s
+                """, [client_job_id])
+                existing = cursor.fetchone()
+
+                if existing:
+                    # Return existing job if agency and expected_files match
+                    if str(existing[1]) == str(agency_id) and existing[2] == expected_files:
+                        return {
+                            'job_id': str(existing[0]),
+                            'agency_id': str(existing[1]),
+                            'expected_files': existing[2],
+                            'parsed_files': existing[3],
+                            'status': existing[4],
+                            'client_job_id': existing[5],
+                            'created_at': existing[6].isoformat() if existing[6] else None,
+                            'updated_at': existing[7].isoformat() if existing[7] else None,
+                            'existing': True,
+                        }
+                    # Conflict: same client_job_id but different values
+                    raise ValueError('Idempotency conflict: client_job_id exists with different values')
+
+        # Create new job
+        job_id = uuid.uuid4()
+        with connection.cursor() as cursor:
+            cursor.execute("""
+                INSERT INTO public.ingest_job (
+                    job_id, agency_id, expected_files, parsed_files, status, client_job_id,
+                    created_at, updated_at
+                )
+                VALUES (%s, %s, %s, 0, 'parsing', %s, NOW(), NOW())
+                RETURNING job_id, agency_id, expected_files, parsed_files, status,
+                          client_job_id, created_at, updated_at
+            """, [str(job_id), str(agency_id), expected_files, client_job_id])
+            row = cursor.fetchone()
+
+        if row:
+            return {
+                'job_id': str(row[0]),
+                'agency_id': str(row[1]),
+                'expected_files': row[2],
+                'parsed_files': row[3],
+                'status': row[4],
+                'client_job_id': row[5],
+                'created_at': row[6].isoformat() if row[6] else None,
+                'updated_at': row[7].isoformat() if row[7] else None,
+                'existing': False,
+            }
+
+        raise Exception('Failed to create ingest job')
+
+    except ValueError:
+        raise
+    except Exception as e:
+        logger.error(f'Create ingest job failed: {e}')
+        raise
+
+
+def get_ingest_job(job_id: UUID, agency_id: UUID) -> dict | None:
+    """
+    Get an ingest job by ID.
+
+    Args:
+        job_id: Job ID
+        agency_id: Agency ID (for access control)
+
+    Returns:
+        Dictionary with job details or None if not found
+    """
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("""
+                SELECT job_id, agency_id, expected_files, parsed_files, status,
+                       client_job_id, created_at, updated_at
+                FROM public.ingest_job
+                WHERE job_id = %s AND agency_id = %s
+            """, [str(job_id), str(agency_id)])
+            row = cursor.fetchone()
+
+        if not row:
+            return None
+
+        return {
+            'job_id': str(row[0]),
+            'agency_id': str(row[1]),
+            'expected_files': row[2],
+            'parsed_files': row[3],
+            'status': row[4],
+            'client_job_id': row[5],
+            'created_at': row[6].isoformat() if row[6] else None,
+            'updated_at': row[7].isoformat() if row[7] else None,
+        }
+
+    except Exception as e:
+        logger.error(f'Get ingest job failed: {e}')
+        raise
+
+
+def list_ingest_jobs(
+    agency_id: UUID,
+    days: int = 30,
+    limit: int = 50,
+) -> list[dict]:
+    """
+    List ingest jobs for an agency.
+
+    Args:
+        agency_id: Agency ID
+        days: Number of days to look back (default 30)
+        limit: Maximum number of jobs to return (default 50)
+
+    Returns:
+        List of job dictionaries
+    """
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("""
+                SELECT job_id, agency_id, expected_files, parsed_files, status,
+                       client_job_id, created_at, updated_at
+                FROM public.ingest_job
+                WHERE agency_id = %s
+                  AND created_at >= NOW() - INTERVAL '%s days'
+                ORDER BY created_at DESC
+                LIMIT %s
+            """, [str(agency_id), days, limit])
+            rows = cursor.fetchall()
+
+        return [
+            {
+                'job_id': str(row[0]),
+                'agency_id': str(row[1]),
+                'expected_files': row[2],
+                'parsed_files': row[3],
+                'status': row[4],
+                'client_job_id': row[5],
+                'created_at': row[6].isoformat() if row[6] else None,
+                'updated_at': row[7].isoformat() if row[7] else None,
+            }
+            for row in rows
+        ]
+
+    except Exception as e:
+        logger.error(f'List ingest jobs failed: {e}')
+        raise
+
+
+def list_ingest_job_files(job_ids: list[UUID]) -> list[dict]:
+    """
+    List files for a set of ingest jobs.
+
+    Args:
+        job_ids: List of job IDs
+
+    Returns:
+        List of file dictionaries
+    """
+    if not job_ids:
+        return []
+
+    try:
+        job_ids_str = [str(jid) for jid in job_ids]
+
+        with connection.cursor() as cursor:
+            cursor.execute("""
+                SELECT file_id, job_id, file_name, status, parsed_rows,
+                       error_message, created_at, updated_at
+                FROM public.ingest_job_file
+                WHERE job_id = ANY(%s::uuid[])
+                ORDER BY created_at DESC
+            """, [job_ids_str])
+            rows = cursor.fetchall()
+
+        return [
+            {
+                'file_id': str(row[0]),
+                'job_id': str(row[1]),
+                'file_name': row[2],
+                'status': row[3],
+                'parsed_rows': row[4],
+                'error_message': row[5],
+                'created_at': row[6].isoformat() if row[6] else None,
+                'updated_at': row[7].isoformat() if row[7] else None,
+            }
+            for row in rows
+        ]
+
+    except Exception as e:
+        logger.error(f'List ingest job files failed: {e}')
+        raise
+
+
+# =============================================================================
+# Policy Report Staging Functions
+# =============================================================================
+
+
+def bulk_insert_staging_records(
+    agency_id: UUID,
+    records: list[dict],
+) -> dict:
+    """
+    Bulk insert policy report staging records.
+
+    Args:
+        agency_id: Agency ID (for validation/logging)
+        records: List of staging record dictionaries
+
+    Returns:
+        Dictionary with success status and inserted count
+    """
+    if not records:
+        return {'success': True, 'inserted_count': 0}
+
+    try:
+        # Define the columns we support
+        columns = [
+            'client_name', 'policy_number', 'writing_agent_number', 'agent_name',
+            'status', 'policy_effective_date', 'product', 'date_of_birth',
+            'issue_age', 'face_value', 'payment_method', 'payment_frequency',
+            'payment_cycle_premium', 'client_address', 'client_phone', 'client_email',
+            'state', 'zipcode', 'annual_premium', 'client_gender',
+            'agency_id', 'carrier_name',
+        ]
+
+        # Build INSERT statement with placeholders
+        placeholders = ', '.join(['%s'] * len(columns))
+        columns_sql = ', '.join(columns)
+
+        insert_sql = f"""
+            INSERT INTO public.policy_report_staging ({columns_sql})
+            VALUES ({placeholders})
+        """
+
+        # Build values list
+        values_list = []
+        for record in records:
+            # Ensure agency_id is set correctly
+            record['agency_id'] = str(agency_id)
+            values = [record.get(col) for col in columns]
+            values_list.append(values)
+
+        with connection.cursor() as cursor:
+            cursor.executemany(insert_sql, values_list)
+            inserted_count = cursor.rowcount
+
+        logger.info(f'Bulk inserted {inserted_count} staging records for agency {agency_id}')
+        return {'success': True, 'inserted_count': inserted_count}
+
+    except Exception as e:
+        logger.error(f'Bulk insert staging records failed: {e}')
+        return {'success': False, 'error': str(e)}
+
+
+def upsert_ingest_job_file(
+    job_id: UUID,
+    file_id: str,
+    file_name: str,
+    status: str = 'received',
+) -> dict:
+    """
+    Upsert an ingest job file record.
+
+    Uses ON CONFLICT with (job_id, file_name) to handle duplicates.
+
+    Args:
+        job_id: Job ID
+        file_id: File ID (UUID string)
+        file_name: Original file name
+        status: File status (default 'received')
+
+    Returns:
+        Dictionary with file details
+    """
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("""
+                INSERT INTO public.ingest_job_file (
+                    file_id, job_id, file_name, status, created_at, updated_at
+                )
+                VALUES (%s, %s, %s, %s, NOW(), NOW())
+                ON CONFLICT (job_id, file_name) DO UPDATE SET
+                    file_id = EXCLUDED.file_id,
+                    status = EXCLUDED.status,
+                    updated_at = NOW()
+                RETURNING file_id, job_id, file_name, status, created_at, updated_at
+            """, [file_id, str(job_id), file_name, status])
+            row = cursor.fetchone()
+
+        if row:
+            return {
+                'file_id': str(row[0]),
+                'job_id': str(row[1]),
+                'file_name': row[2],
+                'status': row[3],
+                'created_at': row[4].isoformat() if row[4] else None,
+                'updated_at': row[5].isoformat() if row[5] else None,
+            }
+
+        raise Exception('Failed to upsert ingest job file')
+
+    except Exception as e:
+        logger.error(f'Upsert ingest job file failed: {e}')
+        raise
+
+
+def verify_job_exists(job_id: UUID, agency_id: UUID | None = None) -> bool:
+    """
+    Verify that an ingest job exists.
+
+    Args:
+        job_id: Job ID to verify
+        agency_id: Optional agency ID for access control
+
+    Returns:
+        True if job exists, False otherwise
+    """
+    try:
+        with connection.cursor() as cursor:
+            if agency_id:
+                cursor.execute("""
+                    SELECT 1 FROM public.ingest_job
+                    WHERE job_id = %s AND agency_id = %s
+                """, [str(job_id), str(agency_id)])
+            else:
+                cursor.execute("""
+                    SELECT 1 FROM public.ingest_job
+                    WHERE job_id = %s
+                """, [str(job_id)])
+            return cursor.fetchone() is not None
+
+    except Exception as e:
+        logger.error(f'Verify job exists failed: {e}')
+        return False
+
+
+def get_staging_records(
+    agency_id: UUID,
+    carrier: str | None = None,
+    limit: int = 100,
+) -> list[dict]:
+    """
+    Get policy report staging records for an agency.
+
+    Args:
+        agency_id: Agency ID
+        carrier: Optional carrier name filter
+        limit: Maximum number of records to return
+
+    Returns:
+        List of staging record dictionaries
+    """
+    try:
+        with connection.cursor() as cursor:
+            if carrier:
+                cursor.execute("""
+                    SELECT id, client_name, policy_number, writing_agent_number,
+                           agent_name, status, policy_effective_date, product,
+                           date_of_birth, issue_age, face_value, payment_method,
+                           payment_frequency, payment_cycle_premium, client_address,
+                           client_phone, client_email, state, zipcode, annual_premium,
+                           client_gender, agency_id, carrier_name, created_at
+                    FROM public.policy_report_staging
+                    WHERE agency_id = %s AND carrier_name = %s
+                    ORDER BY created_at DESC
+                    LIMIT %s
+                """, [str(agency_id), carrier, limit])
+            else:
+                cursor.execute("""
+                    SELECT id, client_name, policy_number, writing_agent_number,
+                           agent_name, status, policy_effective_date, product,
+                           date_of_birth, issue_age, face_value, payment_method,
+                           payment_frequency, payment_cycle_premium, client_address,
+                           client_phone, client_email, state, zipcode, annual_premium,
+                           client_gender, agency_id, carrier_name, created_at
+                    FROM public.policy_report_staging
+                    WHERE agency_id = %s
+                    ORDER BY created_at DESC
+                    LIMIT %s
+                """, [str(agency_id), limit])
+
+            rows = cursor.fetchall()
+
+        return [
+            {
+                'id': row[0],
+                'client_name': row[1],
+                'policy_number': row[2],
+                'writing_agent_number': row[3],
+                'agent_name': row[4],
+                'status': row[5],
+                'policy_effective_date': row[6].isoformat() if row[6] else None,
+                'product': row[7],
+                'date_of_birth': row[8].isoformat() if row[8] else None,
+                'issue_age': row[9],
+                'face_value': float(row[10]) if row[10] else None,
+                'payment_method': row[11],
+                'payment_frequency': row[12],
+                'payment_cycle_premium': float(row[13]) if row[13] else None,
+                'client_address': row[14],
+                'client_phone': row[15],
+                'client_email': row[16],
+                'state': row[17],
+                'zipcode': row[18],
+                'annual_premium': float(row[19]) if row[19] else None,
+                'client_gender': row[20],
+                'agency_id': str(row[21]),
+                'carrier_name': row[22],
+                'created_at': row[23].isoformat() if row[23] else None,
+            }
+            for row in rows
+        ]
+
+    except Exception as e:
+        logger.error(f'Get staging records failed: {e}')
+        raise

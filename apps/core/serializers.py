@@ -18,11 +18,9 @@ from .models import (
     AIMessage,
     Beneficiary,
     Carrier,
-    Client,
     Conversation,
     Deal,
     DealHierarchySnapshot,
-    DraftMessage,
     IngestJob,
     IngestJobFile,
     LapseNotificationQueue,
@@ -384,51 +382,6 @@ class ProductDetailSerializer(serializers.ModelSerializer):
         ]
 
 
-# Client Serializers
-
-class ClientSerializer(serializers.ModelSerializer):
-    """Read serializer for Client."""
-    full_name = serializers.SerializerMethodField()
-
-    class Meta:
-        model = Client
-        fields = [
-            'id',
-            'first_name',
-            'last_name',
-            'full_name',
-            'email',
-            'phone_number',
-            'agency_id',
-            'created_at',
-            'updated_at',
-        ]
-        read_only_fields = ['id', 'created_at', 'updated_at']
-
-    def get_full_name(self, obj):
-        return format_full_name(obj.first_name, obj.last_name)
-
-
-class ClientMinimalSerializer(serializers.ModelSerializer):
-    """Minimal Client serializer for nested representations."""
-    full_name = serializers.SerializerMethodField()
-
-    class Meta:
-        model = Client
-        fields = ['id', 'first_name', 'last_name', 'full_name', 'email', 'phone']
-
-    def get_full_name(self, obj):
-        return format_full_name(obj.first_name, obj.last_name)
-
-
-class ClientCreateSerializer(serializers.ModelSerializer):
-    """Write serializer for Client creation."""
-
-    class Meta:
-        model = Client
-        fields = ['first_name', 'last_name', 'email', 'phone', 'agency']
-
-
 # Deal Serializers
 
 class DealListSerializer(serializers.ModelSerializer):
@@ -447,8 +400,9 @@ class DealListSerializer(serializers.ModelSerializer):
             'status_standardized',
             'agent_id',
             'agent_name',
-            'client_id',
             'client_name',
+            'client_email',
+            'client_phone',
             'carrier_id',
             'carrier_name',
             'product_id',
@@ -469,7 +423,6 @@ class DealListSerializer(serializers.ModelSerializer):
 class DealDetailSerializer(serializers.ModelSerializer):
     """Full Deal serializer for detail views."""
     agent = UserMinimalSerializer(read_only=True)
-    client = ClientMinimalSerializer(read_only=True)
     carrier = CarrierMinimalSerializer(read_only=True)
     product = ProductMinimalSerializer(read_only=True)
     beneficiaries = serializers.SerializerMethodField()
@@ -482,7 +435,9 @@ class DealDetailSerializer(serializers.ModelSerializer):
             'status',
             'status_standardized',
             'agent',
-            'client',
+            'client_name',
+            'client_email',
+            'client_phone',
             'carrier',
             'product',
             'annual_premium',
@@ -508,7 +463,9 @@ class DealCreateSerializer(serializers.ModelSerializer):
             'policy_number',
             'status',
             'agent',
-            'client',
+            'client_name',
+            'client_email',
+            'client_phone',
             'carrier',
             'product',
             'annual_premium',
@@ -691,40 +648,6 @@ class MessageCreateSerializer(serializers.ModelSerializer):
     class Meta:
         model = Message
         fields = ['conversation', 'sender', 'receiver', 'body', 'direction']
-
-
-class DraftMessageSerializer(serializers.ModelSerializer):
-    """Read serializer for DraftMessage."""
-    agent_name = serializers.SerializerMethodField()
-    approved_by_name = serializers.SerializerMethodField()
-
-    class Meta:
-        model = DraftMessage
-        fields = [
-            'id',
-            'agency_id',
-            'conversation_id',
-            'agent_id',
-            'agent_name',
-            'content',
-            'status',
-            'approved_by_id',
-            'approved_by_name',
-            'approved_at',
-            'rejection_reason',
-            'created_at',
-            'updated_at',
-        ]
-
-    def get_agent_name(self, obj):
-        if obj.agent:
-            return format_full_name(obj.agent.first_name, obj.agent.last_name)
-        return None
-
-    def get_approved_by_name(self, obj):
-        if obj.approved_by:
-            return format_full_name(obj.approved_by.first_name, obj.approved_by.last_name)
-        return None
 
 
 # Pagination Serializers

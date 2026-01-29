@@ -172,6 +172,121 @@ def release_stale_locks() -> int:
         return cursor.rowcount
 
 
+def create_job(
+    user_id: str,
+    last_name: str,
+    npn: str,
+    ssn_last4: str,
+    dob: str,
+) -> dict | None:
+    """
+    Create a new NIPR verification job.
+    If a pending/processing job already exists for the user, returns that job's ID.
+
+    Args:
+        user_id: User's UUID string
+        last_name: User's last name
+        npn: National Producer Number
+        ssn_last4: Last 4 digits of SSN
+        dob: Date of birth (MM/DD/YYYY format)
+
+    Returns:
+        Dict with job_id and whether it was newly created, or None on failure
+    """
+    try:
+        with connection.cursor() as cursor:
+            # Check for existing pending/processing job for this user
+            cursor.execute("""
+                SELECT id FROM nipr_jobs
+                WHERE user_id = %s
+                AND status IN ('pending', 'processing')
+                LIMIT 1
+            """, [user_id])
+
+            existing = cursor.fetchone()
+            if existing:
+                return {
+                    'job_id': str(existing[0]),
+                    'created': False,
+                    'message': 'Existing job found'
+                }
+
+            # Create new job
+            cursor.execute("""
+                INSERT INTO nipr_jobs (
+                    user_id, last_name, npn, ssn_last4, dob, status
+                )
+                VALUES (%s, %s, %s, %s, %s, 'pending')
+                RETURNING id
+            """, [user_id, last_name, npn, ssn_last4, dob])
+
+            row = cursor.fetchone()
+            if row:
+                return {
+                    'job_id': str(row[0]),
+                    'created': True,
+                    'message': 'Job created'
+                }
+            return None
+
+    except Exception as e:
+        logger.error(f'Failed to create NIPR job: {e}')
+        return None
+
+
+def check_user_nipr_completed(user_id: str) -> dict:
+    """
+    Check if a user has already completed NIPR verification (has carriers).
+
+    Args:
+        user_id: User's UUID string
+
+    Returns:
+        Dict with 'completed' boolean and 'carriers' list if completed
+    """
+    with connection.cursor() as cursor:
+        cursor.execute("""
+            SELECT unique_carriers
+            FROM users
+            WHERE id = %s
+        """, [user_id])
+
+        row = cursor.fetchone()
+
+    if row and row[0]:
+        carriers = row[0]
+        if isinstance(carriers, list) and len(carriers) > 0:
+            return {
+                'completed': True,
+                'carriers': carriers
+            }
+
+    return {
+        'completed': False,
+        'carriers': []
+    }
+
+
+def has_pending_jobs() -> bool:
+    """
+    Check if there are any pending NIPR jobs in the queue.
+
+    Returns:
+        True if there are pending jobs, False otherwise
+    """
+    with connection.cursor() as cursor:
+        cursor.execute("""
+            SELECT EXISTS (
+                SELECT 1 FROM nipr_jobs
+                WHERE status = 'pending'
+                LIMIT 1
+            )
+        """)
+        row = cursor.fetchone()
+
+    return row[0] if row else False
+
+
 def get_job_status(job_id: UUID) -> dict | None:
     """
     Get the current status of a NIPR job.

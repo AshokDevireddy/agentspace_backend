@@ -13,15 +13,27 @@ from .views import (
     EnqueueJobView,
     FillAgentCarrierNumbersView,
     FillAgentCarrierNumbersWithAuditView,
+    IngestJobDetailView,
+    IngestJobsView,
     LinkStagedAgentNumbersView,
     OrchestrateIngestView,
+    StagingBulkInsertView,
+    StagingRecordsView,
     StagingSummaryView,
     SyncAgentCarrierNumbersView,
     SyncStagingView,
+    UpsertJobFileView,
     UpsertProductsView,
+    VerifyJobExistsView,
 )
 
 urlpatterns = [
+    # Ingest Job CRUD
+    path('jobs', IngestJobsView.as_view(), name='ingest_jobs'),
+    path('jobs/<str:job_id>', IngestJobDetailView.as_view(), name='ingest_job_detail'),
+    path('jobs/<str:job_id>/verify', VerifyJobExistsView.as_view(), name='ingest_job_verify'),
+    path('jobs/<str:job_id>/files', UpsertJobFileView.as_view(), name='ingest_job_files'),
+
     # Existing endpoints
     path('enqueue-job', EnqueueJobView.as_view(), name='ingest_enqueue_job'),
     path('orchestrate', OrchestrateIngestView.as_view(), name='ingest_orchestrate'),
@@ -46,4 +58,8 @@ urlpatterns = [
     ),
     path('link-staged-agent-numbers', LinkStagedAgentNumbersView.as_view(), name='ingest_link_staged_agent_numbers'),
     path('sync-agent-carrier-numbers', SyncAgentCarrierNumbersView.as_view(), name='ingest_sync_agent_carrier_numbers'),
+
+    # Staging Records CRUD
+    path('staging', StagingRecordsView.as_view(), name='ingest_staging_records'),
+    path('staging/bulk', StagingBulkInsertView.as_view(), name='ingest_staging_bulk'),
 ]

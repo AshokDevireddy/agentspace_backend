@@ -5,8 +5,10 @@ Provides carrier-related endpoints:
 - GET /api/carriers - List all active carriers
 - GET /api/carriers/names - Get carrier names for dropdowns
 - GET /api/carriers/with-products - Get carriers with their products (agency-scoped)
+- POST /api/carriers/logins - Create/update carrier portal credentials
 """
 import logging
+from uuid import UUID
 
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
@@ -23,6 +25,7 @@ from .selectors import (
     get_standardized_statuses,
     get_status_mappings,
 )
+from .services import create_or_update_carrier_login
 
 logger = logging.getLogger(__name__)
 
@@ -246,5 +249,95 @@ class StandardizedStatusesView(APIView):
             logger.error(f'Standardized statuses failed: {e}')
             return Response(
                 {'error': 'Failed to fetch standardized statuses', 'detail': str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
+class CarrierLoginsView(APIView):
+    """
+    POST /api/carriers/logins
+
+    Create or update carrier portal login credentials.
+    Admin-only endpoint for managing parsing_info records.
+
+    Request body:
+        {
+            "carrier_name": "Carrier Name",
+            "login": "username@email.com",
+            "password": "secret_password"
+        }
+
+    Response (201):
+        {
+            "success": true,
+            "data": {
+                "id": "uuid",
+                "created_at": "2024-01-01T00:00:00Z"
+            }
+        }
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        user = get_user_context(request)
+        if not user:
+            return Response(
+                {'error': 'Unauthorized', 'detail': 'Authentication required'},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
+        # Verify user is admin
+        if not user.is_admin:
+            return Response(
+                {'error': 'Forbidden', 'detail': 'Admin access required to save carrier logins'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        data = request.data
+        carrier_name = data.get('carrier_name')
+        login = data.get('login')
+        password = data.get('password')
+
+        # Validate required fields
+        if not carrier_name:
+            return Response(
+                {'error': 'Missing required fields', 'detail': 'carrier_name is required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        if not login:
+            return Response(
+                {'error': 'Missing required fields', 'detail': 'login is required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        if not password:
+            return Response(
+                {'error': 'Missing required fields', 'detail': 'password is required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            result = create_or_update_carrier_login(
+                user_id=user.id,
+                agency_id=user.agency_id,
+                carrier_name=carrier_name,
+                login=login,
+                password=password,
+            )
+
+            if not result.get('success'):
+                return Response(
+                    {'error': result.get('error', 'Failed to save carrier login')},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            return Response(
+                {'success': True, 'data': result.get('data')},
+                status=status.HTTP_201_CREATED
+            )
+
+        except Exception as e:
+            logger.error(f'Carrier login save failed: {e}')
+            return Response(
+                {'error': 'Failed to save carrier login', 'detail': str(e)},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )

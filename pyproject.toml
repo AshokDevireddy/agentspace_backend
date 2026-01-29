@@ -30,8 +30,8 @@ dependencies = [
     "httpx>=0.28.1",
     # AI/LLM Integration
     "openai>=2.15.0",
-    # SMS Provider
-    "twilio>=9.9.1",
+    # SMS Provider (uses requests for Telnyx API)
+    "requests>=2.32.0",
     # Export (CSV/Excel/PDF)
     "openpyxl>=3.1.5",
     "reportlab>=4.4.9",

@@ -7,6 +7,7 @@ They do NOT create migrations - Django reads from existing tables.
 import uuid
 from typing import TYPE_CHECKING
 
+from django.contrib.postgres.fields import ArrayField
 from django.db import models
 
 from .constants import STATUS_STANDARDIZED_CHOICES
@@ -22,32 +23,31 @@ class Agency(models.Model):
     Maps to: public.agencies
     """
     id = models.UUIDField(primary_key=True, default=uuid.uuid4)
-    name = models.CharField(max_length=255)
-    display_name = models.CharField(max_length=255, null=True, blank=True)
+    name = models.TextField()
+    display_name = models.TextField()
     logo_url = models.TextField(null=True, blank=True)
-    primary_color = models.CharField(max_length=50, null=True, blank=True)
-    whitelabel_domain = models.CharField(max_length=255, null=True, blank=True)
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
+    primary_color = models.TextField(null=True, blank=True, default='0 0% 0%')
+    whitelabel_domain = models.TextField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True, null=True)
+    updated_at = models.DateTimeField(auto_now=True, null=True)
 
-    # Core fields (P1-010)
-    code = models.TextField(null=True, blank=True)
-    is_active = models.BooleanField(default=True)
+    code = models.TextField()
+    is_active = models.BooleanField(default=True, null=True)
     phone_number = models.TextField(null=True, blank=True)
-    lead_sources = models.JSONField(default=list, blank=True)
+    lead_sources = ArrayField(models.TextField(), default=list, blank=True)
     messaging_enabled = models.BooleanField(default=False)
 
     # Discord integration
     discord_webhook_url = models.TextField(null=True, blank=True)
     discord_notification_enabled = models.BooleanField(default=False)
     discord_notification_template = models.TextField(null=True, blank=True)
-    discord_bot_username = models.TextField(null=True, blank=True)
+    discord_bot_username = models.TextField(null=True, blank=True, default='AgentSpace Deal Bot')
 
     # Deactivation tracking
-    deactivated_post_a_deal = models.BooleanField(null=True, blank=True)
+    deactivated_post_a_deal = models.BooleanField(null=True, blank=True, default=False)
 
     # Display settings
-    theme_mode = models.TextField(null=True, blank=True)
+    theme_mode = models.TextField(null=True, blank=True, default='light')
     default_scoreboard_start_date = models.DateField(null=True, blank=True)
 
     # Lapse email notifications
@@ -55,20 +55,19 @@ class Agency(models.Model):
     lapse_email_subject = models.TextField(null=True, blank=True)
     lapse_email_body = models.TextField(null=True, blank=True)
 
-    # SMS templates (P1-010) - DB defaults all enabled to true
-    sms_welcome_enabled = models.BooleanField(default=True)
+    sms_welcome_enabled = models.BooleanField(default=True, null=True)
     sms_welcome_template = models.TextField(null=True, blank=True)
-    sms_billing_reminder_enabled = models.BooleanField(default=True)
+    sms_billing_reminder_enabled = models.BooleanField(default=True, null=True)
     sms_billing_reminder_template = models.TextField(null=True, blank=True)
-    sms_lapse_reminder_enabled = models.BooleanField(default=True)
+    sms_lapse_reminder_enabled = models.BooleanField(default=True, null=True)
     sms_lapse_reminder_template = models.TextField(null=True, blank=True)
-    sms_birthday_enabled = models.BooleanField(default=True)
+    sms_birthday_enabled = models.BooleanField(default=True, null=True)
     sms_birthday_template = models.TextField(null=True, blank=True)
-    sms_holiday_enabled = models.BooleanField(default=True)
+    sms_holiday_enabled = models.BooleanField(default=True, null=True)
     sms_holiday_template = models.TextField(null=True, blank=True)
-    sms_quarterly_enabled = models.BooleanField(default=True)
+    sms_quarterly_enabled = models.BooleanField(default=True, null=True)
     sms_quarterly_template = models.TextField(null=True, blank=True)
-    sms_policy_packet_enabled = models.BooleanField(default=True)
+    sms_policy_packet_enabled = models.BooleanField(default=True, null=True)
     sms_policy_packet_template = models.TextField(null=True, blank=True)
 
     class Meta:
@@ -101,10 +100,10 @@ class User(models.Model):
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4)
     auth_user_id = models.UUIDField(unique=True, null=True, blank=True)
-    email = models.CharField(max_length=255, null=True, blank=True)
-    first_name = models.CharField(max_length=255, null=True, blank=True)
-    last_name = models.CharField(max_length=255, null=True, blank=True)
-    phone_number = models.CharField(max_length=50, null=True, blank=True)
+    email = models.TextField(null=True, blank=True)
+    first_name = models.TextField()
+    last_name = models.TextField(null=True, blank=True)
+    phone_number = models.TextField(null=True, blank=True)
     agency = models.ForeignKey(
         Agency,
         on_delete=models.SET_NULL,
@@ -112,12 +111,12 @@ class User(models.Model):
         blank=True,
         related_name='users'
     )
-    role = models.CharField(max_length=50, choices=ROLE_CHOICES, default='agent')
-    is_admin = models.BooleanField(default=False)
-    is_active = models.BooleanField(default=True)
-    status = models.CharField(max_length=50, choices=STATUS_CHOICES, default='invited')
-    perm_level = models.CharField(max_length=50, null=True, blank=True)
-    subscription_tier = models.CharField(max_length=50, null=True, blank=True)
+    role = models.TextField(choices=ROLE_CHOICES, default='agent')
+    is_admin = models.BooleanField(default=False, null=True)
+    is_active = models.BooleanField(default=True, null=True)
+    status = models.TextField(choices=STATUS_CHOICES, default='onboarding')
+    perm_level = models.TextField(default='agent', null=True, blank=True)
+    subscription_tier = models.TextField(default='free', null=True, blank=True)
     upline = models.ForeignKey(
         'self',
         on_delete=models.SET_NULL,
@@ -134,23 +133,38 @@ class User(models.Model):
     )
     start_date = models.DateField(null=True, blank=True)
     annual_goal = models.DecimalField(
-        max_digits=15, decimal_places=2, null=True, blank=True
+        max_digits=12, decimal_places=2, default=0, null=True, blank=True
     )
-    total_prod = models.DecimalField(
-        max_digits=15, decimal_places=2, default=0
-    )
-    total_policies_sold = models.IntegerField(default=0)
-    theme_mode = models.CharField(max_length=20, null=True, blank=True)
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
+    total_prod = models.DecimalField(max_digits=15, decimal_places=2, default=0, null=True)
+    total_policies_sold = models.DecimalField(max_digits=15, decimal_places=0, default=0, null=True)
+    theme_mode = models.CharField(max_length=10, null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True, null=True)
+    updated_at = models.DateTimeField(auto_now=True, null=True)
 
-    # Billing cycle fields (P1-009)
     billing_cycle_start = models.DateTimeField(null=True, blank=True)
     billing_cycle_end = models.DateTimeField(null=True, blank=True)
+    messages_sent_count = models.IntegerField(default=0, null=True)
+    ai_requests_count = models.IntegerField(default=0, null=True)
 
-    # Usage tracking (P1-009)
-    messages_sent_count = models.IntegerField(default=0)
-    ai_requests_count = models.IntegerField(default=0)
+    # Generated columns (read-only, database-computed)
+    first_name_lc = models.TextField(null=True, blank=True, editable=False)
+    last_name_lc = models.TextField(null=True, blank=True, editable=False)
+    email_lc = models.TextField(null=True, blank=True, editable=False)
+    phone_last10 = models.TextField(null=True, blank=True, editable=False)
+    full_name_norm = models.TextField(null=True, blank=True, editable=False)
+
+    subscription_status = models.TextField(default='free', null=True, blank=True)
+    stripe_customer_id = models.TextField(null=True, blank=True)
+    stripe_subscription_id = models.TextField(null=True, blank=True)
+    scheduled_tier_change = models.TextField(null=True, blank=True)
+    scheduled_tier_change_date = models.DateTimeField(null=True, blank=True)
+
+    deals_created_count = models.IntegerField(default=0, null=True)
+    ai_requests_reset_date = models.DateTimeField(null=True, blank=True)
+    messages_reset_date = models.DateTimeField(null=True, blank=True)
+
+    unique_carriers = ArrayField(models.TextField(), default=list, null=True, blank=True)
+    licensed_states = ArrayField(models.TextField(), default=list, null=True, blank=True)
 
     class Meta:
         managed = False
@@ -234,14 +248,14 @@ class Position(models.Model):
     Maps to: public.positions
     """
     id = models.UUIDField(primary_key=True, default=uuid.uuid4)
-    name = models.CharField(max_length=255)
+    name = models.TextField()
     description = models.TextField(null=True, blank=True)
     agency = models.ForeignKey(
         Agency,
         on_delete=models.CASCADE,
         related_name='positions'
     )
-    level = models.IntegerField(default=0)
+    level = models.IntegerField()
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -261,10 +275,10 @@ class Carrier(models.Model):
     Maps to: public.carriers
     """
     id = models.UUIDField(primary_key=True, default=uuid.uuid4)
-    name = models.CharField(max_length=255)
-    display_name = models.CharField(max_length=255, null=True, blank=True)
-    is_active = models.BooleanField(default=True)
-    created_at = models.DateTimeField(auto_now_add=True)
+    name = models.TextField()
+    display_name = models.TextField()
+    is_active = models.BooleanField(default=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True, null=True)
 
     class Meta:
         managed = False
@@ -280,7 +294,7 @@ class Product(models.Model):
     Maps to: public.products
     """
     id = models.UUIDField(primary_key=True, default=uuid.uuid4)
-    name = models.CharField(max_length=255)
+    name = models.TextField()
     product_code = models.TextField(null=True, blank=True)
     carrier = models.ForeignKey(
         Carrier,
@@ -289,12 +303,14 @@ class Product(models.Model):
     )
     agency = models.ForeignKey(
         Agency,
-        on_delete=models.CASCADE,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
         related_name='products'
     )
-    is_active = models.BooleanField(default=True)
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
+    is_active = models.BooleanField(default=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True, null=True)
+    updated_at = models.DateTimeField(auto_now=True, null=True)
 
     class Meta:
         managed = False
@@ -302,34 +318,6 @@ class Product(models.Model):
 
     def __str__(self):
         return f"{self.name} ({self.carrier.name if self.carrier else 'No carrier'})"
-
-
-class Client(models.Model):
-    """
-    Represents a client/customer.
-    Maps to: public.clients
-    """
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4)
-    first_name = models.CharField(max_length=255, null=True, blank=True)
-    last_name = models.CharField(max_length=255, null=True, blank=True)
-    email = models.CharField(max_length=255, null=True, blank=True)
-    phone = models.CharField(max_length=50, null=True, blank=True)
-    agency = models.ForeignKey(
-        Agency,
-        on_delete=models.CASCADE,
-        related_name='clients'
-    )
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
-
-    class Meta:
-        managed = False
-        db_table = 'clients'
-
-    def __str__(self):
-        name = format_full_name(self.first_name, self.last_name)
-        email_part = self.email or 'No email'
-        return f"{name} ({email_part})".strip() if name else f"({email_part})"
 
 
 class Deal(models.Model):
@@ -341,6 +329,8 @@ class Deal(models.Model):
     agency = models.ForeignKey(
         Agency,
         on_delete=models.CASCADE,
+        null=True,
+        blank=True,
         related_name='deals'
     )
     agent = models.ForeignKey(
@@ -350,18 +340,9 @@ class Deal(models.Model):
         blank=True,
         related_name='deals'
     )
-    client = models.ForeignKey(
-        Client,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name='deals'
-    )
     carrier = models.ForeignKey(
         Carrier,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
+        on_delete=models.CASCADE,
         related_name='deals'
     )
     product = models.ForeignKey(
@@ -371,45 +352,80 @@ class Deal(models.Model):
         blank=True,
         related_name='deals'
     )
-    policy_number = models.CharField(max_length=255, null=True, blank=True)
-    status = models.CharField(max_length=255, null=True, blank=True)
-    status_standardized = models.CharField(
-        max_length=50,
-        choices=STATUS_STANDARDIZED_CHOICES,
-        null=True,
-        blank=True
-    )
+    policy_number = models.TextField(null=True, blank=True)
+    application_number = models.TextField(null=True, blank=True)
+    status = models.TextField(default='draft', null=True, blank=True)
+    status_standardized = models.TextField(null=True, blank=True)
     annual_premium = models.DecimalField(
-        max_digits=15, decimal_places=2, null=True, blank=True
+        max_digits=10, decimal_places=2, null=True, blank=True
     )
     monthly_premium = models.DecimalField(
-        max_digits=15, decimal_places=2, null=True, blank=True
+        max_digits=10, decimal_places=2, null=True, blank=True
     )
     policy_effective_date = models.DateField(null=True, blank=True)
     submission_date = models.DateField(null=True, blank=True)
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
+    created_at = models.DateTimeField(auto_now_add=True, null=True)
+    updated_at = models.DateTimeField(auto_now=True, null=True)
 
-    # Additional deal fields (P2-027)
-    billing_cycle = models.CharField(
-        max_length=50, null=True, blank=True,
-        help_text='Billing frequency: monthly, quarterly, semi-annually, annually'
+    billing_cycle = models.TextField(null=True, blank=True)
+    lead_source = models.TextField(null=True, blank=True)
+    notes = models.TextField(null=True, blank=True)
+
+    client_name = models.TextField(null=True, blank=True)
+    client_phone = models.TextField(null=True, blank=True)
+    client_email = models.TextField(null=True, blank=True)
+    client_address = models.TextField(null=True, blank=True)
+    client_gender = models.TextField(null=True, blank=True)
+    date_of_birth = models.DateField(null=True, blank=True)
+    ssn_last_4 = models.TextField(null=True, blank=True)
+
+    # Generated columns - read-only, computed by PostgreSQL
+    client_email_lc = models.TextField(null=True, blank=True, editable=False)
+    client_phone10 = models.TextField(null=True, blank=True, editable=False)
+    client_name_norm = models.TextField(null=True, blank=True, editable=False)
+
+    split_agent = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='split_deals',
+        db_column='split_agent_id'
     )
-    lead_source = models.CharField(max_length=100, null=True, blank=True)
+    split_percentage = models.DecimalField(
+        max_digits=5, decimal_places=2, null=True, blank=True
+    )
+    referral_count = models.IntegerField(default=0, null=True, blank=True)
+
+    writing_agent_number = models.TextField(null=True, blank=True)
+    is_loa = models.BooleanField(null=True, blank=True)
+    policy_sync_id = models.TextField(null=True, blank=True)
+
+    issue_age = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    face_value = models.DecimalField(max_digits=15, decimal_places=2, null=True, blank=True)
+    payment_method = models.TextField(null=True, blank=True)
+    payment_cycle_premium = models.DecimalField(max_digits=15, decimal_places=2, null=True, blank=True)
+
+    state = models.TextField(null=True, blank=True)
+    zipcode = models.TextField(null=True, blank=True)
+
+    # Generated columns - read-only, computed by PostgreSQL
+    effective_month = models.DateField(null=True, blank=True, editable=False)
+    age_band = models.TextField(null=True, blank=True, editable=False)
+    report_type = models.TextField(null=True, blank=True)
+
+    last_paid_premium_date = models.DateField(null=True, blank=True)
+    lapse_date = models.DateTimeField(null=True, blank=True)
+    billing_day_of_month = models.TextField(null=True, blank=True)
+    billing_weekday = models.TextField(null=True, blank=True)
+    ssn_benefit = models.BooleanField(null=True, blank=True)
 
     class Meta:
         managed = False
         db_table = 'deals'
 
     def __str__(self):
-        client_name = format_full_name(self.client.first_name, self.client.last_name) if self.client else 'No client'
-        return f"{self.policy_number or 'No policy#'} - {client_name}"
-
-    @property
-    def client_name(self):
-        if self.client:
-            return format_full_name(self.client.first_name, self.client.last_name)
-        return ''
+        return f"{self.policy_number or 'No policy#'} - {self.client_name or 'No client'}"
 
 
 class PositionProductCommission(models.Model):
@@ -450,8 +466,6 @@ class DealHierarchySnapshot(models.Model):
     Used for commission calculations to preserve historical hierarchy.
     Maps to: public.deal_hierarchy_snapshot (singular, composite PK)
     """
-    # Note: DB uses composite primary key (deal_id, agent_id), not UUID
-    # Django doesn't support composite PKs natively, so we use deal as PK for ORM
     deal = models.ForeignKey(
         Deal,
         on_delete=models.CASCADE,
@@ -460,8 +474,7 @@ class DealHierarchySnapshot(models.Model):
     )
     agent = models.ForeignKey(
         User,
-        on_delete=models.SET_NULL,
-        null=True,
+        on_delete=models.CASCADE,
         related_name='deal_hierarchy_entries'
     )
     upline = models.ForeignKey(
@@ -472,10 +485,8 @@ class DealHierarchySnapshot(models.Model):
         related_name='deal_hierarchy_downlines',
         db_column='upline_id'
     )
-    commission_percentage = models.DecimalField(
-        max_digits=10, decimal_places=2
-    )
-    created_at = models.DateTimeField(auto_now_add=True)
+    commission_percentage = models.DecimalField(max_digits=5, decimal_places=2)
+    created_at = models.DateTimeField(auto_now_add=True, null=True)
 
     class Meta:
         managed = False
@@ -495,6 +506,8 @@ class Beneficiary(models.Model):
     deal = models.ForeignKey(
         Deal,
         on_delete=models.CASCADE,
+        null=True,
+        blank=True,
         related_name='beneficiaries'
     )
     agency = models.ForeignKey(
@@ -504,9 +517,9 @@ class Beneficiary(models.Model):
         blank=True,
         related_name='beneficiaries'
     )
-    first_name = models.CharField(max_length=255, null=True, blank=True)
-    last_name = models.CharField(max_length=255, null=True, blank=True)
-    relationship = models.CharField(max_length=100, null=True, blank=True)
+    first_name = models.TextField(null=True, blank=True)
+    last_name = models.TextField(null=True, blank=True)
+    relationship = models.TextField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -535,21 +548,9 @@ class StatusMapping(models.Model):
         on_delete=models.CASCADE,
         related_name='status_mappings'
     )
-    raw_status = models.CharField(
-        max_length=255,
-        help_text='The carrier-specific status string'
-    )
-    standardized_status = models.CharField(
-        max_length=50, null=True, blank=True,
-        db_column='status_standardized',
-        help_text='The normalized status (active, pending, cancelled, lapsed, terminated)'
-    )
-    impact = models.CharField(
-        max_length=20,
-        choices=IMPACT_CHOICES,
-        default='neutral',
-        help_text='Impact on persistency calculations'
-    )
+    raw_status = models.TextField()
+    standardized_status = models.TextField(null=True, blank=True, db_column='status_standardized')
+    impact = models.TextField(choices=IMPACT_CHOICES)
     placement = models.TextField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -586,38 +587,21 @@ class Conversation(models.Model):
     )
     agent = models.ForeignKey(
         User,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
+        on_delete=models.CASCADE,
         related_name='conversations'
     )
     deal = models.ForeignKey(
         Deal,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
+        on_delete=models.CASCADE,
         related_name='conversations'
     )
-    # DB column is 'client_phone', not 'phone_number'
     client_phone = models.TextField(null=True, blank=True)
-    type = models.CharField(
-        max_length=20,
-        choices=TYPE_CHOICES,
-        default='sms'
-    )
+    type = models.TextField(default='sms')
     last_message_at = models.DateTimeField(null=True, blank=True)
-    # DB uses is_active (default true), not is_archived
-    is_active = models.BooleanField(default=True)
-    created_at = models.DateTimeField(auto_now_add=True)
+    is_active = models.BooleanField(default=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True, null=True)
 
-    # SMS opt-in tracking - DB defaults to 'opted_in'
-    sms_opt_in_status = models.CharField(
-        max_length=20,
-        choices=SMS_OPT_IN_CHOICES,
-        default='opted_in',
-        null=True,
-        blank=True
-    )
+    sms_opt_in_status = models.TextField(default='opted_in', null=True, blank=True)
     opted_in_at = models.DateTimeField(null=True, blank=True)
     opted_out_at = models.DateTimeField(null=True, blank=True)
 
@@ -659,34 +643,21 @@ class Message(models.Model):
     )
     sender = models.ForeignKey(
         User,
-        on_delete=models.SET_NULL,
-        null=True,
+        on_delete=models.CASCADE,
         related_name='sent_messages',
         db_column='sender_id'
     )
     receiver = models.ForeignKey(
         User,
-        on_delete=models.SET_NULL,
-        null=True,
+        on_delete=models.CASCADE,
         related_name='received_messages',
         db_column='receiver_id'
     )
     body = models.TextField()
-    direction = models.CharField(
-        max_length=20,
-        choices=DIRECTION_CHOICES
-    )
-    message_type = models.CharField(
-        max_length=20,
-        choices=MESSAGE_TYPE_CHOICES,
-        default='sms'
-    )
+    direction = models.TextField()
+    message_type = models.TextField(default='sms')
     sent_at = models.DateTimeField(null=True, blank=True)
-    status = models.CharField(
-        max_length=20,
-        choices=STATUS_CHOICES,
-        default='delivered'
-    )
+    status = models.TextField(default='delivered')
     metadata = models.JSONField(default=dict, blank=True)
     read_at = models.DateTimeField(null=True, blank=True)
 
@@ -697,288 +668,6 @@ class Message(models.Model):
 
     def __str__(self):
         return f"{self.direction}: {self.body[:50]}..."
-
-
-class DraftMessage(models.Model):
-    """
-    SMS draft messages pending approval.
-    Maps to: public.draft_messages
-    """
-    STATUS_CHOICES = [
-        ('pending', 'Pending'),
-        ('approved', 'Approved'),
-        ('rejected', 'Rejected'),
-    ]
-
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4)
-    agency = models.ForeignKey(
-        Agency,
-        on_delete=models.CASCADE,
-        related_name='draft_messages'
-    )
-    agent = models.ForeignKey(
-        User,
-        on_delete=models.SET_NULL,
-        null=True,
-        related_name='draft_messages'
-    )
-    conversation = models.ForeignKey(
-        Conversation,
-        on_delete=models.CASCADE,
-        null=True,
-        blank=True,
-        related_name='draft_messages'
-    )
-    content = models.TextField()
-    status = models.CharField(
-        max_length=20,
-        choices=STATUS_CHOICES,
-        default='pending'
-    )
-    approved_by = models.ForeignKey(
-        User,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name='approved_drafts'
-    )
-    approved_at = models.DateTimeField(null=True, blank=True)
-    rejection_reason = models.TextField(null=True, blank=True)
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
-
-    class Meta:
-        managed = False
-        db_table = 'draft_messages'
-
-    def __str__(self):
-        return f"Draft by {self.agent}: {self.content[:50]}..."
-
-
-class SmsTemplate(models.Model):
-    """
-    SMS message templates for automated messaging.
-    Maps to: public.sms_templates
-    """
-    TEMPLATE_TYPE_CHOICES = [
-        ('welcome', 'Welcome'),
-        ('billing_reminder', 'Billing Reminder'),
-        ('lapse_reminder', 'Lapse Reminder'),
-        ('birthday', 'Birthday'),
-        ('holiday', 'Holiday'),
-        ('quarterly', 'Quarterly Check-in'),
-        ('policy_packet', 'Policy Packet'),
-        ('custom', 'Custom'),
-    ]
-
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4)
-    agency = models.ForeignKey(
-        Agency,
-        on_delete=models.CASCADE,
-        related_name='sms_templates'
-    )
-    name = models.CharField(max_length=255)
-    template_type = models.CharField(
-        max_length=50,
-        choices=TEMPLATE_TYPE_CHOICES,
-        default='custom'
-    )
-    content = models.TextField(
-        help_text='Template content with placeholders: {{client_name}}, {{agent_name}}, {{policy_number}}'
-    )
-    is_active = models.BooleanField(default=True)
-    created_by = models.ForeignKey(
-        'User',
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name='created_sms_templates'
-    )
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
-
-    class Meta:
-        managed = False
-        db_table = 'sms_templates'
-        ordering = ['name']
-
-    def __str__(self):
-        return f"{self.name} ({self.template_type})"
-
-
-class DashboardWidget(models.Model):
-    """
-    Configurable dashboard widgets for users.
-    Maps to: public.dashboard_widgets
-    """
-    WIDGET_TYPE_CHOICES = [
-        ('stats_card', 'Stats Card'),
-        ('chart', 'Chart'),
-        ('table', 'Table'),
-        ('leaderboard', 'Leaderboard'),
-        ('calendar', 'Calendar'),
-        ('activity_feed', 'Activity Feed'),
-    ]
-
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4)
-    user = models.ForeignKey(
-        'User',
-        on_delete=models.CASCADE,
-        related_name='dashboard_widgets'
-    )
-    widget_type = models.CharField(
-        max_length=50,
-        choices=WIDGET_TYPE_CHOICES
-    )
-    title = models.CharField(max_length=255)
-    position = models.IntegerField(default=0)
-    config = models.JSONField(
-        default=dict,
-        help_text='Widget-specific configuration'
-    )
-    is_visible = models.BooleanField(default=True)
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
-
-    class Meta:
-        managed = False
-        db_table = 'dashboard_widgets'
-        ordering = ['position']
-
-    def __str__(self):
-        return f"{self.title} ({self.widget_type})"
-
-
-class Report(models.Model):
-    """
-    Generated reports.
-    Maps to: public.reports
-    """
-    REPORT_TYPE_CHOICES = [
-        ('production', 'Production Report'),
-        ('pipeline', 'Pipeline Report'),
-        ('team_performance', 'Team Performance'),
-        ('revenue', 'Revenue Report'),
-        ('commission', 'Commission Report'),
-    ]
-
-    STATUS_CHOICES = [
-        ('pending', 'Pending'),
-        ('generating', 'Generating'),
-        ('completed', 'Completed'),
-        ('failed', 'Failed'),
-    ]
-
-    FORMAT_CHOICES = [
-        ('csv', 'CSV'),
-        ('xlsx', 'Excel'),
-        ('pdf', 'PDF'),
-    ]
-
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4)
-    agency = models.ForeignKey(
-        Agency,
-        on_delete=models.CASCADE,
-        related_name='reports'
-    )
-    user = models.ForeignKey(
-        'User',
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name='reports'
-    )
-    report_type = models.CharField(
-        max_length=50,
-        choices=REPORT_TYPE_CHOICES
-    )
-    title = models.CharField(max_length=255)
-    parameters = models.JSONField(
-        default=dict,
-        help_text='Report parameters (date range, filters, etc.)'
-    )
-    format = models.CharField(
-        max_length=10,
-        choices=FORMAT_CHOICES,
-        default='csv'
-    )
-    status = models.CharField(
-        max_length=20,
-        choices=STATUS_CHOICES,
-        default='pending'
-    )
-    file_url = models.TextField(null=True, blank=True)
-    error_message = models.TextField(null=True, blank=True)
-    created_at = models.DateTimeField(auto_now_add=True)
-    completed_at = models.DateTimeField(null=True, blank=True)
-
-    class Meta:
-        managed = False
-        db_table = 'reports'
-        ordering = ['-created_at']
-
-    def __str__(self):
-        return f"{self.title} ({self.report_type}) - {self.status}"
-
-
-class ScheduledReport(models.Model):
-    """
-    Scheduled report configurations.
-    Maps to: public.scheduled_reports
-    """
-    FREQUENCY_CHOICES = [
-        ('daily', 'Daily'),
-        ('weekly', 'Weekly'),
-        ('monthly', 'Monthly'),
-        ('quarterly', 'Quarterly'),
-    ]
-
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4)
-    agency = models.ForeignKey(
-        Agency,
-        on_delete=models.CASCADE,
-        related_name='scheduled_reports'
-    )
-    user = models.ForeignKey(
-        'User',
-        on_delete=models.CASCADE,
-        related_name='scheduled_reports'
-    )
-    report_type = models.CharField(
-        max_length=50,
-        choices=Report.REPORT_TYPE_CHOICES
-    )
-    title = models.CharField(max_length=255)
-    parameters = models.JSONField(
-        default=dict,
-        help_text='Report parameters template'
-    )
-    format = models.CharField(
-        max_length=10,
-        choices=Report.FORMAT_CHOICES,
-        default='csv'
-    )
-    frequency = models.CharField(
-        max_length=20,
-        choices=FREQUENCY_CHOICES
-    )
-    email_recipients = models.JSONField(
-        default=list,
-        help_text='List of email addresses to send report to'
-    )
-    is_active = models.BooleanField(default=True)
-    last_run_at = models.DateTimeField(null=True, blank=True)
-    next_run_at = models.DateTimeField(null=True, blank=True)
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
-
-    class Meta:
-        managed = False
-        db_table = 'scheduled_reports'
-        ordering = ['-created_at']
-
-    def __str__(self):
-        return f"{self.title} ({self.frequency})"
 
 
 class AIConversation(models.Model):
@@ -997,7 +686,7 @@ class AIConversation(models.Model):
         on_delete=models.CASCADE,
         related_name='ai_conversations'
     )
-    title = models.CharField(max_length=255, null=True, blank=True)
+    title = models.TextField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -1017,7 +706,6 @@ class AIMessage(models.Model):
     ROLE_CHOICES = [
         ('user', 'User'),
         ('assistant', 'Assistant'),
-        ('system', 'System'),
     ]
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4)
@@ -1026,10 +714,7 @@ class AIMessage(models.Model):
         on_delete=models.CASCADE,
         related_name='messages'
     )
-    role = models.CharField(
-        max_length=20,
-        choices=ROLE_CHOICES
-    )
+    role = models.TextField(choices=ROLE_CHOICES)
     content = models.TextField()
     tool_calls = models.JSONField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -1100,15 +785,15 @@ class NIProJob(models.Model):
         on_delete=models.CASCADE,
         related_name='nipr_jobs'
     )
-    last_name = models.CharField(max_length=255)
-    npn = models.CharField(max_length=50)
-    ssn_last4 = models.CharField(max_length=4)
-    dob = models.CharField(max_length=50)
-    status = models.CharField(max_length=50, default='pending')
+    last_name = models.TextField()
+    npn = models.TextField()
+    ssn_last4 = models.TextField()
+    dob = models.TextField()
+    status = models.TextField(default='pending')
     progress = models.IntegerField(default=0)
     progress_message = models.TextField(null=True, blank=True)
-    result_files = models.JSONField(default=list, null=True, blank=True)
-    result_carriers = models.JSONField(default=list, null=True, blank=True)
+    result_files = ArrayField(models.TextField(), default=list, blank=True)
+    result_carriers = ArrayField(models.TextField(), default=list, blank=True)
     error_message = models.TextField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     started_at = models.DateTimeField(null=True, blank=True)
@@ -1136,10 +821,10 @@ class IngestJob(models.Model):
     )
     expected_files = models.IntegerField()
     parsed_files = models.IntegerField(default=0)
-    status = models.CharField(max_length=50, default='pending')
+    status = models.TextField(default='parsing')
     created_at = models.DateTimeField(auto_now_add=True, null=True, blank=True)
     updated_at = models.DateTimeField(auto_now=True, null=True, blank=True)
-    client_job_id = models.CharField(max_length=255, null=True, blank=True)
+    client_job_id = models.TextField(null=True, blank=True)
     watcher_created_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
@@ -1162,8 +847,8 @@ class IngestJobFile(models.Model):
         to_field='job_id',
         related_name='files'
     )
-    file_name = models.CharField(max_length=255)
-    status = models.CharField(max_length=50, default='received')
+    file_name = models.TextField()
+    status = models.TextField(default='received')
     parsed_rows = models.IntegerField(null=True, blank=True)
     error_message = models.TextField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True, null=True, blank=True)
@@ -1198,7 +883,7 @@ class AgentCarrierNumber(models.Model):
         on_delete=models.CASCADE,
         related_name='agent_carrier_numbers'
     )
-    agent_number = models.CharField(max_length=255)
+    agent_number = models.TextField()
     is_active = models.BooleanField(null=True, blank=True, default=True)
     notes = models.TextField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True, null=True, blank=True)
@@ -1220,7 +905,7 @@ class ACNLoadAudit(models.Model):
     Maps to: public.acn_load_audit
     """
     id = models.BigAutoField(primary_key=True)
-    run_id = models.UUIDField()
+    run_id = models.UUIDField(default=uuid.uuid4)
     created_at = models.DateTimeField(auto_now_add=True)
     agency = models.ForeignKey(
         Agency,
@@ -1236,7 +921,7 @@ class ACNLoadAudit(models.Model):
         blank=True,
         related_name='acn_load_audits'
     )
-    agent_number = models.CharField(max_length=255, null=True, blank=True)
+    agent_number = models.TextField(null=True, blank=True)
     agent = models.ForeignKey(
         User,
         on_delete=models.SET_NULL,
@@ -1271,10 +956,10 @@ class AgentNameCollisionLog(models.Model):
         on_delete=models.CASCADE,
         related_name='name_collision_logs'
     )
-    agent_number = models.CharField(max_length=255)
-    first_name = models.CharField(max_length=255)
-    last_name = models.CharField(max_length=255)
-    matched_user_ids = models.JSONField()
+    agent_number = models.TextField()
+    first_name = models.TextField()
+    last_name = models.TextField()
+    matched_user_ids = ArrayField(models.UUIDField())
     chosen_user_id = models.UUIDField()
     created_at = models.DateTimeField(auto_now_add=True)
 
@@ -1334,7 +1019,7 @@ class LapseNotificationQueue(models.Model):
         on_delete=models.CASCADE,
         related_name='lapse_notifications'
     )
-    status = models.CharField(max_length=50, default='pending')
+    status = models.TextField(default='pending')
     created_at = models.DateTimeField(auto_now_add=True)
     processed_at = models.DateTimeField(null=True, blank=True)
     error_message = models.TextField(null=True, blank=True)
@@ -1352,8 +1037,6 @@ class ParsingInfo(models.Model):
     """
     Carrier portal parsing credentials.
     Maps to: public.parsing_info
-
-    WARNING: Contains sensitive credential data.
     """
     id = models.UUIDField(primary_key=True, default=uuid.uuid4)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -1365,8 +1048,6 @@ class ParsingInfo(models.Model):
     agent = models.ForeignKey(
         User,
         on_delete=models.CASCADE,
-        null=True,
-        blank=True,
         related_name='parsing_info'
     )
     agency = models.ForeignKey(
@@ -1374,8 +1055,8 @@ class ParsingInfo(models.Model):
         on_delete=models.CASCADE,
         related_name='parsing_info'
     )
-    login = models.CharField(max_length=255)
-    password = models.CharField(max_length=255)  # SENSITIVE - never expose in API
+    login = models.TextField()
+    password = models.TextField()
 
     class Meta:
         managed = False

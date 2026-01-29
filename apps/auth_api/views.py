@@ -766,9 +766,10 @@ class UserProfileView(APIView):
                         u.role, u.is_admin, u.status, u.perm_level,
                         u.subscription_tier, u.phone_number, u.start_date,
                         u.annual_goal, u.total_prod, u.total_policies_sold,
-                        u.created_at
+                        u.created_at, u.position_id, p.name as position_name, p.level as position_level
                     FROM public.users u
                     LEFT JOIN public.agencies a ON a.id = u.agency_id
+                    LEFT JOIN public.positions p ON p.id = u.position_id
                     WHERE u.id = %s
                     LIMIT 1
                 """, [str(user.id)])
@@ -798,6 +799,9 @@ class UserProfileView(APIView):
                     'total_prod': float(row[14]) if row[14] else 0,
                     'total_policies_sold': row[15] or 0,
                     'created_at': str(row[16]) if row[16] else None,
+                    'position_id': str(row[17]) if row[17] else None,
+                    'position_name': row[18],
+                    'position_level': row[19],
                 })
 
         except Exception as e:
@@ -859,4 +863,399 @@ class CompleteOnboardingView(APIView):
             return Response(
                 {'error': 'ServerError', 'message': 'Failed to complete onboarding'},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
+class UserByIdView(APIView):
+    """
+    GET /api/user/{user_id}
+
+    Get a user by their ID. Only users in the same agency can be accessed.
+
+    Response (200):
+        {
+            "id": "uuid",
+            "email": "user@example.com",
+            "first_name": "John",
+            "last_name": "Doe",
+            "is_admin": true,
+            ...
+        }
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, user_id: str):
+        user = get_user_context(request)
+        if not user:
+            return Response(
+                {'error': 'Unauthorized', 'message': 'Authentication required'},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute("""
+                    SELECT
+                        u.id, u.email, u.first_name, u.last_name,
+                        u.agency_id, u.role, u.is_admin, u.status, u.perm_level,
+                        u.subscription_tier, u.phone_number, u.position_id,
+                        p.name as position_name, p.level as position_level,
+                        u.created_at
+                    FROM public.users u
+                    LEFT JOIN public.positions p ON p.id = u.position_id
+                    WHERE u.id = %s AND u.agency_id = %s
+                    LIMIT 1
+                """, [user_id, str(user.agency_id)])
+                row = cursor.fetchone()
+
+                if not row:
+                    return Response(
+                        {'error': 'NotFound', 'message': 'User not found'},
+                        status=status.HTTP_404_NOT_FOUND
+                    )
+
+                return Response({
+                    'id': str(row[0]),
+                    'email': row[1],
+                    'first_name': row[2],
+                    'last_name': row[3],
+                    'agency_id': str(row[4]) if row[4] else None,
+                    'role': row[5],
+                    'is_admin': row[6],
+                    'status': row[7],
+                    'perm_level': row[8],
+                    'subscription_tier': row[9],
+                    'phone': row[10],
+                    'position_id': str(row[11]) if row[11] else None,
+                    'position_name': row[12],
+                    'position_level': row[13],
+                    'created_at': str(row[14]) if row[14] else None,
+                })
+
+        except Exception as e:
+            logger.error(f'Get user by ID failed: {e}')
+            return Response(
+                {'error': 'ServerError', 'message': 'Failed to get user'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
+class UserCarriersView(APIView):
+    """
+    PATCH /api/user/{user_id}/carriers
+
+    Update a user's unique_carriers list (for NIPR).
+    Only the user themselves or an admin can update this.
+
+    Request Body:
+        {
+            "unique_carriers": ["carrier1", "carrier2"]
+        }
+
+    Response (200):
+        {"success": true, "unique_carriers": ["carrier1", "carrier2"]}
+    """
+    permission_classes = [IsAuthenticated]
+
+    def patch(self, request, user_id: str):
+        user = get_user_context(request)
+        if not user:
+            return Response(
+                {'error': 'Unauthorized', 'message': 'Authentication required'},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
+        # Check permissions: must be self or admin
+        is_self = str(user.id) == user_id
+        if not is_self and not user.is_admin:
+            return Response(
+                {'error': 'Forbidden', 'message': 'You can only update your own carriers'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        unique_carriers = request.data.get('unique_carriers', [])
+        if not isinstance(unique_carriers, list):
+            return Response(
+                {'error': 'ValidationError', 'message': 'unique_carriers must be an array'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            import json
+            with connection.cursor() as cursor:
+                cursor.execute("""
+                    UPDATE public.users
+                    SET unique_carriers = %s::jsonb, updated_at = NOW()
+                    WHERE id = %s AND agency_id = %s
+                    RETURNING unique_carriers
+                """, [json.dumps(unique_carriers), user_id, str(user.agency_id)])
+                row = cursor.fetchone()
+
+                if not row:
+                    return Response(
+                        {'error': 'NotFound', 'message': 'User not found'},
+                        status=status.HTTP_404_NOT_FOUND
+                    )
+
+                return Response({
+                    'success': True,
+                    'unique_carriers': row[0] if row[0] else []
+                })
+
+        except Exception as e:
+            logger.error(f'Update user carriers failed: {e}')
+            return Response(
+                {'error': 'ServerError', 'message': 'Failed to update carriers'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
+class UserNIPRDataView(APIView):
+    """
+    PATCH /api/user/{user_id}/nipr-data
+
+    Update a user's NIPR data (unique_carriers and licensed_states).
+    Used by NIPR cron job to save processed data.
+    Only the user themselves, an admin, or cron jobs can update this.
+
+    Request Body:
+        {
+            "unique_carriers": ["carrier1", "carrier2"],
+            "licensed_states": ["CA", "TX", "NY"]
+        }
+
+    Response (200):
+        {
+            "success": true,
+            "unique_carriers": ["carrier1", "carrier2"],
+            "licensed_states": ["CA", "TX", "NY"]
+        }
+    """
+    from apps.core.authentication import CronSecretAuthentication
+    from rest_framework.authentication import SessionAuthentication
+
+    authentication_classes = [CronSecretAuthentication, SessionAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def patch(self, request, user_id: str):
+        user = get_user_context(request)
+        if not user:
+            return Response(
+                {'error': 'Unauthorized', 'message': 'Authentication required'},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
+        # Check permissions: must be self or admin (cron jobs auth as admin)
+        is_self = str(user.id) == user_id
+        if not is_self and not user.is_admin:
+            return Response(
+                {'error': 'Forbidden', 'message': 'You can only update your own NIPR data'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        unique_carriers = request.data.get('unique_carriers', [])
+        licensed_states = request.data.get('licensed_states', [])
+
+        if not isinstance(unique_carriers, list):
+            return Response(
+                {'error': 'ValidationError', 'message': 'unique_carriers must be an array'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if not isinstance(licensed_states, list):
+            return Response(
+                {'error': 'ValidationError', 'message': 'licensed_states must be an array'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            import json
+            with connection.cursor() as cursor:
+                # For admin (including cron jobs), don't filter by agency_id
+                if user.is_admin:
+                    cursor.execute("""
+                        UPDATE public.users
+                        SET
+                            unique_carriers = %s::jsonb,
+                            licensed_states = %s::jsonb,
+                            updated_at = NOW()
+                        WHERE id = %s
+                        RETURNING unique_carriers, licensed_states
+                    """, [
+                        json.dumps(unique_carriers),
+                        json.dumps(licensed_states),
+                        user_id,
+                    ])
+                else:
+                    cursor.execute("""
+                        UPDATE public.users
+                        SET
+                            unique_carriers = %s::jsonb,
+                            licensed_states = %s::jsonb,
+                            updated_at = NOW()
+                        WHERE id = %s AND agency_id = %s
+                        RETURNING unique_carriers, licensed_states
+                    """, [
+                        json.dumps(unique_carriers),
+                        json.dumps(licensed_states),
+                        user_id,
+                        str(user.agency_id)
+                    ])
+                row = cursor.fetchone()
+
+                if not row:
+                    return Response(
+                        {'error': 'NotFound', 'message': 'User not found'},
+                        status=status.HTTP_404_NOT_FOUND
+                    )
+
+                return Response({
+                    'success': True,
+                    'unique_carriers': row[0] if row[0] else [],
+                    'licensed_states': row[1] if row[1] else []
+                })
+
+        except Exception as e:
+            logger.error(f'Update user NIPR data failed: {e}')
+            return Response(
+                {'error': 'ServerError', 'message': 'Failed to update NIPR data'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
+class UserSmsUsageView(APIView):
+    """
+    GET /api/user/sms-usage - Get current user's SMS usage and subscription info
+    POST /api/user/sms-usage/increment - Increment message sent count
+    POST /api/user/sms-usage/reset - Reset message counter (for billing cycle)
+
+    Used by SMS send route to check limits and update usage.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        """Get user SMS usage and subscription info."""
+        user = get_user_context(request)
+        if not user:
+            return Response(
+                {'error': 'Unauthorized', 'message': 'Authentication required'},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute("""
+                    SELECT
+                        id,
+                        agency_id,
+                        first_name,
+                        last_name,
+                        subscription_tier,
+                        subscription_status,
+                        messages_sent_count,
+                        messages_reset_date,
+                        messages_topup_credits,
+                        stripe_subscription_id,
+                        billing_cycle_start,
+                        billing_cycle_end
+                    FROM public.users
+                    WHERE id = %s
+                """, [str(user.id)])
+                row = cursor.fetchone()
+
+            if not row:
+                return Response(
+                    {'error': 'NotFound', 'message': 'User not found'},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+
+            return Response({
+                'id': str(row[0]),
+                'agency_id': str(row[1]) if row[1] else None,
+                'first_name': row[2],
+                'last_name': row[3],
+                'subscription_tier': row[4] or 'free',
+                'subscription_status': row[5] or 'free',
+                'messages_sent_count': row[6] or 0,
+                'messages_reset_date': row[7].isoformat() if row[7] else None,
+                'messages_topup_credits': row[8] or 0,
+                'stripe_subscription_id': row[9],
+                'billing_cycle_start': row[10].isoformat() if row[10] else None,
+                'billing_cycle_end': row[11].isoformat() if row[11] else None,
+            })
+
+        except Exception as e:
+            logger.error(f'Get user SMS usage failed: {e}')
+            return Response(
+                {'error': 'ServerError', 'message': 'Failed to get SMS usage'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+    def post(self, request):
+        """Update user message count (increment or reset)."""
+        user = get_user_context(request)
+        if not user:
+            return Response(
+                {'error': 'Unauthorized', 'message': 'Authentication required'},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
+        action = request.data.get('action')
+
+        if action == 'increment':
+            # Increment message count by 1
+            try:
+                with connection.cursor() as cursor:
+                    cursor.execute("""
+                        UPDATE public.users
+                        SET messages_sent_count = COALESCE(messages_sent_count, 0) + 1,
+                            updated_at = NOW()
+                        WHERE id = %s
+                        RETURNING messages_sent_count
+                    """, [str(user.id)])
+                    row = cursor.fetchone()
+
+                return Response({
+                    'success': True,
+                    'messages_sent_count': row[0] if row else 0,
+                })
+
+            except Exception as e:
+                logger.error(f'Increment message count failed: {e}')
+                return Response(
+                    {'error': 'ServerError', 'message': 'Failed to increment message count'},
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                )
+
+        elif action == 'reset':
+            # Reset message counter (new billing cycle)
+            try:
+                with connection.cursor() as cursor:
+                    cursor.execute("""
+                        UPDATE public.users
+                        SET messages_sent_count = 0,
+                            messages_reset_date = NOW(),
+                            updated_at = NOW()
+                        WHERE id = %s
+                        RETURNING messages_sent_count, messages_reset_date
+                    """, [str(user.id)])
+                    row = cursor.fetchone()
+
+                return Response({
+                    'success': True,
+                    'messages_sent_count': 0,
+                    'messages_reset_date': row[1].isoformat() if row and row[1] else None,
+                })
+
+            except Exception as e:
+                logger.error(f'Reset message count failed: {e}')
+                return Response(
+                    {'error': 'ServerError', 'message': 'Failed to reset message count'},
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                )
+
+        else:
+            return Response(
+                {'error': 'ValidationError', 'message': 'action must be "increment" or "reset"'},
+                status=status.HTTP_400_BAD_REQUEST
             )

@@ -139,3 +139,56 @@ def get_position_product_commissions(position_id: UUID, agency_id: UUID) -> list
         }
         for c in commissions
     ]
+
+
+def get_all_position_product_commissions(user_id: UUID, carrier_id: UUID | None = None) -> list[dict]:
+    """
+    Get all product commissions for all positions in user's agency.
+    Translated from Supabase RPC: get_position_product_commissions
+
+    Uses Django ORM with select_related to prevent N+1 queries.
+
+    Args:
+        user_id: The user UUID (to determine agency)
+        carrier_id: Optional carrier UUID to filter by
+
+    Returns:
+        List of commission dictionaries with position and product info
+    """
+    # Get user's agency first
+    user = User.objects.filter(id=user_id).values('agency_id').first()  # type: ignore[attr-defined]
+    if not user or not user['agency_id']:
+        return []
+
+    agency_id = user['agency_id']
+
+    # Build query with filters
+    queryset = (
+        PositionProductCommission.objects  # type: ignore[attr-defined]
+        .filter(
+            position__agency_id=agency_id,
+        )
+        .select_related('position', 'product', 'product__carrier')
+    )
+
+    # Apply carrier filter if provided
+    if carrier_id:
+        queryset = queryset.filter(product__carrier_id=carrier_id)
+
+    # Order by position level desc, carrier, product name (matching RPC)
+    queryset = queryset.order_by('-position__level', 'product__carrier_id', 'product__name')
+
+    return [
+        {
+            'commission_id': c.id,
+            'position_id': c.position_id,
+            'position_name': c.position.name,
+            'position_level': c.position.level,
+            'product_id': c.product_id,
+            'product_name': c.product.name,
+            'carrier_id': c.product.carrier_id,
+            'carrier_name': c.product.carrier.display_name if c.product.carrier else None,
+            'commission_percentage': c.commission_percentage,
+        }
+        for c in queryset
+    ]

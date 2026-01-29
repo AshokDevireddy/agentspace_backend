@@ -271,3 +271,165 @@ def _empty_pagination(page: int, limit: int) -> dict:
         'hasNextPage': False,
         'hasPrevPage': False,
     }
+
+
+def get_client_dashboard_data(user_id: UUID, auth_user_id: str) -> dict | None:
+    """
+    Get dashboard data for a client user.
+
+    This is for clients viewing their own data, not agents viewing clients.
+
+    Args:
+        user_id: The user's UUID (from users table)
+        auth_user_id: The auth_user_id to verify
+
+    Returns:
+        Dashboard data including profile, agency branding, and deals
+    """
+    try:
+        # Get user profile
+        profile_query = """
+            SELECT
+                u.id,
+                u.first_name,
+                u.last_name,
+                u.email,
+                u.phone_number,
+                u.role,
+                u.agency_id
+            FROM public.users u
+            WHERE u.auth_user_id = %s
+              AND u.role = 'client'
+            LIMIT 1
+        """
+
+        with connection.cursor() as cursor:
+            cursor.execute(profile_query, [auth_user_id])
+            row = cursor.fetchone()
+
+        if not row:
+            return None
+
+        user_data = {
+            'id': str(row[0]),
+            'firstName': row[1],
+            'lastName': row[2],
+            'email': row[3],
+            'phoneNumber': row[4],
+            'role': row[5],
+            'agencyId': str(row[6]) if row[6] else None,
+        }
+
+        # Get agency branding
+        agency_data = None
+        if row[6]:  # agency_id
+            agency_query = """
+                SELECT display_name, name, logo_url
+                FROM public.agencies
+                WHERE id = %s
+                LIMIT 1
+            """
+            with connection.cursor() as cursor:
+                cursor.execute(agency_query, [str(row[6])])
+                agency_row = cursor.fetchone()
+
+            if agency_row:
+                agency_data = {
+                    'displayName': agency_row[0],
+                    'name': agency_row[1],
+                    'logoUrl': agency_row[2],
+                }
+
+        return {
+            'user': user_data,
+            'agency': agency_data,
+        }
+
+    except Exception as e:
+        logger.error(f'Error getting client dashboard data: {e}')
+        raise
+
+
+def get_client_own_deals(user_id: UUID) -> list[dict]:
+    """
+    Get deals for a client viewing their own policies.
+
+    Args:
+        user_id: The client's user ID
+
+    Returns:
+        List of deals with agent/carrier/product details
+    """
+    query = """
+        SELECT
+            d.id,
+            d.policy_number,
+            d.application_number,
+            d.client_name,
+            d.client_email,
+            d.client_phone,
+            d.date_of_birth,
+            d.ssn_last_4,
+            d.client_address,
+            d.monthly_premium,
+            d.annual_premium,
+            d.policy_effective_date,
+            d.status,
+            d.created_at,
+            u.first_name as agent_first_name,
+            u.last_name as agent_last_name,
+            u.email as agent_email,
+            u.phone_number as agent_phone,
+            ca.display_name as carrier_display_name,
+            pr.name as product_name
+        FROM public.deals d
+        LEFT JOIN public.users u ON u.id = d.agent_id
+        LEFT JOIN public.carriers ca ON ca.id = d.carrier_id
+        LEFT JOIN public.products pr ON pr.id = d.product_id
+        WHERE d.client_id = %s
+        ORDER BY d.created_at DESC
+    """
+
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(query, [str(user_id)])
+            columns = [col[0] for col in cursor.description]
+            rows = cursor.fetchall()
+
+        deals = []
+        for row in rows:
+            deal = dict(zip(columns, row, strict=False))
+            deals.append({
+                'id': str(deal['id']),
+                'policyNumber': deal['policy_number'],
+                'applicationNumber': deal['application_number'],
+                'clientName': deal['client_name'],
+                'clientEmail': deal['client_email'],
+                'clientPhone': deal['client_phone'],
+                'dateOfBirth': deal['date_of_birth'].isoformat() if deal['date_of_birth'] else None,
+                'ssnLast4': deal['ssn_last_4'],
+                'clientAddress': deal['client_address'],
+                'monthlyPremium': float(deal['monthly_premium']) if deal['monthly_premium'] else 0,
+                'annualPremium': float(deal['annual_premium']) if deal['annual_premium'] else 0,
+                'policyEffectiveDate': deal['policy_effective_date'].isoformat() if deal['policy_effective_date'] else None,
+                'status': deal['status'],
+                'createdAt': deal['created_at'].isoformat() if deal['created_at'] else None,
+                'agent': {
+                    'firstName': deal['agent_first_name'],
+                    'lastName': deal['agent_last_name'],
+                    'email': deal['agent_email'],
+                    'phoneNumber': deal['agent_phone'],
+                } if deal['agent_first_name'] else None,
+                'carrier': {
+                    'displayName': deal['carrier_display_name'],
+                } if deal['carrier_display_name'] else None,
+                'product': {
+                    'name': deal['product_name'],
+                } if deal['product_name'] else None,
+            })
+
+        return deals
+
+    except Exception as e:
+        logger.error(f'Error getting client own deals: {e}')
+        raise

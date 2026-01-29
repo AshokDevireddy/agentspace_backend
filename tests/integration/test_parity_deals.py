@@ -11,7 +11,6 @@ from rest_framework import status
 
 from tests.factories import (
     CarrierFactory,
-    ClientFactory,
     DealFactory,
     ProductFactory,
 )
@@ -326,23 +325,20 @@ class TestEffectiveDateSortWithRealData:
         client, mock_user = authenticated_api_client
 
         # Create deals with different effective dates
-        old_client = ClientFactory(agency=agency)
-        new_client = ClientFactory(agency=agency)
-
         DealFactory(
             agency=agency,
             agent=agent_user,
-            client=old_client,
             carrier=test_carrier,
             product=test_product,
+            client_name='Old Client',
             policy_effective_date=date.today() - timedelta(days=60),
         )
         DealFactory(
             agency=agency,
             agent=agent_user,
-            client=new_client,
             carrier=test_carrier,
             product=test_product,
+            client_name='New Client',
             policy_effective_date=date.today() - timedelta(days=5),
         )
 

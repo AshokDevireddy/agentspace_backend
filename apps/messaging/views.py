@@ -17,7 +17,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from apps.core.authentication import get_user_context
+from apps.core.authentication import CronSecretAuthentication, SupabaseJWTAuthentication, get_user_context
 
 from .selectors import (
     get_billing_reminder_deals,
@@ -39,6 +39,7 @@ class BillingRemindersView(APIView):
     Get deals eligible for billing reminder messages (3 days before next billing).
     Used by cron jobs for automated messaging.
     """
+    authentication_classes = [CronSecretAuthentication, SupabaseJWTAuthentication]
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -79,6 +80,7 @@ class BirthdayMessagesView(APIView):
     Get deals with clients having birthdays today.
     Used by cron jobs for automated birthday messages.
     """
+    authentication_classes = [CronSecretAuthentication, SupabaseJWTAuthentication]
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -120,6 +122,7 @@ class HolidayMessagesView(APIView):
     Query params:
         holiday_name: Name of the holiday (required)
     """
+    authentication_classes = [CronSecretAuthentication, SupabaseJWTAuthentication]
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -167,6 +170,7 @@ class LapseRemindersView(APIView):
     Get deals eligible for lapse reminder messages.
     Used by cron jobs for automated lapse notifications.
     """
+    authentication_classes = [CronSecretAuthentication, SupabaseJWTAuthentication]
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -206,6 +210,7 @@ class NeedsInfoView(APIView):
     Get deals where application needs more info.
     Used by cron jobs for automated notifications to agents.
     """
+    authentication_classes = [CronSecretAuthentication, SupabaseJWTAuthentication]
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -245,6 +250,7 @@ class PolicyCheckupsView(APIView):
     Get deals for policy packet checkup (14 days after effective).
     Used by cron jobs for automated policy packet follow-ups.
     """
+    authentication_classes = [CronSecretAuthentication, SupabaseJWTAuthentication]
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -284,6 +290,7 @@ class QuarterlyCheckinsView(APIView):
     Get deals for quarterly check-in (every 90 days since effective).
     Used by cron jobs for automated quarterly follow-ups.
     """
+    authentication_classes = [CronSecretAuthentication, SupabaseJWTAuthentication]
     permission_classes = [IsAuthenticated]
 
     def get(self, request):

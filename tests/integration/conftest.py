@@ -14,13 +14,11 @@ from tests.conftest import MockAuthenticatedUser
 from tests.factories import (
     AgencyFactory,
     CarrierFactory,
-    ClientFactory,
     ConversationFactory,
     DealFactory,
     MessageFactory,
     PositionFactory,
     ProductFactory,
-    SmsTemplateFactory,
     StatusMappingFactory,
     UserFactory,
 )
@@ -35,7 +33,6 @@ def agency(db):
     """Create a test agency."""
     return AgencyFactory(
         name='Test Insurance Agency',
-        sms_enabled=True,
     )
 
 
@@ -115,44 +112,21 @@ def test_products(test_carrier, agency):
 
 
 # =============================================================================
-# Client Fixtures
-# =============================================================================
-
-
-@pytest.fixture
-def test_client(agency):
-    """Create a test client."""
-    return ClientFactory(
-        agency=agency,
-        first_name='John',
-        last_name='Client',
-        email='john.client@example.com',
-        phone='+15551234567',
-    )
-
-
-@pytest.fixture
-def test_clients(agency):
-    """Create multiple test clients."""
-    return [
-        ClientFactory(agency=agency) for _ in range(5)
-    ]
-
-
-# =============================================================================
 # Deal Fixtures
 # =============================================================================
 
 
 @pytest.fixture
-def test_deal(agency, agent_user, test_client, test_product, test_carrier):
+def test_deal(agency, agent_user, test_product, test_carrier):
     """Create a single test deal."""
     return DealFactory(
         agency=agency,
         agent=agent_user,
-        client=test_client,
         product=test_product,
         carrier=test_carrier,
+        client_name='John Client',
+        client_email='john.client@example.com',
+        client_phone='+15551234567',
         status='Active',
         status_standardized='active',
         annual_premium=Decimal('12000.00'),
@@ -173,11 +147,9 @@ def test_deals(agency, agent_user, test_product, test_carrier):
     ]
 
     for i, (status, status_std) in enumerate(statuses):
-        client = ClientFactory(agency=agency)
         deal = DealFactory(
             agency=agency,
             agent=agent_user,
-            client=client,
             product=test_product,
             carrier=test_carrier,
             status=status,
@@ -195,11 +167,9 @@ def downline_deals(agency, downline_agent, test_product, test_carrier):
     """Create deals for a downline agent."""
     deals = []
     for i in range(3):
-        client = ClientFactory(agency=agency)
         deal = DealFactory(
             agency=agency,
             agent=downline_agent,
-            client=client,
             product=test_product,
             carrier=test_carrier,
             annual_premium=Decimal(str(8000 + i * 500)),
@@ -214,13 +184,13 @@ def downline_deals(agency, downline_agent, test_product, test_carrier):
 
 
 @pytest.fixture
-def test_conversation(agency, agent_user, test_client):
+def test_conversation(agency, agent_user, test_deal):
     """Create a test SMS conversation."""
     return ConversationFactory(
         agency=agency,
         agent=agent_user,
-        client=test_client,
-        phone_number=test_client.phone,
+        deal=test_deal,
+        client_phone='+15551234567',
         sms_opt_in_status='opted_in',
     )
 
@@ -232,32 +202,19 @@ def test_messages(test_conversation, agent_user):
     # Outbound message
     messages.append(MessageFactory(
         conversation=test_conversation,
-        content='Hello! Following up on your policy.',
+        body='Hello! Following up on your policy.',
         direction='outbound',
         status='sent',
-        sent_by=agent_user,
+        sender=agent_user,
     ))
     # Inbound response
     messages.append(MessageFactory(
         conversation=test_conversation,
-        content='Thanks for reaching out!',
+        body='Thanks for reaching out!',
         direction='inbound',
         status='received',
-        sent_by=None,
     ))
     return messages
-
-
-@pytest.fixture
-def test_sms_template(agency, admin_user):
-    """Create a test SMS template."""
-    return SmsTemplateFactory(
-        agency=agency,
-        name='Welcome Message',
-        content='Welcome {{client_name}}! Thank you for choosing us.',
-        category='welcome',
-        created_by=admin_user,
-    )
 
 
 # =============================================================================

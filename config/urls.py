@@ -7,6 +7,7 @@ from django.contrib import admin
 from django.urls import include, path
 
 from apps.core.views import health_check
+from apps.clients.urls import client_dashboard_urlpatterns
 from apps.search.urls import (
     search_agents_filter_urlpatterns,
     search_agents_urlpatterns,
@@ -56,6 +57,9 @@ urlpatterns = [
     # Clients endpoints (P2-037)
     path('api/clients/', include('apps.clients.urls')),
 
+    # Client self-service endpoints (for users with role='client')
+    path('api/client/', include(client_dashboard_urlpatterns)),
+
     # Agencies endpoints (configuration settings)
     path('api/agencies/', include('apps.agencies.urls')),
 
@@ -76,6 +80,9 @@ urlpatterns = [
 
     # Onboarding endpoints (server-side onboarding state)
     path('api/onboarding/', include('apps.onboarding.urls')),
+
+    # Webhooks (Stripe, etc.)
+    path('api/webhooks/', include('apps.webhooks.urls')),
 
     # Search endpoints (mounted at different paths)
     path('api/search-agents/', include(search_agents_urlpatterns)),

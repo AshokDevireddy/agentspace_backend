@@ -20,12 +20,7 @@ from apps.core.authentication import AuthenticatedUser
 
 logger = logging.getLogger(__name__)
 
-# Twilio configuration
-TWILIO_ACCOUNT_SID = os.getenv('TWILIO_ACCOUNT_SID')
-TWILIO_AUTH_TOKEN = os.getenv('TWILIO_AUTH_TOKEN')
-TWILIO_PHONE_NUMBER = os.getenv('TWILIO_PHONE_NUMBER')
-
-# Telnyx configuration
+# Telnyx configuration (standardized SMS provider)
 TELNYX_API_KEY = os.getenv('TELNYX_API_KEY')
 TELNYX_API_URL = 'https://api.telnyx.com/v2/messages'
 
@@ -94,13 +89,6 @@ def send_sms_via_telnyx(from_number: str, to_number: str, text: str) -> dict:
         return {'success': False, 'error': str(e)}
 
 
-def get_twilio_client():
-    """Get Twilio client instance."""
-    if not TWILIO_ACCOUNT_SID or not TWILIO_AUTH_TOKEN:
-        raise ValueError("Twilio credentials not configured")
-
-    from twilio.rest import Client
-    return Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
 
 
 @dataclass
@@ -169,8 +157,18 @@ def send_message(
         if conversation.sms_opt_in_status == 'opted_out':
             return SendMessageResult(success=False, error="Recipient has opted out of SMS")
 
-        # Determine from number
-        from_number = data.from_number or TWILIO_PHONE_NUMBER
+        # Determine from number - get agency phone number if not provided
+        from_number = data.from_number
+        if not from_number:
+            # Get agency phone number
+            with connection.cursor() as cursor:
+                cursor.execute("""
+                    SELECT phone_number FROM public.agencies WHERE id = %s
+                """, [str(user.agency_id)])
+                row = cursor.fetchone()
+                if row:
+                    from_number = row[0]
+
         if not from_number:
             return SendMessageResult(success=False, error="No from number configured")
 
@@ -185,15 +183,29 @@ def send_message(
                 RETURNING id
             """, [str(message_id), str(data.conversation_id), data.content, str(user.id)])
 
-        # Send via Twilio
+        # Send via Telnyx
         try:
-            client = get_twilio_client()
-            twilio_message = client.messages.create(
-                body=data.content,
-                from_=from_number,
-                to=conversation.phone_number
+            telnyx_result = send_sms_via_telnyx(
+                from_number=from_number,
+                to_number=conversation.phone_number,
+                text=data.content
             )
-            external_id = twilio_message.sid
+
+            if not telnyx_result['success']:
+                # Update message status to failed
+                with connection.cursor() as cursor:
+                    cursor.execute("""
+                        UPDATE public.messages
+                        SET status = 'failed', updated_at = NOW()
+                        WHERE id = %s
+                    """, [str(message_id)])
+                return SendMessageResult(
+                    success=False,
+                    message_id=message_id,
+                    error=telnyx_result.get('error', 'Unknown Telnyx error')
+                )
+
+            external_id = telnyx_result.get('message_id')
 
             # Update message status to sent
             with connection.cursor() as cursor:
@@ -219,7 +231,7 @@ def send_message(
                     WHERE id = %s
                 """, [str(user.id)])
 
-            logger.info(f"SMS sent successfully: {message_id} -> {external_id}")
+            logger.info(f"SMS sent successfully via Telnyx: {message_id} -> {external_id}")
 
             return SendMessageResult(
                 success=True,
@@ -236,7 +248,7 @@ def send_message(
                     WHERE id = %s
                 """, [str(message_id)])
 
-            logger.error(f"Twilio send failed: {e}")
+            logger.error(f"Telnyx send failed: {e}")
             return SendMessageResult(success=False, message_id=message_id, error=str(e))
 
     except Exception as e:
@@ -365,14 +377,29 @@ def send_bulk_messages(
                     failed += 1
                     errors.append({"recipient_id": str(recipient_id), "error": result.error or "Unknown error"})
             else:
-                # Direct send without conversation (for agents)
-                client = get_twilio_client()
-                client.messages.create(
-                    body=content,
-                    from_=TWILIO_PHONE_NUMBER,
-                    to=phone
+                # Direct send without conversation (for agents) - get agency phone
+                with connection.cursor() as cursor:
+                    cursor.execute("""
+                        SELECT phone_number FROM public.agencies WHERE id = %s
+                    """, [str(user.agency_id)])
+                    agency_row = cursor.fetchone()
+                    agency_phone = agency_row[0] if agency_row else None
+
+                if not agency_phone:
+                    failed += 1
+                    errors.append({"recipient_id": str(recipient_id), "error": "No agency phone configured"})
+                    continue
+
+                telnyx_result = send_sms_via_telnyx(
+                    from_number=agency_phone,
+                    to_number=phone,
+                    text=content
                 )
-                sent += 1
+                if telnyx_result['success']:
+                    sent += 1
+                else:
+                    failed += 1
+                    errors.append({"recipient_id": str(recipient_id), "error": telnyx_result.get('error', 'Unknown error')})
 
         except Exception as e:
             failed += 1
@@ -785,6 +812,75 @@ def approve_drafts(
         )
 
 
+@dataclass
+class UpdateDraftResult:
+    """Result of updating a draft message."""
+    success: bool
+    message: dict | None = None
+    error: str | None = None
+
+
+def update_draft_body(
+    user: AuthenticatedUser,
+    message_id: UUID,
+    new_body: str,
+) -> UpdateDraftResult:
+    """
+    Update the body of a draft message.
+
+    Args:
+        user: The authenticated user
+        message_id: The ID of the draft message to update
+        new_body: The new message body
+
+    Returns:
+        UpdateDraftResult with the updated message or error
+    """
+    try:
+        # Update draft message, ensuring it belongs to user's agency
+        with connection.cursor() as cursor:
+            cursor.execute("""
+                UPDATE public.messages m
+                SET content = %s, updated_at = NOW()
+                FROM public.conversations c
+                JOIN public.deals d ON d.id = c.deal_id
+                WHERE m.id = %s
+                    AND m.conversation_id = c.id
+                    AND d.agency_id = %s
+                    AND m.status = 'draft'
+                RETURNING m.id, m.conversation_id, m.content, m.direction,
+                    m.status, m.sent_by, m.created_at, m.updated_at
+            """, [new_body.strip(), str(message_id), str(user.agency_id)])
+            row = cursor.fetchone()
+
+        if not row:
+            return UpdateDraftResult(
+                success=False,
+                error="Draft message not found"
+            )
+
+        logger.info(f"Draft message {message_id} body updated")
+
+        return UpdateDraftResult(
+            success=True,
+            message={
+                'id': str(row[0]),
+                'conversation_id': str(row[1]),
+                'body': row[2],  # Use 'body' to match frontend expectation
+                'content': row[2],
+                'direction': row[3],
+                'status': row[4],
+                'sent_by': str(row[5]) if row[5] else None,
+                'created_at': row[6].isoformat() if row[6] else None,
+                'updated_at': row[7].isoformat() if row[7] else None,
+            }
+        )
+
+    except Exception as e:
+        logger.error(f"Error updating draft body: {e}")
+        return UpdateDraftResult(success=False, error=str(e))
+
+
 def reject_drafts(
     user: AuthenticatedUser,
     message_ids: list[str]
@@ -840,3 +936,395 @@ def reject_drafts(
     except Exception as e:
         logger.error(f'Error rejecting drafts: {e}')
         return RejectDraftsResult(success=False, rejected=0)
+
+
+# =============================================================================
+# Mark Messages as Read
+# =============================================================================
+
+def mark_message_as_read(
+    user: AuthenticatedUser,
+    message_id: UUID,
+) -> bool:
+    """
+    Mark a message as read by setting read_at timestamp.
+
+    Args:
+        user: The authenticated user
+        message_id: The message ID to mark as read
+
+    Returns:
+        True if the message was marked as read, False otherwise
+    """
+    try:
+        with connection.cursor() as cursor:
+            # Only update if the user has access to this message
+            # (message belongs to a conversation in their agency)
+            cursor.execute("""
+                UPDATE public.messages m
+                SET read_at = NOW()
+                FROM public.conversations c
+                JOIN public.deals d ON d.id = c.deal_id
+                WHERE m.id = %s
+                    AND m.conversation_id = c.id
+                    AND d.agency_id = %s
+                    AND m.read_at IS NULL
+                RETURNING m.id
+            """, [str(message_id), str(user.agency_id)])
+            result = cursor.fetchone()
+
+        return result is not None
+
+    except Exception as e:
+        logger.error(f'Error marking message as read: {e}')
+        return False
+
+
+def find_conversation(
+    user: AuthenticatedUser,
+    agent_id: UUID | None = None,
+    deal_id: UUID | None = None,
+    phone: str | None = None,
+) -> dict | None:
+    """
+    Find an existing conversation by agent_id, deal_id, or phone number.
+
+    Args:
+        user: The authenticated user
+        agent_id: Optional agent ID to filter by
+        deal_id: Optional deal ID to filter by
+        phone: Optional phone number to filter by
+
+    Returns:
+        Conversation dict if found, None otherwise
+    """
+    if not any([agent_id, deal_id, phone]):
+        return None
+
+    try:
+        conditions = ["c.agency_id = %s"]
+        params = [str(user.agency_id)]
+
+        if agent_id:
+            conditions.append("c.agent_id = %s")
+            params.append(str(agent_id))
+
+        if deal_id:
+            conditions.append("c.deal_id = %s")
+            params.append(str(deal_id))
+
+        if phone:
+            normalized = normalize_phone_number(phone)
+            conditions.append("c.phone_number = %s")
+            params.append(normalized)
+
+        where_clause = " AND ".join(conditions)
+
+        with connection.cursor() as cursor:
+            cursor.execute(f"""
+                SELECT
+                    c.id,
+                    c.agency_id,
+                    c.agent_id,
+                    c.deal_id,
+                    c.client_id,
+                    c.phone_number,
+                    c.sms_opt_in_status,
+                    c.last_message_at,
+                    c.created_at,
+                    c.updated_at
+                FROM public.conversations c
+                WHERE {where_clause}
+                ORDER BY c.updated_at DESC
+                LIMIT 1
+            """, params)
+            row = cursor.fetchone()
+
+        if not row:
+            return None
+
+        return {
+            'id': str(row[0]),
+            'agency_id': str(row[1]) if row[1] else None,
+            'agent_id': str(row[2]) if row[2] else None,
+            'deal_id': str(row[3]) if row[3] else None,
+            'client_id': str(row[4]) if row[4] else None,
+            'phone_number': row[5],
+            'sms_opt_in_status': row[6],
+            'last_message_at': row[7].isoformat() if row[7] else None,
+            'created_at': row[8].isoformat() if row[8] else None,
+            'updated_at': row[9].isoformat() if row[9] else None,
+        }
+
+    except Exception as e:
+        logger.error(f'Error finding conversation: {e}')
+        return None
+
+
+@dataclass
+class GetOrCreateConversationInput:
+    """Input for get-or-create conversation."""
+    agent_id: UUID
+    deal_id: UUID | None = None
+    client_id: UUID | None = None
+    phone_number: str | None = None
+
+
+@dataclass
+class GetOrCreateConversationResult:
+    """Result of get-or-create conversation operation."""
+    success: bool
+    conversation: dict | None = None
+    created: bool = False
+    error: str | None = None
+
+
+def get_or_create_conversation(
+    user: AuthenticatedUser,
+    data: GetOrCreateConversationInput,
+) -> GetOrCreateConversationResult:
+    """
+    Get an existing conversation or create a new one.
+    This is an atomic operation to prevent race conditions.
+
+    Args:
+        user: The authenticated user
+        data: Conversation data including agent_id, deal_id, client_id, phone_number
+
+    Returns:
+        GetOrCreateConversationResult with conversation data and created flag
+    """
+    if not data.phone_number and not data.deal_id:
+        return GetOrCreateConversationResult(
+            success=False,
+            error="Either phone_number or deal_id is required"
+        )
+
+    try:
+        normalized_phone = normalize_phone_number(data.phone_number) if data.phone_number else None
+
+        # Try to find existing conversation first
+        with connection.cursor() as cursor:
+            # Build conditions based on provided data
+            if data.deal_id:
+                # If deal_id provided, use it as primary lookup
+                cursor.execute("""
+                    SELECT
+                        c.id, c.agency_id, c.agent_id, c.deal_id, c.client_id,
+                        c.phone_number, c.sms_opt_in_status, c.last_message_at,
+                        c.created_at, c.updated_at
+                    FROM public.conversations c
+                    WHERE c.agency_id = %s
+                        AND c.deal_id = %s
+                    LIMIT 1
+                """, [str(user.agency_id), str(data.deal_id)])
+            elif normalized_phone:
+                # If only phone provided, look up by agent + phone
+                cursor.execute("""
+                    SELECT
+                        c.id, c.agency_id, c.agent_id, c.deal_id, c.client_id,
+                        c.phone_number, c.sms_opt_in_status, c.last_message_at,
+                        c.created_at, c.updated_at
+                    FROM public.conversations c
+                    WHERE c.agency_id = %s
+                        AND c.agent_id = %s
+                        AND c.phone_number = %s
+                    LIMIT 1
+                """, [str(user.agency_id), str(data.agent_id), normalized_phone])
+            else:
+                return GetOrCreateConversationResult(
+                    success=False,
+                    error="Either phone_number or deal_id is required"
+                )
+
+            existing = cursor.fetchone()
+
+        if existing:
+            return GetOrCreateConversationResult(
+                success=True,
+                conversation={
+                    'id': str(existing[0]),
+                    'agency_id': str(existing[1]) if existing[1] else None,
+                    'agent_id': str(existing[2]) if existing[2] else None,
+                    'deal_id': str(existing[3]) if existing[3] else None,
+                    'client_id': str(existing[4]) if existing[4] else None,
+                    'phone_number': existing[5],
+                    'sms_opt_in_status': existing[6],
+                    'last_message_at': existing[7].isoformat() if existing[7] else None,
+                    'created_at': existing[8].isoformat() if existing[8] else None,
+                    'updated_at': existing[9].isoformat() if existing[9] else None,
+                },
+                created=False
+            )
+
+        # If phone not provided but deal_id is, get phone from deal's client
+        if not normalized_phone and data.deal_id:
+            with connection.cursor() as cursor:
+                cursor.execute("""
+                    SELECT cl.phone, cl.id as client_id
+                    FROM public.deals d
+                    JOIN public.clients cl ON cl.id = d.client_id
+                    WHERE d.id = %s AND d.agency_id = %s
+                """, [str(data.deal_id), str(user.agency_id)])
+                deal_row = cursor.fetchone()
+
+            if deal_row and deal_row[0]:
+                normalized_phone = normalize_phone_number(deal_row[0])
+                if not data.client_id:
+                    data.client_id = deal_row[1]
+
+        if not normalized_phone:
+            return GetOrCreateConversationResult(
+                success=False,
+                error="Could not determine phone number for conversation"
+            )
+
+        # Create new conversation
+        conv_id = uuid.uuid4()
+        with connection.cursor() as cursor:
+            cursor.execute("""
+                INSERT INTO public.conversations (
+                    id, agency_id, agent_id, deal_id, client_id, phone_number,
+                    sms_opt_in_status, created_at, updated_at
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, 'pending', NOW(), NOW())
+                RETURNING id, agency_id, agent_id, deal_id, client_id, phone_number,
+                    sms_opt_in_status, last_message_at, created_at, updated_at
+            """, [
+                str(conv_id),
+                str(user.agency_id),
+                str(data.agent_id),
+                str(data.deal_id) if data.deal_id else None,
+                str(data.client_id) if data.client_id else None,
+                normalized_phone,
+            ])
+            row = cursor.fetchone()
+
+        return GetOrCreateConversationResult(
+            success=True,
+            conversation={
+                'id': str(row[0]),
+                'agency_id': str(row[1]) if row[1] else None,
+                'agent_id': str(row[2]) if row[2] else None,
+                'deal_id': str(row[3]) if row[3] else None,
+                'client_id': str(row[4]) if row[4] else None,
+                'phone_number': row[5],
+                'sms_opt_in_status': row[6],
+                'last_message_at': row[7].isoformat() if row[7] else None,
+                'created_at': row[8].isoformat() if row[8] else None,
+                'updated_at': row[9].isoformat() if row[9] else None,
+            },
+            created=True
+        )
+
+    except Exception as e:
+        logger.error(f'Error in get_or_create_conversation: {e}')
+        return GetOrCreateConversationResult(success=False, error=str(e))
+
+
+# =============================================================================
+# Log Message (Create without sending)
+# =============================================================================
+
+@dataclass
+class LogMessageInput:
+    """Input for logging a message without sending."""
+    conversation_id: UUID
+    content: str
+    direction: str  # 'inbound' or 'outbound'
+    status: str = 'delivered'  # 'delivered', 'draft', 'pending', etc.
+    metadata: dict | None = None
+
+
+@dataclass
+class LogMessageResult:
+    """Result of logging a message."""
+    success: bool
+    message_id: UUID | None = None
+    error: str | None = None
+
+
+def log_message(
+    user: AuthenticatedUser,
+    data: LogMessageInput,
+) -> LogMessageResult:
+    """
+    Log a message in the database without sending it via Telnyx.
+
+    This is used for:
+    - Recording inbound messages from webhooks
+    - Creating draft messages for approval
+    - Logging automated messages
+
+    Args:
+        user: The authenticated user
+        data: Message data including conversation_id, content, direction, status
+
+    Returns:
+        LogMessageResult with success status and message_id
+    """
+    try:
+        # Verify conversation access
+        with connection.cursor() as cursor:
+            cursor.execute("""
+                SELECT c.id, c.agency_id
+                FROM public.conversations c
+                WHERE c.id = %s AND c.agency_id = %s
+            """, [str(data.conversation_id), str(user.agency_id)])
+            conv = cursor.fetchone()
+
+        if not conv:
+            return LogMessageResult(success=False, error="Conversation not found")
+
+        is_draft = data.status == 'draft'
+        now = None if is_draft else 'NOW()'
+
+        # Create message record
+        import json
+        message_id = uuid.uuid4()
+        metadata_json = json.dumps(data.metadata or {})
+
+        # Build the SQL based on whether it's a draft or not
+        sent_at_value = "NULL" if is_draft else "NOW()"
+        read_at_value = "NULL" if is_draft or data.direction != 'outbound' else "NOW()"
+
+        with connection.cursor() as cursor:
+            cursor.execute(f"""
+                INSERT INTO public.messages (
+                    id, conversation_id, content, direction, status, sent_by,
+                    metadata, sent_at, read_at, created_at, updated_at
+                )
+                VALUES (
+                    %s, %s, %s, %s, %s, %s,
+                    %s::jsonb,
+                    {sent_at_value},
+                    {read_at_value},
+                    NOW(), NOW()
+                )
+                RETURNING id
+            """, [
+                str(message_id),
+                str(data.conversation_id),
+                data.content,
+                data.direction,
+                data.status,
+                str(user.id),
+                metadata_json,
+            ])
+
+        # Update last_message_at in conversation (only for non-draft messages)
+        if not is_draft:
+            with connection.cursor() as cursor:
+                cursor.execute("""
+                    UPDATE public.conversations
+                    SET last_message_at = NOW(), updated_at = NOW()
+                    WHERE id = %s
+                """, [str(data.conversation_id)])
+
+        logger.info(f"Message logged: {message_id} ({data.status})")
+
+        return LogMessageResult(success=True, message_id=message_id)
+
+    except Exception as e:
+        logger.error(f"Error logging message: {e}")
+        return LogMessageResult(success=False, error=str(e))

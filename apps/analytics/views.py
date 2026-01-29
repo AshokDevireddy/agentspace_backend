@@ -35,6 +35,7 @@ class AnalyticsSplitView(APIView):
     Get analytics data split between user's own deals and downline deals.
 
     Query params:
+        agent_id: Optional agent UUID to get analytics for (default: current user)
         as_of: Reference date (default: today, format: YYYY-MM-DD)
         all_time_months: Number of months for all-time window (default: 24)
         carrier_ids: Comma-separated carrier UUIDs to filter by
@@ -50,6 +51,22 @@ class AnalyticsSplitView(APIView):
             )
 
         try:
+            # Parse agent_id (default to current user)
+            agent_id_str = request.query_params.get('agent_id')
+            target_user = user
+            if agent_id_str:
+                try:
+                    target_agent_id = UUID(agent_id_str)
+                    # Create a mock user context with the target agent ID
+                    # This allows admins or managers to view analytics for their downlines
+                    from dataclasses import replace
+                    target_user = replace(user, id=target_agent_id)
+                except ValueError:
+                    return Response(
+                        {'error': 'Invalid agent_id format'},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+
             # Parse as_of date
             as_of = None
             as_of_str = request.query_params.get('as_of')
@@ -79,7 +96,7 @@ class AnalyticsSplitView(APIView):
                     )
 
             result = get_analytics_split_view(
-                user=user,
+                user=target_user,
                 as_of=as_of,
                 all_time_months=all_time_months,
                 carrier_ids=carrier_ids,

@@ -61,6 +61,7 @@ def get_book_of_business(
     policy_number: str | None = None,
     billing_cycle: str | None = None,
     lead_source: str | None = None,
+    client_phone: str | None = None,
     view: str | None = 'downlines',
     effective_date_sort: str | None = None,
     include_full_agency: bool = False,
@@ -88,6 +89,7 @@ def get_book_of_business(
         policy_number: Filter by exact policy number (P2-027)
         billing_cycle: Filter by billing frequency (P2-027)
         lead_source: Filter by lead source (P2-027)
+        client_phone: Filter by client phone number
         view: Scope - 'self', 'downlines', 'all' (P2-027)
         effective_date_sort: Sort direction - 'oldest', 'newest' (P2-027)
         include_full_agency: If True and user is admin, include all agency deals
@@ -180,6 +182,12 @@ def get_book_of_business(
         search_pattern = f"%{search_query}%"
         params.extend([search_pattern, search_pattern, search_pattern, search_pattern])
 
+    if client_phone:
+        # Normalize phone: remove non-digits for comparison
+        normalized_phone = ''.join(filter(str.isdigit, client_phone))
+        where_clauses.append("REGEXP_REPLACE(cl.phone, '[^0-9]', '', 'g') LIKE %s")
+        params.append(f"%{normalized_phone}%")
+
     # Determine sort order (P2-027)
     if effective_date_sort == 'oldest':
         order_direction = 'ASC'
@@ -215,11 +223,22 @@ def get_book_of_business(
             d.lead_source,
             d.created_at,
             d.updated_at,
-            cl.id as client_id,
-            cl.first_name as client_first_name,
-            cl.last_name as client_last_name,
-            cl.email as client_email,
-            cl.phone as client_phone,
+            d.client_name,
+            d.client_phone as deal_client_phone,
+            d.client_email as deal_client_email,
+            d.client_address,
+            d.client_gender,
+            d.date_of_birth,
+            d.ssn_last_4,
+            d.ssn_benefit,
+            d.face_value,
+            d.issue_age,
+            d.notes,
+            d.application_number,
+            d.lapse_date,
+            d.state,
+            d.zipcode,
+            d.payment_method,
             ca.id as carrier_id,
             ca.name as carrier_name,
             p.id as product_id,
@@ -229,7 +248,6 @@ def get_book_of_business(
             u.last_name as agent_last_name,
             u.email as agent_email
         FROM public.deals d
-        LEFT JOIN public.clients cl ON cl.id = d.client_id
         LEFT JOIN public.carriers ca ON ca.id = d.carrier_id
         LEFT JOIN public.products p ON p.id = d.product_id
         LEFT JOIN public.users u ON u.id = d.agent_id
@@ -258,26 +276,44 @@ def get_book_of_business(
             deal_agent_id = deal['agent_id']
             can_view_full_phone = is_admin or (deal_agent_id and str(deal_agent_id) == str(user.id))
 
+            # Parse client name into first/last name if available
+            client_name = deal.get('client_name') or ''
+            client_name_parts = client_name.split(' ', 1) if client_name else ['', '']
+            client_first_name = client_name_parts[0] if client_name_parts else ''
+            client_last_name = client_name_parts[1] if len(client_name_parts) > 1 else ''
+
             deals.append({
                 'id': str(deal['id']),
                 'policy_number': deal['policy_number'],
+                'application_number': deal.get('application_number'),
                 'status': deal['status'],
                 'status_standardized': deal['status_standardized'],
                 'annual_premium': float(deal['annual_premium']) if deal['annual_premium'] else None,
                 'monthly_premium': float(deal['monthly_premium']) if deal['monthly_premium'] else None,
                 'policy_effective_date': deal['policy_effective_date'].isoformat() if deal['policy_effective_date'] else None,
                 'submission_date': deal['submission_date'].isoformat() if deal['submission_date'] else None,
-                'billing_cycle': deal.get('billing_cycle'),  # P2-027
-                'lead_source': deal.get('lead_source'),  # P2-027
+                'lapse_date': deal['lapse_date'].isoformat() if deal.get('lapse_date') else None,
+                'billing_cycle': deal.get('billing_cycle'),
+                'lead_source': deal.get('lead_source'),
+                'notes': deal.get('notes'),
+                'face_value': float(deal['face_value']) if deal.get('face_value') else None,
+                'issue_age': float(deal['issue_age']) if deal.get('issue_age') else None,
+                'payment_method': deal.get('payment_method'),
                 'created_at': deal['created_at'].isoformat() if deal['created_at'] else None,
                 'client': {
-                    'id': str(deal['client_id']) if deal['client_id'] else None,
-                    'first_name': deal['client_first_name'],
-                    'last_name': deal['client_last_name'],
-                    'email': deal['client_email'],
-                    'phone': mask_phone_number(deal['client_phone'], can_view_full_phone),  # P2-027: masked
-                    'name': f"{deal['client_first_name'] or ''} {deal['client_last_name'] or ''}".strip(),
-                } if deal['client_id'] else None,
+                    'name': client_name,
+                    'first_name': client_first_name,
+                    'last_name': client_last_name,
+                    'email': deal.get('deal_client_email'),
+                    'phone': mask_phone_number(deal.get('deal_client_phone'), can_view_full_phone),
+                    'address': deal.get('client_address'),
+                    'gender': deal.get('client_gender'),
+                    'date_of_birth': deal['date_of_birth'].isoformat() if deal.get('date_of_birth') else None,
+                    'ssn_last_4': deal.get('ssn_last_4') if can_view_full_phone else None,
+                    'ssn_benefit': deal.get('ssn_benefit'),
+                    'state': deal.get('state'),
+                    'zipcode': deal.get('zipcode'),
+                } if client_name or deal.get('deal_client_phone') or deal.get('deal_client_email') else None,
                 'carrier': {
                     'id': str(deal['carrier_id']) if deal['carrier_id'] else None,
                     'name': deal['carrier_name'],
@@ -521,4 +557,144 @@ def get_products_by_carrier(user: AuthenticatedUser, carrier_id: UUID) -> list[d
 
     except Exception as e:
         logger.error(f'Error getting products by carrier: {e}')
+        raise
+
+
+def find_deal_by_client_phone(phone: str, agency_id: str) -> dict | None:
+    """
+    Find a deal by client phone number within an agency.
+
+    Searches multiple phone format variations to handle different formats.
+
+    Args:
+        phone: The client phone number to search for
+        agency_id: The agency ID to search within
+
+    Returns:
+        Deal dict with agent info if found, None otherwise
+    """
+    import re
+
+    # Normalize phone number for comparison (remove all non-digits)
+    normalized = re.sub(r'\D', '', phone)
+
+    # Generate phone format variations to search
+    phone_variations = [
+        normalized,                                  # e.g., "6692456363"
+        f'+1{normalized}' if len(normalized) == 10 else f'+{normalized}',  # e.g., "+16692456363"
+        f'1{normalized}' if len(normalized) == 10 else normalized,         # e.g., "16692456363"
+    ]
+
+    # Add formatted versions if we have 10 digits
+    if len(normalized) == 10:
+        phone_variations.extend([
+            f'({normalized[:3]}) {normalized[3:6]}-{normalized[6:]}',  # (669) 245-6363
+            f'{normalized[:3]}-{normalized[3:6]}-{normalized[6:]}',    # 669-245-6363
+        ])
+
+    try:
+        for variation in phone_variations:
+            with connection.cursor() as cursor:
+                cursor.execute("""
+                    SELECT
+                        d.id,
+                        d.policy_number,
+                        d.status,
+                        d.status_standardized,
+                        d.client_name,
+                        d.client_phone,
+                        d.client_email,
+                        d.annual_premium,
+                        d.monthly_premium,
+                        d.policy_effective_date,
+                        u.id as agent_id,
+                        u.first_name as agent_first_name,
+                        u.last_name as agent_last_name,
+                        u.phone_number as agent_phone,
+                        u.agency_id as agent_agency_id
+                    FROM public.deals d
+                    JOIN public.users u ON u.id = d.agent_id
+                    WHERE d.client_phone = %s
+                        AND d.agency_id = %s
+                    ORDER BY d.created_at DESC
+                    LIMIT 1
+                """, [variation, agency_id])
+                row = cursor.fetchone()
+
+            if row:
+                return {
+                    'id': str(row[0]),
+                    'policy_number': row[1],
+                    'status': row[2],
+                    'status_standardized': row[3],
+                    'client_name': row[4],
+                    'client_phone': row[5],
+                    'client_email': row[6],
+                    'annual_premium': float(row[7]) if row[7] else None,
+                    'monthly_premium': float(row[8]) if row[8] else None,
+                    'policy_effective_date': row[9].isoformat() if row[9] else None,
+                    'agent': {
+                        'id': str(row[10]),
+                        'first_name': row[11],
+                        'last_name': row[12],
+                        'phone_number': row[13],
+                        'agency_id': str(row[14]) if row[14] else None,
+                        'name': f"{row[11] or ''} {row[12] or ''}".strip(),
+                    }
+                }
+
+        # If no exact match found, try pattern matching with LIKE
+        with connection.cursor() as cursor:
+            cursor.execute("""
+                SELECT
+                    d.id,
+                    d.policy_number,
+                    d.status,
+                    d.status_standardized,
+                    d.client_name,
+                    d.client_phone,
+                    d.client_email,
+                    d.annual_premium,
+                    d.monthly_premium,
+                    d.policy_effective_date,
+                    u.id as agent_id,
+                    u.first_name as agent_first_name,
+                    u.last_name as agent_last_name,
+                    u.phone_number as agent_phone,
+                    u.agency_id as agent_agency_id
+                FROM public.deals d
+                JOIN public.users u ON u.id = d.agent_id
+                WHERE REGEXP_REPLACE(d.client_phone, '[^0-9]', '', 'g') = %s
+                    AND d.agency_id = %s
+                ORDER BY d.created_at DESC
+                LIMIT 1
+            """, [normalized, agency_id])
+            row = cursor.fetchone()
+
+        if row:
+            return {
+                'id': str(row[0]),
+                'policy_number': row[1],
+                'status': row[2],
+                'status_standardized': row[3],
+                'client_name': row[4],
+                'client_phone': row[5],
+                'client_email': row[6],
+                'annual_premium': float(row[7]) if row[7] else None,
+                'monthly_premium': float(row[8]) if row[8] else None,
+                'policy_effective_date': row[9].isoformat() if row[9] else None,
+                'agent': {
+                    'id': str(row[10]),
+                    'first_name': row[11],
+                    'last_name': row[12],
+                    'phone_number': row[13],
+                    'agency_id': str(row[14]) if row[14] else None,
+                    'name': f"{row[11] or ''} {row[12] or ''}".strip(),
+                }
+            }
+
+        return None
+
+    except Exception as e:
+        logger.error(f'Error finding deal by client phone: {e}')
         raise

@@ -81,6 +81,9 @@ SUPABASE_ANON_KEY = 'test-anon-key'
 SUPABASE_SERVICE_ROLE_KEY = 'test-service-role-key'
 SUPABASE_JWT_SECRET = 'test-jwt-secret-key-for-testing-purposes-only'
 
+# Cron authentication secret for testing
+CRON_SECRET = 'test-cron-secret'
+
 # =============================================================================
 # CORS - Allow all for tests
 # =============================================================================

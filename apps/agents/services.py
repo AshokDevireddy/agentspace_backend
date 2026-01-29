@@ -144,3 +144,98 @@ def assign_position_to_agent(
         if row:
             return dict(zip(columns, row, strict=False))
         return None
+
+
+@transaction.atomic
+def invite_agent(
+    *,
+    inviter_id: UUID,
+    agency_id: UUID,
+    email: str,
+    first_name: str,
+    last_name: str,
+    phone_number: str | None = None,
+    position_id: UUID | None = None,
+) -> dict:
+    """
+    Invite a new agent to the agency.
+    Creates a user record with status='invited' and sets upline to inviter.
+
+    Args:
+        inviter_id: The inviting user's ID (becomes upline)
+        agency_id: The agency UUID
+        email: Invited agent's email
+        first_name: Invited agent's first name
+        last_name: Invited agent's last name
+        phone_number: Optional phone number
+        position_id: Optional position ID
+
+    Returns:
+        Dictionary with invited user details or error
+    """
+    import uuid
+
+    email = email.strip().lower()
+
+    with connection.cursor() as cursor:
+        # Check if user already exists in this agency
+        cursor.execute("""
+            SELECT id, status FROM users
+            WHERE email = %s AND agency_id = %s
+            LIMIT 1
+        """, [email, str(agency_id)])
+
+        existing = cursor.fetchone()
+        if existing:
+            existing_id, existing_status = existing
+            if existing_status == 'active':
+                return {'success': False, 'error': 'User with this email already exists'}
+            if existing_status == 'invited':
+                return {
+                    'success': True,
+                    'user_id': str(existing_id),
+                    'message': 'User already invited - resend invite email'
+                }
+
+        # Validate position if provided
+        if position_id:
+            cursor.execute("""
+                SELECT id FROM positions
+                WHERE id = %s AND agency_id = %s
+            """, [str(position_id), str(agency_id)])
+            if not cursor.fetchone():
+                return {'success': False, 'error': 'Invalid position'}
+
+        # Create invited user
+        new_user_id = uuid.uuid4()
+        cursor.execute("""
+            INSERT INTO users (
+                id, email, first_name, last_name, phone_number,
+                agency_id, upline_id, position_id, role, status,
+                created_at, updated_at
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'agent', 'invited', NOW(), NOW())
+            RETURNING id, email, first_name, last_name, status
+        """, [
+            str(new_user_id),
+            email,
+            first_name.strip(),
+            last_name.strip(),
+            phone_number.strip() if phone_number else None,
+            str(agency_id),
+            str(inviter_id),
+            str(position_id) if position_id else None,
+        ])
+
+        row = cursor.fetchone()
+        if not row:
+            return {'success': False, 'error': 'Failed to create user'}
+
+        return {
+            'success': True,
+            'user_id': str(row[0]),
+            'email': row[1],
+            'first_name': row[2],
+            'last_name': row[3],
+            'status': row[4],
+        }

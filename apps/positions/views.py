@@ -21,6 +21,7 @@ from rest_framework.views import APIView
 from apps.core.authentication import get_user_context
 
 from .selectors import (
+    get_all_position_product_commissions,
     get_position_by_id,
     get_position_product_commissions,
     get_positions_for_agency,
@@ -415,5 +416,63 @@ class SyncCommissionsView(APIView):
             logger.error(f'Commission sync failed: {e}')
             return Response(
                 {'error': 'Failed to sync commissions', 'detail': str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
+class AllPositionCommissionsView(APIView):
+    """
+    GET /api/positions/all-commissions
+
+    Get all product commissions for all positions in user's agency.
+    Replaces Supabase RPC: get_position_product_commissions
+
+    Query params:
+        carrier_id: Optional carrier UUID to filter by
+
+    Response (200):
+        [
+            {
+                "commission_id": "uuid",
+                "position_id": "uuid",
+                "position_name": "Agent",
+                "position_level": 1,
+                "product_id": "uuid",
+                "product_name": "Term Life 20",
+                "carrier_id": "uuid",
+                "carrier_name": "Carrier Name",
+                "commission_percentage": 50.00
+            }
+        ]
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = get_user_context(request)
+        if not user:
+            return Response(
+                {'error': 'Unauthorized', 'detail': 'Authentication required'},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
+        carrier_id_str = request.query_params.get('carrier_id')
+        carrier_id = None
+
+        if carrier_id_str:
+            try:
+                carrier_id = UUID(carrier_id_str)
+            except ValueError:
+                return Response(
+                    {'error': 'Invalid carrier_id', 'detail': 'carrier_id must be a valid UUID'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+        try:
+            commissions = get_all_position_product_commissions(user.id, carrier_id)
+            return Response(commissions)
+        except Exception as e:
+            logger.error(f'All position commissions failed: {e}')
+            return Response(
+                {'error': 'Failed to fetch commissions', 'detail': str(e)},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )

@@ -12,6 +12,7 @@ urlpatterns = [
     path('names', views.CarrierNamesView.as_view(), name='carriers_names'),
     path('agency', views.AgencyCarriersView.as_view(), name='carriers_agency'),
     path('with-products', views.CarriersWithProductsView.as_view(), name='carriers_with_products'),
+    path('logins', views.CarrierLoginsView.as_view(), name='carriers_logins'),
 
     # Status endpoints (P1-020)
     path('statuses', views.StatusMappingsView.as_view(), name='status_mappings'),

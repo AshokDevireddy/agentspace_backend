@@ -19,6 +19,13 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
+class BeneficiaryInput:
+    """Input data for a beneficiary."""
+    name: str | None = None
+    relationship: str | None = None
+
+
+@dataclass
 class DealCreateInput:
     """Input data for creating a deal."""
     agency_id: UUID
@@ -27,6 +34,7 @@ class DealCreateInput:
     carrier_id: UUID | None = None
     product_id: UUID | None = None
     policy_number: str | None = None
+    application_number: str | None = None
     status: str | None = None
     status_standardized: str | None = None
     annual_premium: Decimal | None = None
@@ -34,7 +42,19 @@ class DealCreateInput:
     policy_effective_date: str | None = None
     submission_date: str | None = None
     billing_cycle: str | None = None
+    billing_day_of_month: int | None = None
+    billing_weekday: str | None = None
     lead_source: str | None = None
+    # Client fields (for when client_id is not provided)
+    client_name: str | None = None
+    client_email: str | None = None
+    client_phone: str | None = None
+    client_address: str | None = None
+    date_of_birth: str | None = None
+    ssn_last_4: str | None = None
+    ssn_benefit: bool | None = None
+    notes: str | None = None
+    beneficiaries: list[BeneficiaryInput] | None = None
 
 
 @dataclass
@@ -44,6 +64,7 @@ class DealUpdateInput:
     carrier_id: UUID | None = None
     product_id: UUID | None = None
     policy_number: str | None = None
+    application_number: str | None = None
     status: str | None = None
     status_standardized: str | None = None
     annual_premium: Decimal | None = None
@@ -51,7 +72,264 @@ class DealUpdateInput:
     policy_effective_date: str | None = None
     submission_date: str | None = None
     billing_cycle: str | None = None
+    billing_day_of_month: int | None = None
+    billing_weekday: str | None = None
     lead_source: str | None = None
+    # Client fields
+    client_name: str | None = None
+    client_email: str | None = None
+    client_phone: str | None = None
+    client_address: str | None = None
+    date_of_birth: str | None = None
+    ssn_last_4: str | None = None
+    ssn_benefit: bool | None = None
+    notes: str | None = None
+    beneficiaries: list[BeneficiaryInput] | None = None
+
+
+class DealValidationError(Exception):
+    """Custom exception for deal validation errors."""
+    def __init__(self, message: str, code: str = 'validation_error', details: dict | None = None):
+        super().__init__(message)
+        self.message = message
+        self.code = code
+        self.details = details or {}
+
+
+class DealLimitReachedError(DealValidationError):
+    """Exception raised when free tier deal limit is reached."""
+    def __init__(self):
+        super().__init__(
+            message='You have reached the maximum of 10 deals on the Free plan. Please upgrade your subscription to create more deals.',
+            code='limit_reached',
+        )
+
+
+class PhoneAlreadyExistsError(DealValidationError):
+    """Exception raised when phone number already exists for another deal."""
+    def __init__(self, phone: str, existing_deal: dict):
+        super().__init__(
+            message=f"Phone number {phone} already exists for another deal in your agency ({existing_deal['client_name']}, Policy: {existing_deal['policy_number'] or 'N/A'}). Each deal must have a unique phone number within the agency.",
+            code='phone_exists',
+            details={'existing_deal_id': existing_deal['id']},
+        )
+
+
+class UplinePositionError(DealValidationError):
+    """Exception raised when agents in upline don't have positions."""
+    def __init__(self, agents_without_positions: list[dict]):
+        names = ', '.join(a['name'] for a in agents_without_positions)
+        super().__init__(
+            message=f"Cannot create deal: The following agents in the upline hierarchy do not have positions assigned: {names}. All agents in the upline must have positions set before deals can be created.",
+            code='missing_positions',
+            details={'agents_without_positions': agents_without_positions},
+        )
+
+
+class CommissionMappingError(DealValidationError):
+    """Exception raised when commission mappings are missing."""
+    def __init__(self, positions_without_commissions: list[str]):
+        super().__init__(
+            message='Cannot create deal: Commission percentages are not configured for some positions in the upline hierarchy. Please contact your administrator to set up commission mappings for this product.',
+            code='missing_commissions',
+            details={'positions_without_commissions': positions_without_commissions},
+        )
+
+
+def normalize_phone_for_storage(phone: str | None) -> str | None:
+    """Normalize phone number to E.164 format for storage."""
+    if not phone:
+        return None
+    # Remove all non-digit characters
+    digits = ''.join(c for c in phone if c.isdigit())
+    if len(digits) == 10:
+        return f'+1{digits}'
+    if len(digits) == 11 and digits.startswith('1'):
+        return f'+{digits}'
+    # Return as-is if we can't normalize
+    return phone
+
+
+def _check_subscription_limit(cursor, agent_id: UUID) -> None:
+    """
+    Check if agent has reached their deal creation limit on free tier.
+
+    Raises:
+        DealLimitReachedError: If limit is reached
+    """
+    cursor.execute("""
+        SELECT subscription_tier, deals_created_count
+        FROM public.users
+        WHERE id = %s
+    """, [str(agent_id)])
+    row = cursor.fetchone()
+
+    if row:
+        subscription_tier = row[0] or 'free'
+        deals_created = row[1] or 0
+        if subscription_tier == 'free' and deals_created >= 10:
+            raise DealLimitReachedError()
+
+
+def _check_phone_uniqueness(cursor, phone: str, agency_id: UUID, exclude_deal_id: UUID | None = None) -> None:
+    """
+    Check if phone number already exists for another deal in the agency.
+
+    Raises:
+        PhoneAlreadyExistsError: If phone exists for another deal
+    """
+    normalized_phone = normalize_phone_for_storage(phone)
+    if not normalized_phone:
+        return
+
+    query = """
+        SELECT id, client_name, policy_number
+        FROM public.deals
+        WHERE client_phone = %s AND agency_id = %s
+    """
+    params: list[Any] = [normalized_phone, str(agency_id)]
+
+    if exclude_deal_id:
+        query += " AND id != %s"
+        params.append(str(exclude_deal_id))
+
+    query += " LIMIT 1"
+    cursor.execute(query, params)
+    row = cursor.fetchone()
+
+    if row:
+        raise PhoneAlreadyExistsError(
+            phone=phone,
+            existing_deal={
+                'id': str(row[0]),
+                'client_name': row[1],
+                'policy_number': row[2],
+            },
+        )
+
+
+def _validate_upline_positions(cursor, agent_id: UUID, product_id: UUID | None) -> None:
+    """
+    Validate that all agents in the upline have positions and commission mappings.
+
+    Raises:
+        UplinePositionError: If agents are missing positions
+        CommissionMappingError: If commission mappings are missing
+    """
+    # Get upline chain with positions
+    cursor.execute("""
+        WITH RECURSIVE upline_chain AS (
+            SELECT
+                id,
+                upline_id,
+                position_id,
+                first_name,
+                last_name,
+                0 as hierarchy_level
+            FROM public.users
+            WHERE id = %s
+
+            UNION ALL
+
+            SELECT
+                u.id,
+                u.upline_id,
+                u.position_id,
+                u.first_name,
+                u.last_name,
+                uc.hierarchy_level + 1
+            FROM public.users u
+            JOIN upline_chain uc ON u.id = uc.upline_id
+            WHERE uc.hierarchy_level < 20
+        )
+        SELECT id, position_id, first_name, last_name
+        FROM upline_chain
+    """, [str(agent_id)])
+
+    rows = cursor.fetchall()
+    if not rows:
+        raise DealValidationError(
+            message='No upline hierarchy found for this agent. Cannot create deal.',
+            code='no_upline',
+        )
+
+    # Check for agents without positions
+    agents_without_positions = []
+    position_ids = set()
+    for row in rows:
+        agent_uuid, position_id, first_name, last_name = row
+        if not position_id:
+            agents_without_positions.append({
+                'id': str(agent_uuid),
+                'name': f'{first_name or ""} {last_name or ""}'.strip(),
+            })
+        else:
+            position_ids.add(str(position_id))
+
+    if agents_without_positions:
+        raise UplinePositionError(agents_without_positions)
+
+    # Check commission mappings if product_id is provided
+    if product_id and position_ids:
+        cursor.execute("""
+            SELECT position_id
+            FROM public.position_product_commissions
+            WHERE product_id = %s AND position_id = ANY(%s)
+        """, [str(product_id), list(position_ids)])
+
+        positions_with_commissions = {str(row[0]) for row in cursor.fetchall()}
+        positions_without_commissions = position_ids - positions_with_commissions
+
+        if positions_without_commissions:
+            raise CommissionMappingError(list(positions_without_commissions))
+
+
+def _upsert_beneficiaries(cursor, deal_id: UUID, agency_id: UUID, beneficiaries: list[BeneficiaryInput] | None) -> None:
+    """
+    Upsert beneficiaries for a deal (delete existing and insert new).
+    """
+    # Delete existing beneficiaries
+    cursor.execute("""
+        DELETE FROM public.beneficiaries WHERE deal_id = %s
+    """, [str(deal_id)])
+
+    if not beneficiaries:
+        return
+
+    # Normalize and insert beneficiaries
+    for beneficiary in beneficiaries:
+        raw_name = (beneficiary.name or '').strip()
+        if not raw_name:
+            continue
+
+        # Split name into first and last
+        first_space = raw_name.find(' ')
+        if first_space != -1:
+            first_name = raw_name[:first_space].strip()
+            last_name = raw_name[first_space:].strip() or None
+        else:
+            first_name = raw_name
+            last_name = None
+
+        if not first_name:
+            continue
+
+        relationship = (beneficiary.relationship or '').strip() or None
+        beneficiary_id = uuid.uuid4()
+
+        cursor.execute("""
+            INSERT INTO public.beneficiaries (id, deal_id, agency_id, first_name, last_name, relationship)
+            VALUES (%s, %s, %s, %s, %s, %s)
+        """, [str(beneficiary_id), str(deal_id), str(agency_id), first_name, last_name, relationship])
+
+
+def _increment_deals_created_count(cursor, agent_id: UUID) -> None:
+    """Increment the deals_created_count for an agent."""
+    cursor.execute("""
+        UPDATE public.users
+        SET deals_created_count = COALESCE(deals_created_count, 0) + 1
+        WHERE id = %s
+    """, [str(agent_id)])
 
 
 def create_deal(
@@ -61,32 +339,55 @@ def create_deal(
     """
     Create a new deal and capture hierarchy snapshot.
 
+    Includes validations for:
+    - Subscription tier limits (free users limited to 10 deals)
+    - Phone number uniqueness within agency
+    - Upline position assignments
+    - Commission mapping existence
+
     Args:
         user: The authenticated user creating the deal
         data: Deal creation data
 
     Returns:
-        Created deal dict
+        Created deal dict with 'operation' key set to 'created'
 
     Raises:
-        ValueError: If validation fails
+        DealLimitReachedError: If free tier limit reached
+        PhoneAlreadyExistsError: If phone already exists
+        UplinePositionError: If upline agents missing positions
+        CommissionMappingError: If commission mappings missing
         Exception: On database errors
     """
     deal_id = uuid.uuid4()
+    normalized_phone = normalize_phone_for_storage(data.client_phone)
 
     with transaction.atomic(), connection.cursor() as cursor:
-        # Insert the deal
+        # Step 1: Check subscription limits for free users
+        _check_subscription_limit(cursor, data.agent_id)
+
+        # Step 2: Check phone uniqueness within agency
+        if normalized_phone:
+            _check_phone_uniqueness(cursor, data.client_phone or '', data.agency_id)
+
+        # Step 3: Validate upline positions and commission mappings
+        if data.product_id:
+            _validate_upline_positions(cursor, data.agent_id, data.product_id)
+
+        # Step 4: Insert the deal with all fields
         cursor.execute("""
-                INSERT INTO public.deals (
-                    id, agency_id, agent_id, client_id, carrier_id, product_id,
-                    policy_number, status, status_standardized,
-                    annual_premium, monthly_premium,
-                    policy_effective_date, submission_date,
-                    billing_cycle, lead_source
-                )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                RETURNING id, created_at, updated_at
-            """, [
+            INSERT INTO public.deals (
+                id, agency_id, agent_id, client_id, carrier_id, product_id,
+                policy_number, application_number, status, status_standardized,
+                annual_premium, monthly_premium,
+                policy_effective_date, submission_date,
+                billing_cycle, billing_day_of_month, billing_weekday,
+                lead_source, client_name, client_email, client_phone,
+                client_address, date_of_birth, ssn_last_4, ssn_benefit, notes
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            RETURNING id, created_at, updated_at
+        """, [
             str(deal_id),
             str(data.agency_id),
             str(data.agent_id),
@@ -94,6 +395,7 @@ def create_deal(
             str(data.carrier_id) if data.carrier_id else None,
             str(data.product_id) if data.product_id else None,
             data.policy_number,
+            data.application_number,
             data.status,
             data.status_standardized or 'pending',
             float(data.annual_premium) if data.annual_premium else None,
@@ -101,18 +403,37 @@ def create_deal(
             data.policy_effective_date,
             data.submission_date,
             data.billing_cycle,
+            data.billing_day_of_month,
+            data.billing_weekday,
             data.lead_source,
+            data.client_name,
+            data.client_email,
+            normalized_phone,
+            data.client_address,
+            data.date_of_birth,
+            data.ssn_last_4,
+            data.ssn_benefit,
+            data.notes,
         ])
         deal_row = cursor.fetchone()
 
         if not deal_row:
             raise Exception("Failed to create deal")
 
-        # Capture hierarchy snapshot
+        # Step 5: Insert beneficiaries
+        _upsert_beneficiaries(cursor, deal_id, data.agency_id, data.beneficiaries)
+
+        # Step 6: Increment deals_created_count for the agent
+        _increment_deals_created_count(cursor, data.agent_id)
+
+        # Step 7: Capture hierarchy snapshot
         _capture_hierarchy_snapshot(cursor, deal_id, data.agent_id, data.product_id)
 
     # Fetch and return the complete deal
     result = get_deal_by_id(deal_id, user)
+    if result:
+        result['operation'] = 'created'
+        result['message'] = 'Deal created successfully'
     return result if result is not None else {}
 
 
@@ -124,6 +445,8 @@ def update_deal(
     """
     Update an existing deal.
 
+    Includes phone uniqueness validation when client_phone is being updated.
+
     Args:
         deal_id: The deal ID to update
         user: The authenticated user
@@ -133,6 +456,7 @@ def update_deal(
         Updated deal dict or None if not found
 
     Raises:
+        PhoneAlreadyExistsError: If phone already exists for another deal
         ValueError: If validation fails
     """
     # Build dynamic UPDATE query based on provided fields
@@ -154,6 +478,10 @@ def update_deal(
     if data.policy_number is not None:
         updates.append("policy_number = %s")
         params.append(data.policy_number)
+
+    if data.application_number is not None:
+        updates.append("application_number = %s")
+        params.append(data.application_number)
 
     if data.status is not None:
         updates.append("status = %s")
@@ -183,22 +511,69 @@ def update_deal(
         updates.append("billing_cycle = %s")
         params.append(data.billing_cycle)
 
+    if data.billing_day_of_month is not None:
+        updates.append("billing_day_of_month = %s")
+        params.append(data.billing_day_of_month)
+
+    if data.billing_weekday is not None:
+        updates.append("billing_weekday = %s")
+        params.append(data.billing_weekday)
+
     if data.lead_source is not None:
         updates.append("lead_source = %s")
         params.append(data.lead_source)
+
+    if data.client_name is not None:
+        updates.append("client_name = %s")
+        params.append(data.client_name)
+
+    if data.client_email is not None:
+        updates.append("client_email = %s")
+        params.append(data.client_email)
+
+    if data.client_address is not None:
+        updates.append("client_address = %s")
+        params.append(data.client_address)
+
+    if data.date_of_birth is not None:
+        updates.append("date_of_birth = %s")
+        params.append(data.date_of_birth)
+
+    if data.ssn_last_4 is not None:
+        updates.append("ssn_last_4 = %s")
+        params.append(data.ssn_last_4)
+
+    if data.ssn_benefit is not None:
+        updates.append("ssn_benefit = %s")
+        params.append(data.ssn_benefit)
+
+    if data.notes is not None:
+        updates.append("notes = %s")
+        params.append(data.notes)
+
+    # Handle client_phone with uniqueness validation
+    normalized_phone = None
+    if data.client_phone is not None:
+        normalized_phone = normalize_phone_for_storage(data.client_phone)
+        updates.append("client_phone = %s")
+        params.append(normalized_phone)
 
     if not updates:
         # Nothing to update, just return current deal
         return get_deal_by_id(deal_id, user)
 
-    # Add updated_at
-    updates.append("updated_at = NOW()")
+    with transaction.atomic(), connection.cursor() as cursor:
+        # Validate phone uniqueness if phone is being updated
+        if data.client_phone is not None and normalized_phone:
+            _check_phone_uniqueness(cursor, data.client_phone, user.agency_id, exclude_deal_id=deal_id)
 
-    # Build and execute query
-    update_sql = ", ".join(updates)
-    params.extend([str(deal_id), str(user.agency_id)])
+        # Add updated_at
+        updates.append("updated_at = NOW()")
 
-    with connection.cursor() as cursor:
+        # Build and execute query
+        update_sql = ", ".join(updates)
+        params.extend([str(deal_id), str(user.agency_id)])
+
         cursor.execute(f"""
             UPDATE public.deals
             SET {update_sql}
@@ -209,6 +584,18 @@ def update_deal(
         row = cursor.fetchone()
         if not row:
             return None
+
+        # Update beneficiaries if provided
+        if data.beneficiaries is not None:
+            _upsert_beneficiaries(cursor, deal_id, user.agency_id, data.beneficiaries)
+
+        # Update conversation phone if client_phone changed
+        if normalized_phone:
+            cursor.execute("""
+                UPDATE public.conversations
+                SET client_phone = %s
+                WHERE deal_id = %s AND is_active = true
+            """, [normalized_phone, str(deal_id)])
 
     return get_deal_by_id(deal_id, user)
 
@@ -252,6 +639,39 @@ def update_deal_status(
             return None
 
     return get_deal_by_id(deal_id, user)
+
+
+def update_deal_status_standardized(
+    deal_id: UUID,
+    user: AuthenticatedUser,
+    new_status_standardized: str,
+) -> bool:
+    """
+    Update only the status_standardized field of a deal.
+
+    This is used by cron jobs to update notification status without
+    requiring the raw status field. Allows any status_standardized value.
+
+    Args:
+        deal_id: The deal ID
+        user: The authenticated user
+        new_status_standardized: New standardized status value
+
+    Returns:
+        True if updated, False if not found or not accessible
+    """
+    with connection.cursor() as cursor:
+        cursor.execute("""
+            UPDATE public.deals
+            SET
+                status_standardized = %s,
+                updated_at = NOW()
+            WHERE id = %s AND agency_id = %s
+            RETURNING id
+        """, [new_status_standardized, str(deal_id), str(user.agency_id)])
+
+        row = cursor.fetchone()
+        return row is not None
 
 
 def delete_deal(

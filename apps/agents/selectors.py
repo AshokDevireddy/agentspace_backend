@@ -638,8 +638,14 @@ def get_agents_debt_production(
     Calculate debt and production metrics for agents.
     Translated from Supabase RPC: get_agents_debt_production
 
-    Note: Kept as raw SQL due to complex multi-CTE aggregations.
-    This is a P4 function - too complex for ORM conversion.
+    Implements time-based debt proration matching RPC logic:
+    - Early lapse (≤30 days): Full commission is debt
+    - Late lapse (>30 days): Prorated over 9 months based on months elapsed
+
+    Uses:
+    - deal_hierarchy_snapshot.commission_percentage for debt weighting
+    - status_mapping.impact = 'negative' for status detection
+    - Production includes non-negative deals AND lapsed deals >7 days
 
     Args:
         user_id: The requesting user's ID
@@ -657,107 +663,193 @@ def get_agents_debt_production(
         # Convert UUIDs to strings for SQL
         agent_ids_str = [str(aid) for aid in agent_ids]
 
+        # Get user's agency for security filtering
+        cursor.execute(
+            "SELECT agency_id FROM users WHERE id = %s",
+            [str(user_id)]
+        )
+        user_row = cursor.fetchone()
+        if not user_row:
+            return []
+        user_agency_id = str(user_row[0])
+
         cursor.execute("""
-            WITH agent_list AS (
-                SELECT unnest(%s::uuid[]) as agent_id
-            ),
-            -- Individual production (writing agent's own deals)
-            individual_prod AS (
+            WITH RECURSIVE
+            -- Step 1: Build hierarchy tree for all requested agents
+            agent_tree AS (
+                -- Base case: each agent is their own root
                 SELECT
-                    d.agent_id,
-                    COALESCE(SUM(COALESCE(d.annual_premium, 0)), 0) as individual_production,
-                    COUNT(*) as individual_production_count
-                FROM deals d
-                JOIN agent_list al ON al.agent_id = d.agent_id
-                WHERE d.policy_effective_date >= %s::date
-                    AND d.policy_effective_date < %s::date
-                    AND d.status_standardized NOT IN ('cancelled', 'lapsed', 'terminated')
-                GROUP BY d.agent_id
-            ),
-            -- Hierarchy production (deals from downlines via deal_hierarchy_snapshot)
-            hierarchy_prod AS (
+                    u.id as root_agent_id,
+                    u.id as descendant_id,
+                    0 as depth
+                FROM users u
+                WHERE u.id = ANY(%s::uuid[])
+                    AND u.agency_id = %s::uuid
+
+                UNION ALL
+
+                -- Recursive case: find all downlines
                 SELECT
-                    dhs.agent_id,
-                    COALESCE(SUM(COALESCE(d.annual_premium, 0)), 0) as hierarchy_production,
-                    COUNT(*) as hierarchy_production_count
-                FROM deal_hierarchy_snapshots dhs
-                JOIN deals d ON d.id = dhs.deal_id
-                JOIN agent_list al ON al.agent_id = dhs.agent_id
-                WHERE d.policy_effective_date >= %s::date
-                    AND d.policy_effective_date < %s::date
-                    AND d.status_standardized NOT IN ('cancelled', 'lapsed', 'terminated')
-                    AND dhs.agent_id <> d.agent_id
-                GROUP BY dhs.agent_id
+                    at.root_agent_id,
+                    u.id as descendant_id,
+                    at.depth + 1
+                FROM agent_tree at
+                JOIN users u ON u.upline_id = at.descendant_id
+                WHERE u.agency_id = %s::uuid
             ),
-            -- Individual debt (lapsed deals where agent is writing agent)
-            individual_debt AS (
-                SELECT
-                    d.agent_id,
-                    COALESCE(SUM(
-                        CASE
-                            WHEN d.status_standardized IN ('lapsed', 'cancelled', 'terminated')
-                            THEN COALESCE(d.annual_premium, 0) * 0.75
-                            ELSE 0
-                        END
-                    ), 0) as individual_debt,
-                    COUNT(*) FILTER (
-                        WHERE d.status_standardized IN ('lapsed', 'cancelled', 'terminated')
-                    ) as individual_debt_count
-                FROM deals d
-                JOIN agent_list al ON al.agent_id = d.agent_id
-                WHERE d.policy_effective_date >= %s::date
-                    AND d.policy_effective_date < %s::date
-                GROUP BY d.agent_id
-            ),
-            -- Hierarchy debt (lapsed deals from downlines)
-            hierarchy_debt AS (
+
+            -- Step 2: Calculate individual debt for each agent using time-based proration
+            individual_debt_calc AS (
                 SELECT
                     dhs.agent_id,
                     COALESCE(SUM(
                         CASE
-                            WHEN d.status_standardized IN ('lapsed', 'cancelled', 'terminated')
-                            THEN COALESCE(d.annual_premium, 0) * 0.75
-                            ELSE 0
+                            -- Early lapse (within 30 days): full commission is debt
+                            WHEN EXTRACT(EPOCH FROM (d.updated_at - d.policy_effective_date)) / 86400 <= 30
+                            THEN (d.annual_premium * 0.75 * (dhs.commission_percentage / NULLIF(
+                                (SELECT SUM(dhs2.commission_percentage)
+                                 FROM deal_hierarchy_snapshot dhs2
+                                 WHERE dhs2.deal_id = d.id AND dhs2.commission_percentage IS NOT NULL), 0)))
+                            -- Late lapse (after 30 days): prorate over 9 months
+                            ELSE (d.annual_premium * 0.75 * (dhs.commission_percentage / NULLIF(
+                                (SELECT SUM(dhs2.commission_percentage)
+                                 FROM deal_hierarchy_snapshot dhs2
+                                 WHERE dhs2.deal_id = d.id AND dhs2.commission_percentage IS NOT NULL), 0)) / 9)
+                                * GREATEST(0, 9 - LEAST(
+                                    FLOOR(EXTRACT(EPOCH FROM (d.updated_at - d.policy_effective_date)) / 86400 / 30)::INTEGER, 9))
                         END
-                    ), 0) as hierarchy_debt,
-                    COUNT(*) FILTER (
-                        WHERE d.status_standardized IN ('lapsed', 'cancelled', 'terminated')
-                    ) as hierarchy_debt_count
-                FROM deal_hierarchy_snapshots dhs
-                JOIN deals d ON d.id = dhs.deal_id
-                JOIN agent_list al ON al.agent_id = dhs.agent_id
-                WHERE d.policy_effective_date >= %s::date
+                    ), 0) as total_debt,
+                    COUNT(DISTINCT d.id)::INTEGER as debt_count
+                FROM deal_hierarchy_snapshot dhs
+                INNER JOIN deals d ON d.id = dhs.deal_id
+                INNER JOIN status_mapping sm ON sm.carrier_id = d.carrier_id
+                    AND LOWER(sm.raw_status) = LOWER(d.status)
+                    AND sm.impact = 'negative'
+                WHERE dhs.agent_id = ANY(
+                    SELECT DISTINCT descendant_id FROM agent_tree
+                )
+                    AND d.annual_premium IS NOT NULL
+                    AND d.policy_effective_date IS NOT NULL
+                    AND dhs.commission_percentage IS NOT NULL
+                    AND d.policy_effective_date >= %s::date
                     AND d.policy_effective_date < %s::date
-                    AND dhs.agent_id <> d.agent_id
                 GROUP BY dhs.agent_id
+            ),
+
+            -- Step 3: Calculate individual production for each agent (only their own deals)
+            -- Production includes non-negative deals AND lapsed deals that lasted >7 days
+            individual_prod_calc AS (
+                SELECT
+                    d.agent_id,
+                    COALESCE(SUM(d.annual_premium), 0) as total_production,
+                    COUNT(DISTINCT d.id)::INTEGER as production_count
+                FROM deals d
+                LEFT JOIN status_mapping sm ON sm.carrier_id = d.carrier_id
+                    AND LOWER(sm.raw_status) = LOWER(d.status)
+                WHERE d.agent_id = ANY(
+                    SELECT DISTINCT descendant_id FROM agent_tree
+                )
+                    AND d.policy_effective_date >= %s::date
+                    AND d.policy_effective_date < %s::date
+                    AND d.annual_premium IS NOT NULL
+                    AND (
+                        -- Include deals that are NOT negative status
+                        (sm.impact IS NULL OR sm.impact != 'negative')
+                        OR
+                        -- OR include negative status deals if they lapsed >7 days after effective date
+                        (
+                            sm.impact = 'negative'
+                            AND sm.status_standardized = 'Lapsed'
+                            AND d.lapse_date IS NOT NULL
+                            AND EXTRACT(EPOCH FROM (d.lapse_date - d.policy_effective_date)) / 86400 > 7
+                        )
+                    )
+                GROUP BY d.agent_id
+            ),
+
+            -- Step 4: Calculate team production (agent + all downlines via deal_hierarchy_snapshot)
+            team_prod_calc AS (
+                SELECT
+                    dhs.agent_id,
+                    COALESCE(SUM(d.annual_premium), 0) as total_team_production,
+                    COUNT(DISTINCT d.id)::INTEGER as team_production_count
+                FROM deal_hierarchy_snapshot dhs
+                INNER JOIN deals d ON d.id = dhs.deal_id
+                LEFT JOIN status_mapping sm ON sm.carrier_id = d.carrier_id
+                    AND LOWER(sm.raw_status) = LOWER(d.status)
+                WHERE dhs.agent_id = ANY(
+                    SELECT DISTINCT descendant_id FROM agent_tree
+                )
+                    AND d.policy_effective_date >= %s::date
+                    AND d.policy_effective_date < %s::date
+                    AND d.annual_premium IS NOT NULL
+                    AND (
+                        -- Include deals that are NOT negative status
+                        (sm.impact IS NULL OR sm.impact != 'negative')
+                        OR
+                        -- OR include negative status deals if they lapsed >7 days after effective date
+                        (
+                            sm.impact = 'negative'
+                            AND sm.status_standardized = 'Lapsed'
+                            AND d.lapse_date IS NOT NULL
+                            AND EXTRACT(EPOCH FROM (d.lapse_date - d.policy_effective_date)) / 86400 > 7
+                        )
+                    )
+                GROUP BY dhs.agent_id
+            ),
+
+            -- Step 5: Aggregate hierarchy metrics for each root agent (downlines only)
+            hierarchy_metrics AS (
+                SELECT
+                    at.root_agent_id as agent_id,
+                    -- Debt: sum all downline debt (excluding root's own debt)
+                    COALESCE(SUM(CASE WHEN at.descendant_id != at.root_agent_id THEN idc.total_debt ELSE 0 END), 0) as h_debt,
+                    COALESCE(SUM(CASE WHEN at.descendant_id != at.root_agent_id THEN idc.debt_count ELSE 0 END), 0)::INTEGER as h_debt_count,
+                    -- Production: team production minus individual production
+                    COALESCE(
+                        (SELECT tpc.total_team_production FROM team_prod_calc tpc WHERE tpc.agent_id = at.root_agent_id)
+                        - (SELECT ipc.total_production FROM individual_prod_calc ipc WHERE ipc.agent_id = at.root_agent_id),
+                        0
+                    ) as h_production,
+                    COALESCE(
+                        (SELECT tpc.team_production_count FROM team_prod_calc tpc WHERE tpc.agent_id = at.root_agent_id)
+                        - (SELECT ipc.production_count FROM individual_prod_calc ipc WHERE ipc.agent_id = at.root_agent_id),
+                        0
+                    )::INTEGER as h_production_count
+                FROM agent_tree at
+                LEFT JOIN individual_debt_calc idc ON idc.agent_id = at.descendant_id
+                WHERE at.root_agent_id = at.descendant_id -- Only process each root once
+                GROUP BY at.root_agent_id
             )
+
+            -- Final result: combine individual and hierarchy metrics
             SELECT
-                al.agent_id,
-                COALESCE(ip.individual_production, 0) as individual_production,
-                COALESCE(ip.individual_production_count, 0) as individual_production_count,
-                COALESCE(hp.hierarchy_production, 0) as hierarchy_production,
-                COALESCE(hp.hierarchy_production_count, 0) as hierarchy_production_count,
-                COALESCE(id.individual_debt, 0) as individual_debt,
-                COALESCE(id.individual_debt_count, 0) as individual_debt_count,
-                COALESCE(hd.hierarchy_debt, 0) as hierarchy_debt,
-                COALESCE(hd.hierarchy_debt_count, 0) as hierarchy_debt_count,
+                a.id as agent_id,
+                ROUND(COALESCE(idc.total_debt, 0), 2) as individual_debt,
+                COALESCE(idc.debt_count, 0) as individual_debt_count,
+                ROUND(COALESCE(ipc.total_production, 0), 2) as individual_production,
+                COALESCE(ipc.production_count, 0) as individual_production_count,
+                ROUND(COALESCE(hm.h_debt, 0), 2) as hierarchy_debt,
+                COALESCE(hm.h_debt_count, 0) as hierarchy_debt_count,
+                ROUND(COALESCE(hm.h_production, 0), 2) as hierarchy_production,
+                COALESCE(hm.h_production_count, 0) as hierarchy_production_count,
                 CASE
-                    WHEN COALESCE(ip.individual_production, 0) + COALESCE(hp.hierarchy_production, 0) > 0
-                    THEN (COALESCE(id.individual_debt, 0) + COALESCE(hd.hierarchy_debt, 0)) /
-                         (COALESCE(ip.individual_production, 0) + COALESCE(hp.hierarchy_production, 0))
+                    WHEN COALESCE(hm.h_production, 0) > 0
+                    THEN ROUND(COALESCE(hm.h_debt, 0) / hm.h_production, 4)
                     ELSE NULL
                 END as debt_to_production_ratio
-            FROM agent_list al
-            LEFT JOIN individual_prod ip ON ip.agent_id = al.agent_id
-            LEFT JOIN hierarchy_prod hp ON hp.agent_id = al.agent_id
-            LEFT JOIN individual_debt id ON id.agent_id = al.agent_id
-            LEFT JOIN hierarchy_debt hd ON hd.agent_id = al.agent_id
+            FROM unnest(%s::uuid[]) as a(id)
+            LEFT JOIN individual_debt_calc idc ON idc.agent_id = a.id
+            LEFT JOIN individual_prod_calc ipc ON ipc.agent_id = a.id
+            LEFT JOIN hierarchy_metrics hm ON hm.agent_id = a.id
         """, [
             agent_ids_str,
+            user_agency_id,
+            user_agency_id,
             start_date, end_date,
             start_date, end_date,
             start_date, end_date,
-            start_date, end_date,
+            agent_ids_str,
         ])
         columns = [col[0] for col in cursor.description]
         return [dict(zip(columns, row, strict=False)) for row in cursor.fetchall()]

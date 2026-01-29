@@ -1,7 +1,7 @@
 """
 SMS Model Factories
 
-Factories for Conversation, Message, DraftMessage, and SmsTemplate models.
+Factories for Conversation and Message models.
 """
 import uuid
 
@@ -11,13 +11,10 @@ from faker import Faker
 
 from apps.core.models import (
     Conversation,
-    DraftMessage,
     Message,
-    SmsTemplate,
 )
 from tests.factories.core import (
     AgencyFactory,
-    ClientFactory,
     UserFactory,
 )
 from tests.factories.deals import DealFactory
@@ -34,12 +31,10 @@ class ConversationFactory(factory.django.DjangoModelFactory):
     id = factory.LazyFunction(uuid.uuid4)
     agency = factory.SubFactory(AgencyFactory)
     agent = factory.SubFactory(UserFactory, agency=factory.SelfAttribute('..agency'))
-    client = factory.SubFactory(ClientFactory, agency=factory.SelfAttribute('..agency'))
     deal = None  # Optional, set explicitly when needed
-    phone_number = factory.LazyAttribute(lambda _: fake.phone_number()[:20])
+    client_phone = factory.LazyAttribute(lambda _: fake.phone_number()[:20])
     last_message_at = factory.LazyAttribute(lambda _: timezone.now())
-    unread_count = 0
-    is_archived = False
+    is_active = True
     sms_opt_in_status = 'opted_in'
 
     class Params:
@@ -49,9 +44,6 @@ class ConversationFactory(factory.django.DjangoModelFactory):
         opted_out = factory.Trait(
             sms_opt_in_status='opted_out',
             opted_out_at=factory.LazyAttribute(lambda _: timezone.now())
-        )
-        archived = factory.Trait(
-            is_archived=True
         )
 
 
@@ -63,11 +55,14 @@ class MessageFactory(factory.django.DjangoModelFactory):
 
     id = factory.LazyFunction(uuid.uuid4)
     conversation = factory.SubFactory(ConversationFactory)
-    content = factory.LazyAttribute(lambda _: fake.sentence())
+    body = factory.LazyAttribute(lambda _: fake.sentence())
     direction = 'outbound'
     status = 'sent'
-    external_id = factory.LazyAttribute(lambda _: fake.uuid4())
-    sent_by = factory.SubFactory(
+    sender = factory.SubFactory(
+        UserFactory,
+        agency=factory.SelfAttribute('..conversation.agency')
+    )
+    receiver = factory.SubFactory(
         UserFactory,
         agency=factory.SelfAttribute('..conversation.agency')
     )
@@ -78,52 +73,7 @@ class MessageFactory(factory.django.DjangoModelFactory):
         inbound = factory.Trait(
             direction='inbound',
             status='received',
-            sent_by=None
         )
         failed = factory.Trait(
             status='failed'
         )
-
-
-class DraftMessageFactory(factory.django.DjangoModelFactory):
-    """Factory for DraftMessage model."""
-
-    class Meta:
-        model = DraftMessage
-
-    id = factory.LazyFunction(uuid.uuid4)
-    agency = factory.SubFactory(AgencyFactory)
-    agent = factory.SubFactory(UserFactory, agency=factory.SelfAttribute('..agency'))
-    conversation = factory.SubFactory(
-        ConversationFactory,
-        agency=factory.SelfAttribute('..agency')
-    )
-    content = factory.LazyAttribute(lambda _: fake.paragraph())
-    status = 'pending'
-
-    class Params:
-        approved = factory.Trait(
-            status='approved'
-        )
-        rejected = factory.Trait(
-            status='rejected'
-        )
-
-
-class SmsTemplateFactory(factory.django.DjangoModelFactory):
-    """Factory for SmsTemplate model."""
-
-    class Meta:
-        model = SmsTemplate
-
-    id = factory.LazyFunction(uuid.uuid4)
-    agency = factory.SubFactory(AgencyFactory)
-    name = factory.LazyAttribute(lambda _: f"{fake.word().title()} Template")
-    content = factory.LazyAttribute(
-        lambda _: f"Hello {{{{client_name}}}}, {fake.sentence()}"
-    )
-    category = factory.LazyAttribute(lambda _: fake.random_element([
-        'welcome', 'reminder', 'follow-up', 'birthday', 'anniversary'
-    ]))
-    is_active = True
-    created_by = factory.SubFactory(UserFactory, agency=factory.SelfAttribute('..agency'))
