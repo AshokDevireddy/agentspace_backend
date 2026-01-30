@@ -8,6 +8,7 @@ from django.urls import include, path
 
 from apps.core.views import health_check
 from apps.clients.urls import client_dashboard_urlpatterns
+from apps.auth_api.user_urls import users_urlpatterns
 from apps.search.urls import (
     search_agents_filter_urlpatterns,
     search_agents_urlpatterns,
@@ -29,6 +30,9 @@ urlpatterns = [
 
     # User profile endpoints
     path('api/user/', include('apps.auth_api.user_urls')),
+
+    # Users lookup endpoints (by-auth-id, etc.)
+    path('api/users/', include(users_urlpatterns)),
 
     # Dashboard endpoints
     path('api/dashboard/', include('apps.dashboard.urls')),

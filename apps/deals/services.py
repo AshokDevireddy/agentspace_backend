@@ -674,6 +674,7 @@ def update_deal_status_standardized(
         return row is not None
 
 
+@transaction.atomic
 def delete_deal(
     deal_id: UUID,
     user: AuthenticatedUser,

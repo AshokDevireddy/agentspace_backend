@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
 
-from django.db import connection
+from django.db import connection, transaction
 
 from apps.core.authentication import AuthenticatedUser
 
@@ -127,6 +127,7 @@ class BulkSendResult:
     errors: list[dict[Any, Any]] | None = None
 
 
+@transaction.atomic
 def send_message(
     user: AuthenticatedUser,
     data: SendMessageInput,
@@ -427,6 +428,7 @@ class TemplateInput:
     is_active: bool = True
 
 
+@transaction.atomic
 def create_template(user: AuthenticatedUser, data: TemplateInput) -> dict:
     """Create a new SMS template."""
     template_id = uuid.uuid4()
@@ -453,6 +455,7 @@ def create_template(user: AuthenticatedUser, data: TemplateInput) -> dict:
     return result if result is not None else {}
 
 
+@transaction.atomic
 def update_template(template_id: UUID, user: AuthenticatedUser, data: TemplateInput) -> dict | None:
     """Update an existing SMS template."""
     with connection.cursor() as cursor:
@@ -477,6 +480,7 @@ def update_template(template_id: UUID, user: AuthenticatedUser, data: TemplateIn
     return get_template_by_id(template_id, user)
 
 
+@transaction.atomic
 def delete_template(template_id: UUID, user: AuthenticatedUser) -> bool:
     """Delete an SMS template."""
     with connection.cursor() as cursor:
@@ -551,6 +555,7 @@ def list_templates(user: AuthenticatedUser, template_type: str | None = None) ->
 # Opt-out Management (P2-031)
 # =============================================================================
 
+@transaction.atomic
 def update_opt_status(
     user: AuthenticatedUser,
     conversation_id: UUID,
@@ -635,6 +640,7 @@ def get_opted_out_numbers(user: AuthenticatedUser) -> list[dict]:
     ]
 
 
+@transaction.atomic
 def handle_stop_keyword(phone_number: str, agency_id: UUID) -> bool:
     """
     Handle STOP keyword from inbound message.
@@ -660,6 +666,7 @@ def handle_stop_keyword(phone_number: str, agency_id: UUID) -> bool:
     return len(rows) > 0
 
 
+@transaction.atomic
 def handle_start_keyword(phone_number: str, agency_id: UUID) -> bool:
     """
     Handle START keyword from inbound message.
@@ -707,6 +714,7 @@ class RejectDraftsResult:
     rejected: int = 0
 
 
+@transaction.atomic
 def approve_drafts(
     user: AuthenticatedUser,
     message_ids: list[str]
@@ -820,6 +828,7 @@ class UpdateDraftResult:
     error: str | None = None
 
 
+@transaction.atomic
 def update_draft_body(
     user: AuthenticatedUser,
     message_id: UUID,
@@ -881,6 +890,7 @@ def update_draft_body(
         return UpdateDraftResult(success=False, error=str(e))
 
 
+@transaction.atomic
 def reject_drafts(
     user: AuthenticatedUser,
     message_ids: list[str]
@@ -942,6 +952,7 @@ def reject_drafts(
 # Mark Messages as Read
 # =============================================================================
 
+@transaction.atomic
 def mark_message_as_read(
     user: AuthenticatedUser,
     message_id: UUID,
@@ -1079,6 +1090,7 @@ class GetOrCreateConversationResult:
     error: str | None = None
 
 
+@transaction.atomic
 def get_or_create_conversation(
     user: AuthenticatedUser,
     data: GetOrCreateConversationInput,
@@ -1244,6 +1256,7 @@ class LogMessageResult:
     error: str | None = None
 
 
+@transaction.atomic
 def log_message(
     user: AuthenticatedUser,
     data: LogMessageInput,
@@ -1328,3 +1341,235 @@ def log_message(
     except Exception as e:
         logger.error(f"Error logging message: {e}")
         return LogMessageResult(success=False, error=str(e))
+
+
+# =============================================================================
+# Start Conversation (from Deal)
+# =============================================================================
+
+@dataclass
+class StartConversationInput:
+    """Input for starting a new conversation from a deal."""
+    deal_id: UUID
+
+
+@dataclass
+class StartConversationResult:
+    """Result of starting a conversation."""
+    success: bool
+    conversation: dict | None = None
+    message: str | None = None
+    error: str | None = None
+    existing_conversation: dict | None = None
+
+
+@transaction.atomic
+def start_conversation(
+    user: AuthenticatedUser,
+    data: StartConversationInput,
+) -> StartConversationResult:
+    """
+    Start a new SMS conversation from a deal.
+
+    This:
+    1. Validates the deal exists and has a client phone
+    2. Gets agency details for sending SMS
+    3. Checks if conversation already exists for this phone number
+    4. Creates a new conversation with auto opt-in
+    5. Sends a welcome message
+    6. Logs the message
+
+    Args:
+        user: The authenticated user
+        data: Contains the deal_id to start conversation from
+
+    Returns:
+        StartConversationResult with conversation data or error
+    """
+    try:
+        # Fetch deal details
+        with connection.cursor() as cursor:
+            cursor.execute("""
+                SELECT
+                    d.id,
+                    d.client_name,
+                    d.client_phone,
+                    d.client_email,
+                    d.agent_id,
+                    d.agency_id
+                FROM public.deals d
+                WHERE d.id = %s
+            """, [str(data.deal_id)])
+            deal_row = cursor.fetchone()
+
+        if not deal_row:
+            return StartConversationResult(success=False, error="Deal not found")
+
+        deal_id, client_name, client_phone, client_email, agent_id, deal_agency_id = deal_row
+
+        if not client_phone:
+            return StartConversationResult(
+                success=False,
+                error="No phone number on file for this client"
+            )
+
+        # Normalize the phone number for storage (remove +1 prefix)
+        normalized_phone = normalize_phone_number(client_phone)
+        storage_phone = normalized_phone[2:] if normalized_phone.startswith('+1') else normalized_phone
+
+        # Determine agency_id (prefer deal's agency, fallback to user's)
+        agency_id = deal_agency_id or user.agency_id
+
+        # Fetch agency details
+        with connection.cursor() as cursor:
+            cursor.execute("""
+                SELECT name, phone_number
+                FROM public.agencies
+                WHERE id = %s
+            """, [str(agency_id)])
+            agency_row = cursor.fetchone()
+
+        if not agency_row:
+            return StartConversationResult(
+                success=False,
+                error="Failed to fetch agency details"
+            )
+
+        agency_name, agency_phone = agency_row
+
+        if not agency_phone:
+            return StartConversationResult(
+                success=False,
+                error="Agency phone number not configured"
+            )
+
+        # Fetch agent details for welcome message
+        agent_name = "your agent"
+        if agent_id:
+            with connection.cursor() as cursor:
+                cursor.execute("""
+                    SELECT first_name, last_name
+                    FROM public.users
+                    WHERE id = %s
+                """, [str(agent_id)])
+                agent_row = cursor.fetchone()
+                if agent_row:
+                    agent_name = f"{agent_row[0] or ''} {agent_row[1] or ''}".strip() or "your agent"
+
+        # Check if conversation already exists for this phone number in this agency
+        with connection.cursor() as cursor:
+            cursor.execute("""
+                SELECT id, agent_id, deal_id
+                FROM public.conversations
+                WHERE agency_id = %s
+                    AND client_phone = %s
+                    AND type = 'sms'
+                    AND is_active = true
+                LIMIT 1
+            """, [str(agency_id), storage_phone])
+            existing = cursor.fetchone()
+
+        if existing:
+            return StartConversationResult(
+                success=False,
+                error="A conversation with this phone number already exists. Each client can only have one active SMS conversation per agency.",
+                existing_conversation={
+                    'id': str(existing[0]),
+                    'agent_id': str(existing[1]) if existing[1] else None,
+                    'deal_id': str(existing[2]) if existing[2] else None,
+                }
+            )
+
+        # Create conversation with auto opt-in
+        conv_id = uuid.uuid4()
+        with connection.cursor() as cursor:
+            cursor.execute("""
+                INSERT INTO public.conversations (
+                    id, agent_id, deal_id, agency_id, client_phone,
+                    type, is_active, sms_opt_in_status, opted_in_at, last_message_at,
+                    created_at, updated_at
+                )
+                VALUES (%s, %s, %s, %s, %s, 'sms', true, 'opted_in', NOW(), NOW(), NOW(), NOW())
+                RETURNING id, agent_id, deal_id, agency_id, client_phone,
+                    type, is_active, sms_opt_in_status, opted_in_at, last_message_at,
+                    created_at, updated_at
+            """, [
+                str(conv_id),
+                str(agent_id) if agent_id else None,
+                str(deal_id),
+                str(agency_id),
+                storage_phone,
+            ])
+            conv_row = cursor.fetchone()
+
+        conversation = {
+            'id': str(conv_row[0]),
+            'agent_id': str(conv_row[1]) if conv_row[1] else None,
+            'deal_id': str(conv_row[2]) if conv_row[2] else None,
+            'agency_id': str(conv_row[3]) if conv_row[3] else None,
+            'client_phone': conv_row[4],
+            'type': conv_row[5],
+            'is_active': conv_row[6],
+            'sms_opt_in_status': conv_row[7],
+            'opted_in_at': conv_row[8].isoformat() if conv_row[8] else None,
+            'last_message_at': conv_row[9].isoformat() if conv_row[9] else None,
+            'created_at': conv_row[10].isoformat() if conv_row[10] else None,
+            'updated_at': conv_row[11].isoformat() if conv_row[11] else None,
+        }
+
+        # Build and send welcome message
+        client_first_name = client_name.split(' ')[0] if client_name else 'there'
+        client_email_display = client_email or 'your email'
+        welcome_message = (
+            f"Welcome {client_first_name}! Thank you for choosing {agency_name} for your "
+            f"life insurance needs. Your agent {agent_name} is here to help. You'll receive "
+            f"policy updates and reminders by text. Complete your account setup by clicking "
+            f"the invitation sent to {client_email_display}. Message frequency may vary. "
+            f"Msg&data rates may apply. Reply STOP to opt out. Reply HELP for help."
+        )
+
+        # Send via Telnyx
+        telnyx_result = send_sms_via_telnyx(
+            from_number=agency_phone,
+            to_number=normalized_phone,
+            text=welcome_message
+        )
+
+        # Log the message regardless of send result
+        message_id = uuid.uuid4()
+        message_status = 'sent' if telnyx_result['success'] else 'failed'
+
+        with connection.cursor() as cursor:
+            cursor.execute("""
+                INSERT INTO public.messages (
+                    id, conversation_id, sender_id, receiver_id, body,
+                    direction, sent_at, status, message_type, metadata,
+                    created_at, updated_at
+                )
+                VALUES (%s, %s, %s, %s, %s, 'outbound', NOW(), %s, 'sms', %s::jsonb, NOW(), NOW())
+            """, [
+                str(message_id),
+                str(conv_id),
+                str(agent_id) if agent_id else str(user.id),
+                str(agent_id) if agent_id else str(user.id),  # Placeholder for receiver
+                welcome_message,
+                message_status,
+                '{"automated": true, "type": "welcome_message", "telnyx_message_id": "' +
+                (telnyx_result.get('message_id') or '') + '"}',
+            ])
+
+        if not telnyx_result['success']:
+            logger.warning(f"Welcome SMS failed to send: {telnyx_result.get('error')}")
+            # Don't fail the whole request - conversation was created
+
+        logger.info(f"Conversation started for deal {deal_id}, welcome message {'sent' if telnyx_result['success'] else 'failed'}")
+
+        return StartConversationResult(
+            success=True,
+            conversation=conversation,
+            message="Conversation started and welcome message sent"
+        )
+
+    except Exception as e:
+        logger.error(f"Error starting conversation: {e}")
+        return StartConversationResult(success=False, error=str(e))

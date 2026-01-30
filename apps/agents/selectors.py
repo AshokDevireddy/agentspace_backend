@@ -325,11 +325,15 @@ def get_agents_table(
     # Extract filter values
     status_filter = filters.get('status')
     agent_name = filters.get('agent_name')
-    filters.get('in_upline')
+    in_upline = filters.get('in_upline')
     direct_upline = filters.get('direct_upline')
-    filters.get('in_downline')
+    in_downline = filters.get('in_downline')
     direct_downline = filters.get('direct_downline')
     position_id = filters.get('position_id')
+
+    # Determine if we need upline/downline CTEs
+    needs_upline_cte = in_upline is not None and in_upline != 'all'
+    needs_downline_cte = in_downline is not None and in_downline != 'all'
 
     with connection.cursor() as cursor:
         # Build the query dynamically based on filters
@@ -369,6 +373,52 @@ def get_agents_table(
                 )
             """
 
+        # Add upline chain CTE if needed for in_upline filter
+        # This finds agents who have the specified agent somewhere in their upline chain
+        if needs_upline_cte:
+            base_cte = base_cte.rstrip().rstrip(',') + """,
+                target_agent AS (
+                    SELECT id FROM users
+                    WHERE LOWER(CONCAT(first_name, ' ', last_name)) LIKE %s
+                    LIMIT 1
+                ),
+                upline_chain AS (
+                    -- Start from target agent and walk up
+                    SELECT id, upline_id, 0 as depth
+                    FROM users
+                    WHERE id = (SELECT id FROM target_agent)
+                    UNION ALL
+                    SELECT u.id, u.upline_id, uc.depth + 1
+                    FROM users u
+                    JOIN upline_chain uc ON u.id = uc.upline_id
+                    WHERE uc.depth < 50
+                )
+            """
+            params.append(f'%{in_upline.lower()}%')
+
+        # Add downline tree CTE if needed for in_downline filter
+        # This finds agents who have the specified agent somewhere in their downline
+        if needs_downline_cte:
+            base_cte = base_cte.rstrip().rstrip(',') + """,
+                target_downline_agent AS (
+                    SELECT id FROM users
+                    WHERE LOWER(CONCAT(first_name, ' ', last_name)) LIKE %s
+                    LIMIT 1
+                ),
+                downline_tree AS (
+                    -- Start from target agent and walk down
+                    SELECT id, 0 as depth
+                    FROM users
+                    WHERE id = (SELECT id FROM target_downline_agent)
+                    UNION ALL
+                    SELECT u.id, dt.depth + 1
+                    FROM users u
+                    JOIN downline_tree dt ON u.upline_id = dt.id
+                    WHERE dt.depth < 50
+                )
+            """
+            params.append(f'%{in_downline.lower()}%')
+
         # Status filter
         if status_filter and status_filter != 'all':
             where_clauses.append("u.status = %s")
@@ -390,6 +440,16 @@ def get_agents_table(
             )
             pattern = f'%{agent_name.lower()}%'
             params.extend([pattern, pattern, pattern])
+
+        # in_upline filter: Find agents who appear in the upline chain of the target agent
+        # (i.e., the target agent reports up to them somehow)
+        if needs_upline_cte:
+            where_clauses.append("u.id IN (SELECT id FROM upline_chain WHERE id != (SELECT id FROM target_agent))")
+
+        # in_downline filter: Find agents who appear in the downline tree of the target agent
+        # (i.e., the target agent has them in their organization)
+        if needs_downline_cte:
+            where_clauses.append("u.id IN (SELECT id FROM downline_tree WHERE id != (SELECT id FROM target_downline_agent))")
 
         # Direct upline filter
         if direct_upline is not None and direct_upline != 'all':

@@ -57,11 +57,13 @@ class DealsListCreateView(AuthenticatedAPIView, APIView):
             PAGINATION["max_limit"],
         )
 
+        # cursor_created_at is the primary param (matches RPC)
+        # cursor_policy_effective_date is supported for backward compatibility
         cursor_date = (
-            request.query_params.get('cursor_policy_effective_date') or
-            request.query_params.get('cursor_created_at')
+            request.query_params.get('cursor_created_at') or
+            request.query_params.get('cursor_policy_effective_date')
         )
-        cursor_policy_effective_date = self.parse_date(cursor_date)
+        cursor_created_at = self.parse_date(cursor_date)
 
         cursor_id = request.query_params.get('cursor_id')
         cursor_uuid = self.parse_uuid_optional(cursor_id)
@@ -97,7 +99,7 @@ class DealsListCreateView(AuthenticatedAPIView, APIView):
         result = get_book_of_business(
             user=user,
             limit=limit,
-            cursor_policy_effective_date=cursor_policy_effective_date,
+            cursor_created_at=cursor_created_at,
             cursor_id=cursor_uuid,
             carrier_id=carrier_id,
             product_id=product_id,

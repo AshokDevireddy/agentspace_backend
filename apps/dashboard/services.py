@@ -1600,12 +1600,42 @@ def _generate_revenue_report(user_ctx: UserContext, params: dict) -> list[dict]:
 
 
 def _generate_commission_report(user_ctx: UserContext, params: dict) -> list[dict]:
-    """Generate commission report data."""
+    """Generate commission report data.
+
+    Uses the correct commission formula: annual_premium * 0.75 * (agent_% / hierarchy_total_%)
+    This matches the payout calculation formula in /apps/payouts/selectors.py
+    """
     start_date = params.get('start_date', (date.today() - timedelta(days=30)).isoformat())
     end_date = params.get('end_date', date.today().isoformat())
 
     with connection.cursor() as cursor:
         cursor.execute("""
+            WITH
+            -- Get all deals in date range for the agency
+            deals_in_range AS (
+                SELECT
+                    d.id as deal_id,
+                    d.policy_number,
+                    d.annual_premium,
+                    d.policy_effective_date
+                FROM public.deals d
+                WHERE d.agency_id = %s
+                    AND d.policy_effective_date BETWEEN %s AND %s
+                    AND d.annual_premium IS NOT NULL
+                    AND d.annual_premium > 0
+            ),
+
+            -- Calculate total commission percentage for each deal's hierarchy
+            hierarchy_totals AS (
+                SELECT
+                    deal_id,
+                    SUM(commission_percentage) as hierarchy_total_percentage
+                FROM public.deal_hierarchy_snapshots
+                WHERE deal_id IN (SELECT deal_id FROM deals_in_range)
+                    AND commission_percentage IS NOT NULL
+                GROUP BY deal_id
+            )
+
             SELECT
                 dhs.agent_id,
                 u.first_name,
@@ -1613,14 +1643,22 @@ def _generate_commission_report(user_ctx: UserContext, params: dict) -> list[dic
                 dhs.hierarchy_level,
                 dhs.commission_percentage,
                 d.annual_premium,
-                (d.annual_premium * dhs.commission_percentage / 100) as commission_amount,
+                CASE
+                    WHEN ht.hierarchy_total_percentage > 0
+                         AND dhs.commission_percentage IS NOT NULL
+                    THEN ROUND(
+                        (d.annual_premium * 0.75 * (dhs.commission_percentage / ht.hierarchy_total_percentage))::numeric,
+                        2
+                    )
+                    ELSE 0
+                END as commission_amount,
                 d.policy_number,
                 d.policy_effective_date
-            FROM public.deal_hierarchy_snapshots dhs
-            JOIN public.deals d ON d.id = dhs.deal_id
+            FROM deals_in_range d
+            JOIN public.deal_hierarchy_snapshots dhs ON dhs.deal_id = d.deal_id
+            LEFT JOIN hierarchy_totals ht ON ht.deal_id = d.deal_id
             LEFT JOIN public.users u ON u.id = dhs.agent_id
-            WHERE d.agency_id = %s
-                AND d.policy_effective_date BETWEEN %s AND %s
+            WHERE dhs.commission_percentage IS NOT NULL
             ORDER BY d.policy_effective_date DESC, dhs.hierarchy_level
         """, [str(user_ctx.agency_id), start_date, end_date])
 

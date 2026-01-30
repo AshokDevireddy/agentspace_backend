@@ -9,7 +9,7 @@ from typing import Literal
 from uuid import UUID
 
 from django.core.paginator import Paginator
-from django.db.models import OuterRef, Q, Subquery
+from django.db.models import Count, OuterRef, Q, Subquery
 
 from apps.core.authentication import AuthenticatedUser
 from apps.core.permissions import get_visible_agent_ids
@@ -54,12 +54,19 @@ def get_sms_conversations(
             # Admin sees all agency conversations
             pass
         elif view_mode == 'downlines':
-            # User sees downline conversations (excluding self)
-            visible_ids = get_visible_agent_ids(user, include_full_agency=False)
-            visible_ids = [vid for vid in visible_ids if str(vid) != str(user.id)]
-            if not visible_ids:
+            # User sees conversations for deals where they appear in deal_hierarchy_snapshot
+            # This uses deal-level visibility (not org hierarchy) to match RPC behavior
+            from apps.core.models import DealHierarchySnapshot
+
+            # Get deal IDs where this user appears in the hierarchy
+            # Note: Does NOT exclude user's own deals to match RPC behavior
+            visible_deal_ids = (
+                DealHierarchySnapshot.objects.filter(agent_id=user.id)  # type: ignore[attr-defined]
+                .values_list('deal_id', flat=True)
+            )
+            if not visible_deal_ids:
                 return {'conversations': [], 'pagination': _empty_pagination(page, limit)}
-            qs = qs.filter(agent_id__in=visible_ids)
+            qs = qs.filter(deal_id__in=visible_deal_ids)
         else:  # 'self'
             # User sees only their own conversations
             qs = qs.filter(agent_id=user.id)
@@ -79,11 +86,26 @@ def get_sms_conversations(
             .values('content')[:1]
         )
 
+        # Add unread count via subquery (inbound messages without read_at)
+        unread_count_subquery = (
+            Message.objects.filter(  # type: ignore[attr-defined]
+                conversation_id=OuterRef('id'),
+                direction='inbound',
+                read_at__isnull=True
+            )
+            .values('conversation_id')
+            .annotate(cnt=Count('id'))
+            .values('cnt')[:1]
+        )
+
         # Optimize with select_related and annotate
         # Note: Conversation has no client FK, client info comes from deal
         qs = (
             qs.select_related('agent', 'deal')
-            .annotate(last_message_content=Subquery(last_message_subquery))
+            .annotate(
+                last_message_content=Subquery(last_message_subquery),
+                unread_count=Subquery(unread_count_subquery),
+            )
             .order_by('-last_message_at', '-id')
         )
 
@@ -282,12 +304,17 @@ def get_draft_messages(
             # Admin sees all agency drafts
             pass
         elif view_mode == 'downlines':
-            # User sees downline drafts (excluding self)
-            visible_ids = get_visible_agent_ids(user, include_full_agency=False)
-            visible_ids = [vid for vid in visible_ids if str(vid) != str(user.id)]
-            if not visible_ids:
+            # User sees drafts for conversations linked to deals in their hierarchy
+            # Note: Does NOT exclude user's own deals to match RPC behavior
+            from apps.core.models import DealHierarchySnapshot
+
+            visible_deal_ids = (
+                DealHierarchySnapshot.objects.filter(agent_id=user.id)  # type: ignore[attr-defined]
+                .values_list('deal_id', flat=True)
+            )
+            if not visible_deal_ids:
                 return {'drafts': [], 'pagination': _empty_pagination(page, limit)}
-            qs = qs.filter(conversation__agent_id__in=visible_ids)
+            qs = qs.filter(conversation__deal_id__in=visible_deal_ids)
         else:  # 'self'
             # User sees only their own drafts
             qs = qs.filter(conversation__agent_id=user.id)

@@ -101,8 +101,13 @@ def get_analytics_split_view(
     user: AuthenticatedUser,
     as_of: date | None = None,
     all_time_months: int = 24,
-    top_states: int = 5,
+    top_states: int = 50,
     carrier_ids: list[UUID] | None = None,
+    include_series: bool = True,
+    include_windows_by_carrier: bool = True,
+    include_breakdowns_status: bool = True,
+    include_breakdowns_state: bool = True,
+    include_breakdowns_age: bool = True,
 ) -> dict[str, Any]:
     """
     Get analytics split view data for the user.
@@ -110,7 +115,7 @@ def get_analytics_split_view(
 
     This function returns comprehensive analytics data split into:
     - your_deals: Analytics for deals where user is the writing agent
-    - downline: Analytics for deals from user's downlines
+    - downline: Analytics for deals from user's downlines (or all agency if admin)
 
     Args:
         user: The authenticated user
@@ -118,19 +123,95 @@ def get_analytics_split_view(
         all_time_months: Number of months for all-time window
         top_states: Number of top states to include in breakdown
         carrier_ids: Optional list of carrier IDs to filter by
+        include_series: Include monthly time series data
+        include_windows_by_carrier: Include window calculations per carrier
+        include_breakdowns_status: Include status breakdown
+        include_breakdowns_state: Include state breakdown
+        include_breakdowns_age: Include age band breakdown
 
     Returns:
-        Dictionary with your_deals, downline, and metadata
+        Dictionary with your_deals, downline, and metadata matching RPC structure
     """
     if as_of is None:
         as_of = date.today()
 
     carrier_ids_array = [str(cid) for cid in carrier_ids] if carrier_ids else None
 
+    # Call internal helper for your_deals
+    your_deals_result = _get_analytics_for_scope(
+        user=user,
+        as_of=as_of,
+        all_time_months=all_time_months,
+        top_states=top_states,
+        carrier_ids_array=carrier_ids_array,
+        scope='your_deals',
+        include_series=include_series,
+        include_windows_by_carrier=include_windows_by_carrier,
+        include_breakdowns_status=include_breakdowns_status,
+        include_breakdowns_state=include_breakdowns_state,
+        include_breakdowns_age=include_breakdowns_age,
+    )
+
+    # Call internal helper for downline
+    downline_result = _get_analytics_for_scope(
+        user=user,
+        as_of=as_of,
+        all_time_months=all_time_months,
+        top_states=top_states,
+        carrier_ids_array=carrier_ids_array,
+        scope='downline',
+        include_series=include_series,
+        include_windows_by_carrier=include_windows_by_carrier,
+        include_breakdowns_status=include_breakdowns_status,
+        include_breakdowns_state=include_breakdowns_state,
+        include_breakdowns_age=include_breakdowns_age,
+    )
+
+    return {
+        'your_deals': your_deals_result,
+        'downline': downline_result,
+        'metadata': {
+            'as_of': as_of.isoformat(),
+            'all_time_months': all_time_months,
+            'user_id': str(user.id),
+        },
+    }
+
+
+def _get_analytics_for_scope(
+    user: AuthenticatedUser,
+    as_of: date,
+    all_time_months: int,
+    top_states: int,
+    carrier_ids_array: list[str] | None,
+    scope: str,  # 'your_deals' or 'downline'
+    include_series: bool,
+    include_windows_by_carrier: bool,
+    include_breakdowns_status: bool,
+    include_breakdowns_state: bool,
+    include_breakdowns_age: bool,
+) -> dict[str, Any]:
+    """
+    Internal helper to get analytics for a specific scope (your_deals or downline).
+    Returns structure matching the RPC output.
+    """
+    # Build the scope-specific WHERE clause
+    if scope == 'your_deals':
+        scope_filter = "d.agent_id = %s"
+        scope_params = [str(user.id)]
+    else:  # downline
+        scope_filter = """(
+            (uc.is_admin = true)
+            OR
+            (uc.is_admin = false
+             AND d.id IN (SELECT deal_id FROM deal_hierarchy_snapshot WHERE agent_id = %s)
+             AND d.agent_id != %s
+            )
+        )"""
+        scope_params = [str(user.id), str(user.id)]
+
     with connection.cursor() as cursor:
-        # Execute the complex analytics query
-        # This is a simplified version - the full query is very complex
-        cursor.execute("""
+        cursor.execute(f"""
             WITH
             user_context AS (
                 SELECT
@@ -150,15 +231,13 @@ def get_analytics_split_view(
                     1
                 ) as month_start
             ),
-            -- YOUR DEALS (deals.agent_id = user_id)
-            your_deals_base AS (
+            base_deals AS (
                 SELECT
                     d.id,
                     d.carrier_id,
                     c.name as carrier_name,
                     date_trunc('month', COALESCE(d.policy_effective_date, d.submission_date))::date as effective_month,
                     d.monthly_premium,
-                    d.annual_premium,
                     coalesce(nullif(btrim(d.state), ''), 'UNK') as state,
                     coalesce(d.age_band, 'UNK') as age_band,
                     nullif(btrim(d.status), '') as status_raw,
@@ -180,201 +259,370 @@ def get_analytics_split_view(
                 CROSS JOIN user_context uc
                 CROSS JOIN as_of_month aom
                 WHERE d.agency_id = uc.agency_id
-                    AND d.agent_id = %s
                     AND COALESCE(d.policy_effective_date, d.submission_date) IS NOT NULL
                     AND date_trunc('month', COALESCE(d.policy_effective_date, d.submission_date))::date
                         BETWEEN (aom.month_start - make_interval(months => %s - 1))
                             AND aom.month_start
                     AND (%s IS NULL OR d.carrier_id = ANY(%s::uuid[]))
+                    AND {scope_filter}
             ),
-            your_deals_summary AS (
+            -- Monthly series aggregation
+            monthly_series AS (
                 SELECT
-                    count(*) as total_deals,
-                    sum(CASE WHEN impact_class = 'Active' THEN 1 ELSE 0 END) as active_count,
-                    sum(CASE WHEN impact_class = 'Inactive' THEN 1 ELSE 0 END) as inactive_count,
-                    sum(CASE WHEN placement_class = 'Placed' THEN 1 ELSE 0 END) as placed_count,
-                    sum(CASE WHEN placement_class = 'Not Placed' THEN 1 ELSE 0 END) as not_placed_count,
-                    coalesce(sum(monthly_premium), 0) as total_premium,
-                    coalesce(avg(monthly_premium), 0) as avg_premium
-                FROM your_deals_base
+                    b.carrier_id,
+                    b.carrier_name,
+                    b.effective_month,
+                    count(*)::int as submitted,
+                    sum(b.monthly_premium)::numeric as premium_sum,
+                    (sum(b.monthly_premium) / nullif(count(*), 0))::numeric(12,2) as avg_premium_submitted,
+                    sum((b.impact_class = 'Active')::int)::int as active,
+                    sum((b.impact_class = 'Inactive')::int)::int as inactive,
+                    sum((b.placement_class = 'Placed')::int)::int as placed,
+                    sum((b.placement_class = 'Not Placed')::int)::int as not_placed
+                FROM base_deals b
+                GROUP BY b.carrier_id, b.carrier_name, b.effective_month
             ),
-            -- DOWNLINE DEALS (deals visible via deal_hierarchy_snapshot but NOT user's own)
-            downline_deals_base AS (
+            -- Rolling 9m for persistency calculation
+            rolling_9m AS (
                 SELECT
-                    d.id,
-                    d.carrier_id,
-                    c.name as carrier_name,
-                    date_trunc('month', COALESCE(d.policy_effective_date, d.submission_date))::date as effective_month,
-                    d.monthly_premium,
-                    d.annual_premium,
-                    coalesce(nullif(btrim(d.state), ''), 'UNK') as state,
-                    coalesce(d.age_band, 'UNK') as age_band,
-                    nullif(btrim(d.status), '') as status_raw,
-                    CASE
-                        WHEN sm.impact = 'positive' THEN 'Active'
-                        WHEN sm.impact = 'negative' THEN 'Inactive'
-                        ELSE NULL
-                    END as impact_class,
-                    CASE
-                        WHEN sm.placement = 'positive' THEN 'Placed'
-                        WHEN sm.placement = 'negative' THEN 'Not Placed'
-                        ELSE NULL
-                    END as placement_class
-                FROM deals d
-                JOIN carriers c ON c.id = d.carrier_id
-                LEFT JOIN status_mapping sm
-                    ON sm.carrier_id = d.carrier_id
-                    AND sm.raw_status = d.status
-                CROSS JOIN user_context uc
+                    ms_outer.carrier_id,
+                    ms_outer.carrier_name,
+                    ms_outer.effective_month,
+                    sum(ms_inner.active)::int as active_9m,
+                    sum(ms_inner.inactive)::int as inactive_9m,
+                    sum(ms_inner.placed)::int as placed_9m,
+                    sum(ms_inner.not_placed)::int as not_placed_9m
+                FROM monthly_series ms_outer
+                JOIN monthly_series ms_inner
+                    ON ms_inner.carrier_id = ms_outer.carrier_id
+                    AND ms_inner.effective_month BETWEEN
+                        (ms_outer.effective_month - make_interval(months => 8))
+                        AND ms_outer.effective_month
+                GROUP BY ms_outer.carrier_id, ms_outer.carrier_name, ms_outer.effective_month
+            ),
+            -- Window definitions
+            win_ranges AS (
+                SELECT * FROM (VALUES
+                    ('3m', 3),
+                    ('6m', 6),
+                    ('9m', 9),
+                    ('all_time', %s)
+                ) AS t(win_key, win_months)
                 CROSS JOIN as_of_month aom
-                WHERE d.agency_id = uc.agency_id
-                    AND d.agent_id != %s
-                    AND COALESCE(d.policy_effective_date, d.submission_date) IS NOT NULL
-                    AND date_trunc('month', COALESCE(d.policy_effective_date, d.submission_date))::date
-                        BETWEEN (aom.month_start - make_interval(months => %s - 1))
-                            AND aom.month_start
-                    AND (%s IS NULL OR d.carrier_id = ANY(%s::uuid[]))
-                    AND (
-                        uc.is_admin
-                        OR d.id IN (
-                            SELECT deal_id
-                            FROM deal_hierarchy_snapshot
-                            WHERE agent_id = %s
-                        )
-                    )
             ),
-            downline_summary AS (
+            -- Window series by carrier
+            win_series AS (
                 SELECT
-                    count(*) as total_deals,
-                    sum(CASE WHEN impact_class = 'Active' THEN 1 ELSE 0 END) as active_count,
-                    sum(CASE WHEN impact_class = 'Inactive' THEN 1 ELSE 0 END) as inactive_count,
-                    sum(CASE WHEN placement_class = 'Placed' THEN 1 ELSE 0 END) as placed_count,
-                    sum(CASE WHEN placement_class = 'Not Placed' THEN 1 ELSE 0 END) as not_placed_count,
-                    coalesce(sum(monthly_premium), 0) as total_premium,
-                    coalesce(avg(monthly_premium), 0) as avg_premium
-                FROM downline_deals_base
+                    ms.carrier_id,
+                    ms.carrier_name,
+                    wr.win_key,
+                    sum(ms.active)::int as active,
+                    sum(ms.inactive)::int as inactive,
+                    sum(ms.submitted)::int as submitted,
+                    (sum(ms.premium_sum) / nullif(sum(ms.submitted), 0))::numeric(12,2) as avg_premium_submitted,
+                    sum(ms.placed)::int as placed,
+                    sum(ms.not_placed)::int as not_placed
+                FROM monthly_series ms
+                CROSS JOIN as_of_month aom
+                JOIN win_ranges wr ON ms.effective_month BETWEEN
+                    (aom.month_start - make_interval(months => wr.win_months - 1))
+                    AND aom.month_start
+                GROUP BY ms.carrier_id, ms.carrier_name, wr.win_key
             ),
-            -- Carrier breakdown for your deals
-            your_carrier_breakdown AS (
+            -- Window totals (all carriers combined)
+            win_all AS (
                 SELECT
-                    carrier_id,
-                    carrier_name,
-                    count(*) as deal_count,
-                    sum(CASE WHEN impact_class = 'Active' THEN 1 ELSE 0 END) as active,
-                    sum(CASE WHEN impact_class = 'Inactive' THEN 1 ELSE 0 END) as inactive,
-                    coalesce(sum(monthly_premium), 0) as premium
-                FROM your_deals_base
-                GROUP BY carrier_id, carrier_name
-                ORDER BY deal_count DESC
+                    wr.win_key,
+                    sum(ms.active)::int as active,
+                    sum(ms.inactive)::int as inactive,
+                    sum(ms.submitted)::int as submitted,
+                    (sum(ms.premium_sum) / nullif(sum(ms.submitted), 0))::numeric(12,2) as avg_premium_submitted,
+                    sum(ms.placed)::int as placed,
+                    sum(ms.not_placed)::int as not_placed
+                FROM monthly_series ms
+                CROSS JOIN as_of_month aom
+                JOIN win_ranges wr ON ms.effective_month BETWEEN
+                    (aom.month_start - make_interval(months => wr.win_months - 1))
+                    AND aom.month_start
+                GROUP BY wr.win_key
             ),
-            -- Carrier breakdown for downline
-            downline_carrier_breakdown AS (
+            -- Status breakdown by carrier and window
+            status_breakdown AS (
                 SELECT
-                    carrier_id,
-                    carrier_name,
-                    count(*) as deal_count,
-                    sum(CASE WHEN impact_class = 'Active' THEN 1 ELSE 0 END) as active,
-                    sum(CASE WHEN impact_class = 'Inactive' THEN 1 ELSE 0 END) as inactive,
-                    coalesce(sum(monthly_premium), 0) as premium
-                FROM downline_deals_base
-                GROUP BY carrier_id, carrier_name
-                ORDER BY deal_count DESC
+                    b.carrier_id,
+                    b.carrier_name,
+                    wr.win_key,
+                    coalesce(b.status_raw, 'Unknown') as status_value,
+                    count(*)::int as cnt
+                FROM base_deals b
+                CROSS JOIN as_of_month aom
+                JOIN win_ranges wr ON b.effective_month BETWEEN
+                    (aom.month_start - make_interval(months => wr.win_months - 1))
+                    AND aom.month_start
+                GROUP BY b.carrier_id, b.carrier_name, wr.win_key, coalesce(b.status_raw, 'Unknown')
+            ),
+            -- State breakdown ranked
+            state_ranked AS (
+                SELECT
+                    b.carrier_id,
+                    b.carrier_name,
+                    wr.win_key,
+                    b.state,
+                    count(*)::int as submitted,
+                    sum((b.impact_class = 'Active')::int)::int as active,
+                    sum((b.impact_class = 'Inactive')::int)::int as inactive,
+                    (sum(b.monthly_premium) / nullif(count(*), 0))::numeric(12,2) as avg_premium_submitted,
+                    row_number() over (
+                        partition by b.carrier_id, wr.win_key
+                        order by count(*) desc, b.state
+                    ) as rn
+                FROM base_deals b
+                CROSS JOIN as_of_month aom
+                JOIN win_ranges wr ON b.effective_month BETWEEN
+                    (aom.month_start - make_interval(months => wr.win_months - 1))
+                    AND aom.month_start
+                GROUP BY b.carrier_id, b.carrier_name, wr.win_key, b.state
+            ),
+            -- Age breakdown
+            age_breakdown AS (
+                SELECT
+                    b.carrier_id,
+                    b.carrier_name,
+                    wr.win_key,
+                    b.age_band,
+                    count(*)::int as submitted,
+                    sum((b.impact_class = 'Active')::int)::int as active,
+                    sum((b.impact_class = 'Inactive')::int)::int as inactive,
+                    (sum(b.monthly_premium) / nullif(count(*), 0))::numeric(12,2) as avg_premium_submitted
+                FROM base_deals b
+                CROSS JOIN as_of_month aom
+                JOIN win_ranges wr ON b.effective_month BETWEEN
+                    (aom.month_start - make_interval(months => wr.win_months - 1))
+                    AND aom.month_start
+                GROUP BY b.carrier_id, b.carrier_name, wr.win_key, b.age_band
             )
             SELECT
-                -- Your deals summary
-                (SELECT row_to_json(yds) FROM your_deals_summary yds) as your_deals_summary,
-                -- Downline summary
-                (SELECT row_to_json(ds) FROM downline_summary ds) as downline_summary,
-                -- Your carrier breakdown
-                (SELECT coalesce(json_agg(row_to_json(ycb)), '[]'::json)
-                 FROM your_carrier_breakdown ycb) as your_carrier_breakdown,
-                -- Downline carrier breakdown
-                (SELECT coalesce(json_agg(row_to_json(dcb)), '[]'::json)
-                 FROM downline_carrier_breakdown dcb) as downline_carrier_breakdown,
-                -- Metadata
-                (SELECT json_build_object(
-                    'as_of', %s::date,
-                    'all_time_months', %s,
-                    'user_id', %s,
-                    'is_admin', (SELECT is_admin FROM user_context)
-                )) as metadata
+                -- Meta
+                (SELECT jsonb_build_object(
+                    'window', 'all_time',
+                    'grain', 'month',
+                    'as_of', to_char((SELECT month_start FROM as_of_month), 'YYYY-MM-DD'),
+                    'carriers', coalesce(
+                        (SELECT jsonb_agg(DISTINCT carrier_name ORDER BY carrier_name)
+                         FROM base_deals), '[]'::jsonb),
+                    'period_start', to_char(
+                        (SELECT month_start - make_interval(months => %s - 1) FROM as_of_month),
+                        'YYYY-MM'),
+                    'period_end', to_char((SELECT month_start FROM as_of_month), 'YYYY-MM')
+                )) as meta,
+                -- Series
+                coalesce(
+                    (SELECT jsonb_agg(
+                        jsonb_build_object(
+                            'period', to_char(ms.effective_month, 'YYYY-MM'),
+                            'carrier', ms.carrier_name,
+                            'active', ms.active,
+                            'inactive', ms.inactive,
+                            'submitted', ms.submitted,
+                            'avg_premium_submitted', ms.avg_premium_submitted,
+                            'persistency', (rp.active_9m::numeric / nullif(rp.active_9m + rp.inactive_9m, 0)),
+                            'placed', ms.placed,
+                            'not_placed', ms.not_placed,
+                            'placement', (rp.placed_9m::numeric / nullif(rp.placed_9m + rp.not_placed_9m, 0))
+                        )
+                        ORDER BY ms.carrier_name, ms.effective_month
+                    )
+                    FROM monthly_series ms
+                    LEFT JOIN rolling_9m rp
+                        ON rp.carrier_id = ms.carrier_id
+                        AND rp.effective_month = ms.effective_month),
+                    '[]'::jsonb
+                ) as series,
+                -- Windows by carrier
+                coalesce(
+                    (SELECT jsonb_object_agg(
+                        carrier_name,
+                        win_payload
+                        ORDER BY carrier_name
+                    )
+                    FROM (
+                        SELECT
+                            ws.carrier_name,
+                            jsonb_object_agg(
+                                ws.win_key,
+                                jsonb_build_object(
+                                    'active', ws.active,
+                                    'inactive', ws.inactive,
+                                    'submitted', ws.submitted,
+                                    'avg_premium_submitted', ws.avg_premium_submitted,
+                                    'persistency', (ws.active::numeric / nullif(ws.active + ws.inactive, 0)),
+                                    'placed', ws.placed,
+                                    'not_placed', ws.not_placed,
+                                    'placement', (ws.placed::numeric / nullif(ws.placed + ws.not_placed, 0))
+                                )
+                                ORDER BY ws.win_key
+                            ) as win_payload
+                        FROM win_series ws
+                        GROUP BY ws.carrier_name
+                    ) t),
+                    '{{}}'::jsonb
+                ) as windows_by_carrier,
+                -- Totals
+                jsonb_build_object(
+                    'by_carrier', coalesce(
+                        (SELECT jsonb_agg(
+                            jsonb_build_object(
+                                'window', 'all_time',
+                                'carrier', ws.carrier_name,
+                                'active', ws.active,
+                                'inactive', ws.inactive,
+                                'submitted', ws.submitted,
+                                'avg_premium_submitted', ws.avg_premium_submitted,
+                                'persistency', (ws.active::numeric / nullif(ws.active + ws.inactive, 0)),
+                                'placed', ws.placed,
+                                'not_placed', ws.not_placed,
+                                'placement', (ws.placed::numeric / nullif(ws.placed + ws.not_placed, 0))
+                            )
+                            ORDER BY ws.carrier_name
+                        )
+                        FROM win_series ws
+                        WHERE ws.win_key = 'all_time'),
+                        '[]'::jsonb
+                    ),
+                    'all', coalesce(
+                        (SELECT jsonb_build_object(
+                            'window', 'all_time',
+                            'carrier', 'ALL',
+                            'active', wa.active,
+                            'inactive', wa.inactive,
+                            'submitted', wa.submitted,
+                            'avg_premium_submitted', wa.avg_premium_submitted,
+                            'persistency', (wa.active::numeric / nullif(wa.active + wa.inactive, 0)),
+                            'placed', wa.placed,
+                            'not_placed', wa.not_placed,
+                            'placement', (wa.placed::numeric / nullif(wa.placed + wa.not_placed, 0))
+                        )
+                        FROM win_all wa
+                        WHERE wa.win_key = 'all_time'),
+                        '{{}}'::jsonb
+                    )
+                ) as totals,
+                -- Breakdowns by carrier
+                coalesce(
+                    (SELECT jsonb_object_agg(
+                        c.carrier_name,
+                        jsonb_build_object(
+                            'status', coalesce(
+                                (SELECT jsonb_object_agg(
+                                    sb.win_key,
+                                    (SELECT jsonb_object_agg(sb2.status_value, sb2.cnt)
+                                     FROM status_breakdown sb2
+                                     WHERE sb2.carrier_id = c.carrier_id AND sb2.win_key = sb.win_key)
+                                )
+                                FROM (SELECT DISTINCT win_key FROM status_breakdown WHERE carrier_id = c.carrier_id) sb),
+                                '{{}}'::jsonb
+                            ),
+                            'state', coalesce(
+                                (SELECT jsonb_object_agg(
+                                    sr.win_key,
+                                    (SELECT jsonb_agg(
+                                        jsonb_build_object(
+                                            'state', sr2.state,
+                                            'active', sr2.active,
+                                            'inactive', sr2.inactive,
+                                            'submitted', sr2.submitted,
+                                            'avg_premium_submitted', sr2.avg_premium_submitted
+                                        )
+                                        ORDER BY sr2.submitted DESC, sr2.state
+                                    )
+                                    FROM state_ranked sr2
+                                    WHERE sr2.carrier_id = c.carrier_id
+                                        AND sr2.win_key = sr.win_key
+                                        AND sr2.rn <= %s)
+                                )
+                                FROM (SELECT DISTINCT win_key FROM state_ranked WHERE carrier_id = c.carrier_id) sr),
+                                '{{}}'::jsonb
+                            ),
+                            'age_band', coalesce(
+                                (SELECT jsonb_object_agg(
+                                    ab.win_key,
+                                    (SELECT jsonb_agg(
+                                        jsonb_build_object(
+                                            'age_band', ab2.age_band,
+                                            'active', ab2.active,
+                                            'inactive', ab2.inactive,
+                                            'submitted', ab2.submitted,
+                                            'avg_premium_submitted', ab2.avg_premium_submitted
+                                        )
+                                        ORDER BY
+                                            CASE ab2.age_band
+                                                WHEN '18-30' THEN 1
+                                                WHEN '31-40' THEN 2
+                                                WHEN '41-50' THEN 3
+                                                WHEN '51-60' THEN 4
+                                                WHEN '61-70' THEN 5
+                                                WHEN '71+' THEN 6
+                                                WHEN 'UNK' THEN 7
+                                                ELSE 99
+                                            END, ab2.age_band
+                                    )
+                                    FROM age_breakdown ab2
+                                    WHERE ab2.carrier_id = c.carrier_id AND ab2.win_key = ab.win_key)
+                                )
+                                FROM (SELECT DISTINCT win_key FROM age_breakdown WHERE carrier_id = c.carrier_id) ab),
+                                '{{}}'::jsonb
+                            )
+                        )
+                        ORDER BY c.carrier_name
+                    )
+                    FROM (SELECT DISTINCT carrier_id, carrier_name FROM base_deals) c),
+                    '{{}}'::jsonb
+                ) as breakdowns_by_carrier
         """, [
             str(user.id),
             as_of, as_of,
-            str(user.id),
             all_time_months,
             carrier_ids_array, carrier_ids_array,
-            str(user.id),
+            *scope_params,
             all_time_months,
-            carrier_ids_array, carrier_ids_array,
-            str(user.id),
-            as_of,
             all_time_months,
-            str(user.id),
+            top_states,
         ])
 
         row = cursor.fetchone()
 
     if not row:
-        return {
-            'your_deals': _empty_summary(),
-            'downline': _empty_summary(),
-            'metadata': {
-                'as_of': as_of.isoformat(),
-                'all_time_months': all_time_months,
-            },
-        }
+        return _empty_analytics_scope()
 
-    (
-        your_summary_raw,
-        downline_summary_raw,
-        your_carriers,
-        downline_carriers,
-        metadata_raw,
-    ) = row
-    your_summary = your_summary_raw or {}
-    downline_summary = downline_summary_raw or {}
-    your_carriers = your_carriers or []
-    downline_carriers = downline_carriers or []
-    metadata = metadata_raw or {}
-
-    # Calculate persistency rates
-    your_total = (your_summary.get('active_count', 0) or 0) + (your_summary.get('inactive_count', 0) or 0)
-    your_persistency = round(
-        100 * (your_summary.get('active_count', 0) or 0) / your_total, 2
-    ) if your_total > 0 else 0
-
-    downline_total = (downline_summary.get('active_count', 0) or 0) + (downline_summary.get('inactive_count', 0) or 0)
-    downline_persistency = round(
-        100 * (downline_summary.get('active_count', 0) or 0) / downline_total, 2
-    ) if downline_total > 0 else 0
+    meta, series, windows_by_carrier, totals, breakdowns_by_carrier = row
 
     return {
-        'your_deals': {
-            'total_deals': your_summary.get('total_deals', 0) or 0,
-            'active_count': your_summary.get('active_count', 0) or 0,
-            'inactive_count': your_summary.get('inactive_count', 0) or 0,
-            'placed_count': your_summary.get('placed_count', 0) or 0,
-            'not_placed_count': your_summary.get('not_placed_count', 0) or 0,
-            'total_premium': float(your_summary.get('total_premium', 0) or 0),
-            'avg_premium': float(your_summary.get('avg_premium', 0) or 0),
-            'persistency_rate': your_persistency,
-            'carriers': your_carriers,
+        'meta': meta or {},
+        'series': series if include_series else [],
+        'windows_by_carrier': windows_by_carrier if include_windows_by_carrier else {},
+        'totals': totals or {'by_carrier': [], 'all': {}},
+        'breakdowns_over_time': {
+            'by_carrier': breakdowns_by_carrier if (include_breakdowns_status or include_breakdowns_state or include_breakdowns_age) else {},
         },
-        'downline': {
-            'total_deals': downline_summary.get('total_deals', 0) or 0,
-            'active_count': downline_summary.get('active_count', 0) or 0,
-            'inactive_count': downline_summary.get('inactive_count', 0) or 0,
-            'placed_count': downline_summary.get('placed_count', 0) or 0,
-            'not_placed_count': downline_summary.get('not_placed_count', 0) or 0,
-            'total_premium': float(downline_summary.get('total_premium', 0) or 0),
-            'avg_premium': float(downline_summary.get('avg_premium', 0) or 0),
-            'persistency_rate': downline_persistency,
-            'carriers': downline_carriers,
+    }
+
+
+def _empty_analytics_scope() -> dict[str, Any]:
+    """Return empty analytics scope structure."""
+    return {
+        'meta': {
+            'window': 'all_time',
+            'grain': 'month',
+            'carriers': [],
         },
-        'metadata': {
-            'as_of': metadata.get('as_of', as_of.isoformat()),
-            'all_time_months': metadata.get('all_time_months', all_time_months),
+        'series': [],
+        'windows_by_carrier': {},
+        'totals': {
+            'by_carrier': [],
+            'all': {},
+        },
+        'breakdowns_over_time': {
+            'by_carrier': {},
         },
     }
 
@@ -551,7 +799,7 @@ def get_persistency_analytics(
 ) -> dict[str, Any]:
     """
     Get persistency analytics for an agency.
-    Wraps the existing analyze_persistency_for_deals RPC.
+    Native Django implementation matching analyze_persistency_for_deals RPC.
 
     Args:
         agency_id: The agency ID
@@ -559,27 +807,140 @@ def get_persistency_analytics(
         carrier_id: Optional carrier ID to filter by
 
     Returns:
-        Persistency analytics data
+        Persistency analytics data with by_carrier breakdown and overall metrics
     """
     if as_of is None:
         as_of = date.today()
 
+    carrier_filter = "AND d.carrier_id = %s" if carrier_id else ""
+    carrier_params = [str(carrier_id)] if carrier_id else []
+
     with connection.cursor() as cursor:
-        # Call the existing RPC function directly since it's complex
-        cursor.execute("""
-            SELECT analyze_persistency_for_deals(%s, %s, %s)
-        """, [str(agency_id), as_of, str(carrier_id) if carrier_id else None])
+        cursor.execute(f"""
+            WITH
+            as_of_month AS (
+                SELECT make_date(
+                    extract(year from %s::date)::int,
+                    extract(month from %s::date)::int,
+                    1
+                ) as month_start
+            ),
+            base_deals AS (
+                SELECT
+                    d.id,
+                    d.carrier_id,
+                    c.name as carrier_name,
+                    d.agent_id,
+                    u.first_name || ' ' || u.last_name as agent_name,
+                    CASE
+                        WHEN sm.impact = 'positive' THEN 'Active'
+                        WHEN sm.impact = 'negative' THEN 'Inactive'
+                        ELSE 'Unknown'
+                    END as status_class
+                FROM deals d
+                JOIN carriers c ON c.id = d.carrier_id
+                LEFT JOIN users u ON u.id = d.agent_id
+                LEFT JOIN status_mapping sm
+                    ON sm.carrier_id = d.carrier_id
+                    AND sm.raw_status = d.status
+                CROSS JOIN as_of_month aom
+                WHERE d.agency_id = %s
+                    AND COALESCE(d.policy_effective_date, d.submission_date) IS NOT NULL
+                    AND date_trunc('month', COALESCE(d.policy_effective_date, d.submission_date))::date
+                        BETWEEN (aom.month_start - make_interval(months => 11))
+                            AND aom.month_start
+                    {carrier_filter}
+            ),
+            -- By carrier
+            carrier_stats AS (
+                SELECT
+                    carrier_id,
+                    carrier_name,
+                    count(*)::int as total_policies,
+                    sum(CASE WHEN status_class = 'Active' THEN 1 ELSE 0 END)::int as active_policies,
+                    sum(CASE WHEN status_class = 'Inactive' THEN 1 ELSE 0 END)::int as inactive_policies
+                FROM base_deals
+                GROUP BY carrier_id, carrier_name
+            ),
+            -- By agent
+            agent_stats AS (
+                SELECT
+                    agent_id,
+                    agent_name,
+                    count(*)::int as total_policies,
+                    sum(CASE WHEN status_class = 'Active' THEN 1 ELSE 0 END)::int as active_policies
+                FROM base_deals
+                GROUP BY agent_id, agent_name
+            ),
+            -- Overall
+            overall_stats AS (
+                SELECT
+                    count(*)::int as total_policies,
+                    sum(CASE WHEN status_class = 'Active' THEN 1 ELSE 0 END)::int as active_policies
+                FROM base_deals
+            )
+            SELECT
+                coalesce(
+                    (SELECT jsonb_agg(
+                        jsonb_build_object(
+                            'carrier_id', cs.carrier_id,
+                            'carrier_name', cs.carrier_name,
+                            'total_policies', cs.total_policies,
+                            'active_policies', cs.active_policies,
+                            'persistency_rate', round(
+                                (cs.active_policies::numeric / nullif(cs.total_policies, 0)) * 100, 2
+                            )
+                        )
+                        ORDER BY cs.carrier_name
+                    ) FROM carrier_stats cs),
+                    '[]'::jsonb
+                ) as by_carrier,
+                coalesce(
+                    (SELECT jsonb_agg(
+                        jsonb_build_object(
+                            'agent_id', ast.agent_id,
+                            'agent_name', ast.agent_name,
+                            'total_policies', ast.total_policies,
+                            'active_policies', ast.active_policies,
+                            'persistency_rate', round(
+                                (ast.active_policies::numeric / nullif(ast.total_policies, 0)) * 100, 2
+                            )
+                        )
+                        ORDER BY ast.agent_name
+                    ) FROM agent_stats ast),
+                    '[]'::jsonb
+                ) as by_agent,
+                (SELECT jsonb_build_object(
+                    'total_policies', os.total_policies,
+                    'active_policies', os.active_policies,
+                    'overall_persistency', round(
+                        (os.active_policies::numeric / nullif(os.total_policies, 0)) * 100, 2
+                    )
+                ) FROM overall_stats os) as overall
+        """, [
+            as_of, as_of,
+            str(agency_id),
+            *carrier_params,
+        ])
 
         row = cursor.fetchone()
 
-    if not row or not row[0]:
+    if not row:
         return {
-            'carriers': [],
-            'overall_analytics': {},
-            'carrier_comparison': {},
+            'by_carrier': [],
+            'by_agent': [],
+            'overall_persistency': 0,
         }
 
-    return row[0]
+    by_carrier, by_agent, overall = row
+
+    return {
+        'by_carrier': by_carrier or [],
+        'by_agent': by_agent or [],
+        'overall_persistency': (overall or {}).get('overall_persistency', 0),
+        'total_policies': (overall or {}).get('total_policies', 0),
+        'active_policies': (overall or {}).get('active_policies', 0),
+    }
 
 
 def _empty_summary() -> dict:

@@ -31,7 +31,7 @@ from .selectors import (
     get_agents_table,
     get_agents_without_positions,
 )
-from .services import assign_position_to_agent, invite_agent, update_agent_position
+from .services import assign_position_to_agent, invite_agent, resend_agent_invite, update_agent_position
 
 logger = logging.getLogger(__name__)
 
@@ -817,23 +817,25 @@ class AgentInviteView(APIView):
     POST /api/agents/invite
 
     Invite a new agent to join the agency.
-    Creates a user record with status='invited' and sets upline to the inviter.
+    Creates Supabase auth user, sends invite email, and creates DB user record.
 
     Request body:
         {
             "email": "agent@example.com",
-            "first_name": "John",
-            "last_name": "Doe",
-            "phone_number": "+1234567890",  // optional
-            "position_id": "uuid"           // optional
+            "firstName": "John",
+            "lastName": "Doe",
+            "phoneNumber": "+1234567890",  // optional
+            "positionId": "uuid",          // optional
+            "permissionLevel": "agent",    // 'agent' or 'admin'
+            "uplineAgentId": "uuid",       // optional, defaults to inviter
+            "preInviteUserId": "uuid"      // optional, to update pre-invite user
         }
 
     Response (201):
         {
             "success": true,
-            "user_id": "uuid",
-            "email": "agent@example.com",
-            ...
+            "userId": "uuid",
+            "message": "Agent invited successfully"
         }
     """
     permission_classes = [IsAuthenticated]
@@ -847,11 +849,15 @@ class AgentInviteView(APIView):
             )
 
         data = request.data
+        # Support both camelCase (frontend) and snake_case (backend) params
         email = data.get('email', '').strip()
-        first_name = data.get('first_name', '').strip()
-        last_name = data.get('last_name', '').strip()
-        phone_number = data.get('phone_number')
-        position_id_str = data.get('position_id')
+        first_name = data.get('firstName') or data.get('first_name', '')
+        last_name = data.get('lastName') or data.get('last_name', '')
+        phone_number = data.get('phoneNumber') or data.get('phone_number')
+        position_id_str = data.get('positionId') or data.get('position_id')
+        perm_level = data.get('permissionLevel') or data.get('perm_level', 'agent')
+        upline_id_str = data.get('uplineAgentId') or data.get('upline_id')
+        pre_invite_user_id_str = data.get('preInviteUserId') or data.get('pre_invite_user_id')
 
         # Validate required fields
         if not email:
@@ -860,15 +866,9 @@ class AgentInviteView(APIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
         if not first_name:
-            return Response(
-                {'error': 'first_name is required'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+            first_name = ''  # Allow empty first name for pre-invite updates
         if not last_name:
-            return Response(
-                {'error': 'last_name is required'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+            last_name = ''  # Allow empty last name for pre-invite updates
 
         position_id = None
         if position_id_str:
@@ -876,7 +876,27 @@ class AgentInviteView(APIView):
                 position_id = UUID(position_id_str)
             except ValueError:
                 return Response(
-                    {'error': 'Invalid position_id format'},
+                    {'error': 'Invalid positionId format'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+        upline_id = None
+        if upline_id_str:
+            try:
+                upline_id = UUID(upline_id_str)
+            except ValueError:
+                return Response(
+                    {'error': 'Invalid uplineAgentId format'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+        pre_invite_user_id = None
+        if pre_invite_user_id_str:
+            try:
+                pre_invite_user_id = UUID(pre_invite_user_id_str)
+            except ValueError:
+                return Response(
+                    {'error': 'Invalid preInviteUserId format'},
                     status=status.HTTP_400_BAD_REQUEST
                 )
 
@@ -889,6 +909,9 @@ class AgentInviteView(APIView):
                 last_name=last_name,
                 phone_number=phone_number,
                 position_id=position_id,
+                perm_level=perm_level,
+                upline_id=upline_id,
+                pre_invite_user_id=pre_invite_user_id,
             )
 
             if not result.get('success'):
@@ -897,11 +920,91 @@ class AgentInviteView(APIView):
                     status=status.HTTP_400_BAD_REQUEST
                 )
 
-            return Response(result, status=status.HTTP_201_CREATED)
+            # Return with camelCase keys for frontend compatibility
+            return Response({
+                'success': True,
+                'userId': result.get('user_id'),
+                'message': result.get('message', 'Agent invited successfully'),
+            }, status=status.HTTP_201_CREATED)
 
         except Exception as e:
             logger.error(f'Agent invite failed: {e}')
             return Response(
                 {'error': 'Failed to invite agent', 'detail': str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
+class AgentResendInviteView(APIView):
+    """
+    POST /api/agents/resend-invite
+
+    Resend an invitation to an agent who has not yet completed onboarding.
+    Unlinks old auth account, deletes it, creates new invite, and updates user record.
+
+    Request body:
+        {
+            "agentId": "uuid"
+        }
+
+    Response (200):
+        {
+            "success": true,
+            "message": "Invitation resent successfully to John Doe"
+        }
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        user = get_user_context(request)
+        if not user:
+            return Response(
+                {'error': 'Unauthorized'},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
+        data = request.data
+        # Support both camelCase and snake_case
+        agent_id_str = data.get('agentId') or data.get('agent_id')
+
+        if not agent_id_str:
+            return Response(
+                {'error': 'Agent ID is required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            agent_uuid = UUID(agent_id_str)
+        except ValueError:
+            return Response(
+                {'error': 'Invalid agentId format'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            result = resend_agent_invite(
+                requester_id=user.id,
+                agency_id=user.agency_id,
+                agent_id=agent_uuid,
+            )
+
+            if not result.get('success'):
+                error_msg = result.get('error', 'Failed to resend invite')
+                # Determine appropriate status code
+                if 'not found' in error_msg.lower():
+                    return Response({'error': error_msg}, status=status.HTTP_404_NOT_FOUND)
+                if 'other agencies' in error_msg.lower():
+                    return Response({'error': error_msg}, status=status.HTTP_403_FORBIDDEN)
+                return Response({'error': error_msg}, status=status.HTTP_400_BAD_REQUEST)
+
+            return Response({
+                'success': True,
+                'message': result.get('message', 'Invitation resent successfully'),
+            })
+
+        except Exception as e:
+            logger.error(f'Agent resend invite failed: {e}')
+            return Response(
+                {'error': 'Failed to resend invite', 'detail': str(e)},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )

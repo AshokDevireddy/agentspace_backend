@@ -14,6 +14,7 @@ urlpatterns = [
     path('without-positions', views.AgentsWithoutPositionsView.as_view(), name='agents_without_positions'),
     path('assign-position', views.AssignPositionView.as_view(), name='assign_position'),
     path('invite', views.AgentInviteView.as_view(), name='agent_invite'),
+    path('resend-invite', views.AgentResendInviteView.as_view(), name='agent_resend_invite'),
     path(
         'check-positions',
         views.CheckCurrentUserUplinePositionsView.as_view(),

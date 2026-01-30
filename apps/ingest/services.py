@@ -593,6 +593,7 @@ def sync_agent_carrier_numbers_from_staging() -> dict:
 # =============================================================================
 
 
+@transaction.atomic
 def create_ingest_job(
     agency_id: UUID,
     expected_files: int,
@@ -814,6 +815,7 @@ def list_ingest_job_files(job_ids: list[UUID]) -> list[dict]:
 # =============================================================================
 
 
+@transaction.atomic
 def bulk_insert_staging_records(
     agency_id: UUID,
     records: list[dict],
@@ -871,6 +873,7 @@ def bulk_insert_staging_records(
         return {'success': False, 'error': str(e)}
 
 
+@transaction.atomic
 def upsert_ingest_job_file(
     job_id: UUID,
     file_id: str,

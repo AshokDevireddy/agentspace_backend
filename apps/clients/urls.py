@@ -8,6 +8,7 @@ from .views import (
     ClientDealsView,
     ClientDetailView,
     ClientInviteView,
+    ClientResendInviteView,
     ClientsListView,
 )
 
@@ -15,8 +16,9 @@ urlpatterns = [
     path('', ClientsListView.as_view(), name='clients-list'),
     # Alias for get_clients_overview RPC
     path('overview', ClientsListView.as_view(), name='clients-overview'),
-    # Invite endpoint (must be before <str:client_id> to avoid conflict)
+    # Invite endpoints (must be before <str:client_id> to avoid conflict)
     path('invite', ClientInviteView.as_view(), name='client-invite'),
+    path('resend-invite', ClientResendInviteView.as_view(), name='client-resend-invite'),
     path('<str:client_id>', ClientDetailView.as_view(), name='client-detail'),
 ]
 

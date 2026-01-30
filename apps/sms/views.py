@@ -32,6 +32,7 @@ from .services import (
     GetOrCreateConversationInput,
     LogMessageInput,
     SendMessageInput,
+    StartConversationInput,
     TemplateInput,
     approve_drafts,
     create_template,
@@ -46,6 +47,7 @@ from .services import (
     reject_drafts,
     send_bulk_messages,
     send_message,
+    start_conversation,
     update_draft_body,
     update_opt_status,
     update_template,
@@ -609,6 +611,65 @@ class ConversationGetOrCreateView(AuthenticatedAPIView, APIView):
             "conversation": result.conversation,
             "created": result.created,
         }, status=status.HTTP_201_CREATED if result.created else status.HTTP_200_OK)
+
+
+class StartConversationView(AuthenticatedAPIView, APIView):
+    """
+    POST /api/sms/conversations/start - Start a new SMS conversation from a deal
+
+    This endpoint creates a new conversation, sends a welcome message, and logs it.
+
+    Body:
+    - dealId or deal_id: Required - The deal ID to start conversation from
+
+    Response (200):
+    - conversation: The created conversation object
+    - message: Success message
+
+    Response (409 Conflict):
+    - error: Message indicating conversation already exists
+    - existingConversation: The existing conversation object
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        user = self.get_user(request)
+
+        data = request.data
+        # Support both camelCase and snake_case
+        deal_id = data.get("dealId") or data.get("deal_id")
+
+        if not deal_id:
+            return Response(
+                {"error": "Deal ID is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        deal_uuid = self.parse_uuid(deal_id, "dealId")
+
+        result = start_conversation(
+            user=user,
+            data=StartConversationInput(deal_id=deal_uuid),
+        )
+
+        if not result.success:
+            # Check if it's a conflict (existing conversation)
+            if result.existing_conversation:
+                return Response({
+                    "error": result.error,
+                    "existingConversation": result.existing_conversation,
+                }, status=status.HTTP_409_CONFLICT)
+
+            return Response(
+                {"error": result.error},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        return Response({
+            "conversation": result.conversation,
+            "message": result.message,
+        })
 
 
 class MessageLogView(AuthenticatedAPIView, APIView):

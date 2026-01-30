@@ -732,9 +732,8 @@ class SessionView(APIView):
 
 class UserProfileView(APIView):
     """
-    GET /api/user/profile
-
-    Get current user's full profile.
+    GET /api/user/profile - Get current user's full profile.
+    PUT /api/user/profile - Update current user's profile.
 
     Response (200):
         {
@@ -808,6 +807,81 @@ class UserProfileView(APIView):
             logger.error(f'Get profile failed: {e}')
             return Response(
                 {'error': 'ServerError', 'message': 'Failed to get profile'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+    def put(self, request):
+        """Update current user's profile."""
+        user = get_user_context(request)
+        if not user:
+            return Response(
+                {'error': 'Unauthorized', 'message': 'Authentication required'},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
+        # Allowed fields for update
+        allowed_fields = [
+            'first_name', 'last_name', 'phone_number', 'status',
+            'annual_goal', 'start_date',
+        ]
+
+        # Initialize onboarding on status change if needed
+        status_changed_to_onboarding = False
+
+        updates = []
+        params = []
+
+        for field in allowed_fields:
+            if field in request.data:
+                value = request.data[field]
+                # Handle status transitions
+                if field == 'status':
+                    # Valid transitions:
+                    # - invited -> onboarding (invite confirmation flow)
+                    # - onboarding -> active (clients skipping wizard)
+                    if value == 'onboarding' and user.status == 'invited':
+                        status_changed_to_onboarding = True
+                        updates.append(f'{field} = %s')
+                        params.append(value)
+                    elif value == 'active' and user.status == 'onboarding':
+                        updates.append(f'{field} = %s')
+                        params.append(value)
+                    # Skip other status changes
+                    continue
+                updates.append(f'{field} = %s')
+                params.append(value)
+
+        if not updates:
+            return Response(
+                {'error': 'ValidationError', 'message': 'No valid fields to update'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            params.append(str(user.id))
+            with connection.cursor() as cursor:
+                cursor.execute(f"""
+                    UPDATE public.users
+                    SET {', '.join(updates)}, updated_at = NOW()
+                    WHERE id = %s
+                """, params)
+
+            # Initialize onboarding progress if transitioning to onboarding
+            if status_changed_to_onboarding:
+                try:
+                    create_onboarding_progress(user.id)
+                except Exception as e:
+                    logger.warning(f'Failed to create onboarding progress: {e}')
+
+            return Response({
+                'success': True,
+                'message': 'Profile updated successfully'
+            })
+
+        except Exception as e:
+            logger.error(f'Update profile failed: {e}')
+            return Response(
+                {'error': 'ServerError', 'message': 'Failed to update profile'},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
@@ -1258,4 +1332,389 @@ class UserSmsUsageView(APIView):
             return Response(
                 {'error': 'ValidationError', 'message': 'action must be "increment" or "reset"'},
                 status=status.HTTP_400_BAD_REQUEST
+            )
+
+
+class UserByAuthIdView(APIView):
+    """
+    GET /api/users/by-auth-id/:auth_user_id
+
+    Get user by their Supabase auth_user_id. This is used during onboarding
+    when the user has an auth token but we need to look up their user record.
+
+    This endpoint requires authentication via the access token.
+
+    Response (200):
+        {
+            "id": "uuid",
+            "email": "user@example.com",
+            "first_name": "John",
+            "last_name": "Doe",
+            "phone_number": "1234567890",
+            "role": "agent",
+            "perm_level": "agent",
+            "is_admin": false,
+            "status": "onboarding",
+            "agency_id": "uuid"
+        }
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, auth_user_id: str):
+        # The auth_user_id in the URL must match the authenticated user's auth_user_id
+        # This prevents users from looking up other users' data
+        user = get_user_context(request)
+        if not user:
+            return Response(
+                {'error': 'Unauthorized', 'message': 'Authentication required'},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
+        if str(user.auth_user_id) != auth_user_id:
+            return Response(
+                {'error': 'Forbidden', 'message': 'You can only access your own user data'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute("""
+                    SELECT
+                        id, email, first_name, last_name, phone_number,
+                        role, perm_level, is_admin, status, agency_id
+                    FROM public.users
+                    WHERE auth_user_id = %s
+                    LIMIT 1
+                """, [auth_user_id])
+                row = cursor.fetchone()
+
+                if not row:
+                    return Response(
+                        {'error': 'NotFound', 'message': 'User not found'},
+                        status=status.HTTP_404_NOT_FOUND
+                    )
+
+                return Response({
+                    'id': str(row[0]),
+                    'email': row[1],
+                    'first_name': row[2],
+                    'last_name': row[3],
+                    'phone_number': row[4],
+                    'role': row[5],
+                    'perm_level': row[6],
+                    'is_admin': row[7],
+                    'status': row[8],
+                    'agency_id': str(row[9]) if row[9] else None,
+                })
+
+        except Exception as e:
+            logger.error(f'Get user by auth ID failed: {e}')
+            return Response(
+                {'error': 'ServerError', 'message': 'Failed to get user'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
+class UserByAuthIdOnboardingView(APIView):
+    """
+    GET /api/users/by-auth-id/:auth_user_id/onboarding
+
+    Get user by auth_user_id for onboarding flow. Only returns data if
+    user status is 'onboarding'. Used by setup-account page.
+
+    This is a more restricted version that validates the status.
+
+    Response (200):
+        {
+            "id": "uuid",
+            "email": "user@example.com",
+            "first_name": "John",
+            "last_name": "Doe",
+            "phone_number": "1234567890",
+            "role": "agent",
+            "perm_level": "agent",
+            "is_admin": false,
+            "status": "onboarding",
+            "agency_id": "uuid"
+        }
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, auth_user_id: str):
+        user = get_user_context(request)
+        if not user:
+            return Response(
+                {'error': 'Unauthorized', 'message': 'Authentication required'},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
+        if str(user.auth_user_id) != auth_user_id:
+            return Response(
+                {'error': 'Forbidden', 'message': 'You can only access your own user data'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute("""
+                    SELECT
+                        id, email, first_name, last_name, phone_number,
+                        role, perm_level, is_admin, status, agency_id
+                    FROM public.users
+                    WHERE auth_user_id = %s AND status = 'onboarding'
+                    LIMIT 1
+                """, [auth_user_id])
+                row = cursor.fetchone()
+
+                if not row:
+                    return Response(
+                        {'error': 'NotFound', 'message': 'User not found or already completed onboarding'},
+                        status=status.HTTP_404_NOT_FOUND
+                    )
+
+                return Response({
+                    'id': str(row[0]),
+                    'email': row[1],
+                    'first_name': row[2],
+                    'last_name': row[3],
+                    'phone_number': row[4],
+                    'role': row[5],
+                    'perm_level': row[6],
+                    'is_admin': row[7],
+                    'status': row[8],
+                    'agency_id': str(row[9]) if row[9] else None,
+                })
+
+        except Exception as e:
+            logger.error(f'Get user by auth ID for onboarding failed: {e}')
+            return Response(
+                {'error': 'ServerError', 'message': 'Failed to get user'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
+class UserStripeProfileView(APIView):
+    """
+    GET /api/user/stripe-profile
+
+    Get current user's Stripe-related data for payment operations.
+
+    Response (200):
+        {
+            "id": "uuid",
+            "email": "user@example.com",
+            "first_name": "John",
+            "last_name": "Doe",
+            "stripe_customer_id": "cus_xxx",
+            "stripe_subscription_id": "sub_xxx",
+            "subscription_tier": "pro",
+            "subscription_status": "active",
+            "billing_cycle_end": "2025-02-01T00:00:00",
+            "scheduled_tier_change": null,
+            "scheduled_tier_change_date": null,
+            "is_admin": true,
+            "role": "admin"
+        }
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = get_user_context(request)
+        if not user:
+            return Response(
+                {'error': 'Unauthorized', 'message': 'Authentication required'},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute("""
+                    SELECT
+                        id, email, first_name, last_name,
+                        stripe_customer_id, stripe_subscription_id,
+                        subscription_tier, subscription_status,
+                        billing_cycle_end, billing_cycle_start,
+                        scheduled_tier_change, scheduled_tier_change_date,
+                        is_admin, role
+                    FROM public.users
+                    WHERE id = %s
+                    LIMIT 1
+                """, [str(user.id)])
+                row = cursor.fetchone()
+
+                if not row:
+                    return Response(
+                        {'error': 'NotFound', 'message': 'User not found'},
+                        status=status.HTTP_404_NOT_FOUND
+                    )
+
+                return Response({
+                    'id': str(row[0]),
+                    'email': row[1],
+                    'first_name': row[2],
+                    'last_name': row[3],
+                    'stripe_customer_id': row[4],
+                    'stripe_subscription_id': row[5],
+                    'subscription_tier': row[6] or 'free',
+                    'subscription_status': row[7],
+                    'billing_cycle_end': row[8].isoformat() if row[8] else None,
+                    'billing_cycle_start': row[9].isoformat() if row[9] else None,
+                    'scheduled_tier_change': row[10],
+                    'scheduled_tier_change_date': row[11].isoformat() if row[11] else None,
+                    'is_admin': row[12],
+                    'role': row[13],
+                })
+
+        except Exception as e:
+            logger.error(f'Get Stripe profile failed: {e}')
+            return Response(
+                {'error': 'ServerError', 'message': 'Failed to get Stripe profile'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
+class UserStripeCustomerIdView(APIView):
+    """
+    PATCH /api/user/stripe-customer-id
+
+    Update user's Stripe customer ID. Used when creating a new Stripe customer.
+
+    Request Body:
+        {"stripe_customer_id": "cus_xxx"}
+
+    Response (200):
+        {"success": true, "stripe_customer_id": "cus_xxx"}
+    """
+    permission_classes = [IsAuthenticated]
+
+    def patch(self, request):
+        user = get_user_context(request)
+        if not user:
+            return Response(
+                {'error': 'Unauthorized', 'message': 'Authentication required'},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
+        # Support both camelCase and snake_case
+        stripe_customer_id = request.data.get('stripe_customer_id') or request.data.get('stripeCustomerId')
+
+        if not stripe_customer_id:
+            return Response(
+                {'error': 'ValidationError', 'message': 'stripe_customer_id is required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute("""
+                    UPDATE public.users
+                    SET stripe_customer_id = %s, updated_at = NOW()
+                    WHERE id = %s
+                    RETURNING stripe_customer_id
+                """, [stripe_customer_id, str(user.id)])
+                row = cursor.fetchone()
+
+                if not row:
+                    return Response(
+                        {'error': 'NotFound', 'message': 'User not found'},
+                        status=status.HTTP_404_NOT_FOUND
+                    )
+
+                return Response({
+                    'success': True,
+                    'stripe_customer_id': row[0],
+                })
+
+        except Exception as e:
+            logger.error(f'Update Stripe customer ID failed: {e}')
+            return Response(
+                {'error': 'ServerError', 'message': 'Failed to update Stripe customer ID'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
+class UserSubscriptionTierView(APIView):
+    """
+    PATCH /api/user/subscription-tier
+
+    Update user's subscription tier and related fields.
+    Used after Stripe subscription changes.
+
+    Request Body:
+        {
+            "subscription_tier": "pro",
+            "scheduled_tier_change": null,
+            "scheduled_tier_change_date": null
+        }
+
+    Response (200):
+        {"success": true, "subscription_tier": "pro"}
+    """
+    permission_classes = [IsAuthenticated]
+
+    def patch(self, request):
+        user = get_user_context(request)
+        if not user:
+            return Response(
+                {'error': 'Unauthorized', 'message': 'Authentication required'},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
+        # Allowed fields for update
+        allowed_fields = {
+            'subscription_tier': 'subscription_tier',
+            'subscriptionTier': 'subscription_tier',
+            'scheduled_tier_change': 'scheduled_tier_change',
+            'scheduledTierChange': 'scheduled_tier_change',
+            'scheduled_tier_change_date': 'scheduled_tier_change_date',
+            'scheduledTierChangeDate': 'scheduled_tier_change_date',
+        }
+
+        updates = []
+        params = []
+
+        for request_key, db_field in allowed_fields.items():
+            if request_key in request.data:
+                value = request.data[request_key]
+                # Skip duplicate mappings
+                if any(f'{db_field} = %s' in u for u in updates):
+                    continue
+                updates.append(f'{db_field} = %s')
+                params.append(value)
+
+        if not updates:
+            return Response(
+                {'error': 'ValidationError', 'message': 'No valid fields to update'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            params.append(str(user.id))
+            with connection.cursor() as cursor:
+                cursor.execute(f"""
+                    UPDATE public.users
+                    SET {', '.join(updates)}, updated_at = NOW()
+                    WHERE id = %s
+                    RETURNING subscription_tier, scheduled_tier_change, scheduled_tier_change_date
+                """, params)
+                row = cursor.fetchone()
+
+                if not row:
+                    return Response(
+                        {'error': 'NotFound', 'message': 'User not found'},
+                        status=status.HTTP_404_NOT_FOUND
+                    )
+
+                return Response({
+                    'success': True,
+                    'subscription_tier': row[0],
+                    'scheduled_tier_change': row[1],
+                    'scheduled_tier_change_date': row[2].isoformat() if row[2] else None,
+                })
+
+        except Exception as e:
+            logger.error(f'Update subscription tier failed: {e}')
+            return Response(
+                {'error': 'ServerError', 'message': 'Failed to update subscription tier'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )

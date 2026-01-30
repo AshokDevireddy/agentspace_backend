@@ -47,7 +47,7 @@ def mask_phone_number(phone: str | None, can_view_full: bool = False) -> str | N
 def get_book_of_business(
     user: AuthenticatedUser,
     limit: int = 50,
-    cursor_policy_effective_date: date | None = None,
+    cursor_created_at: date | None = None,
     cursor_id: UUID | None = None,
     carrier_id: UUID | None = None,
     product_id: UUID | None = None,
@@ -65,6 +65,8 @@ def get_book_of_business(
     view: str | None = 'downlines',
     effective_date_sort: str | None = None,
     include_full_agency: bool = False,
+    # Legacy parameter support (deprecated, use cursor_created_at)
+    cursor_policy_effective_date: date | None = None,
 ) -> dict:
     """
     Get paginated book of business (deals) with keyset pagination.
@@ -75,7 +77,7 @@ def get_book_of_business(
     Args:
         user: The authenticated user
         limit: Number of records to return
-        cursor_policy_effective_date: Cursor for keyset pagination (date)
+        cursor_created_at: Cursor for keyset pagination (timestamp) - matches RPC behavior
         cursor_id: Cursor for keyset pagination (id)
         carrier_id: Filter by carrier
         product_id: Filter by product
@@ -93,10 +95,14 @@ def get_book_of_business(
         view: Scope - 'self', 'downlines', 'all' (P2-027)
         effective_date_sort: Sort direction - 'oldest', 'newest' (P2-027)
         include_full_agency: If True and user is admin, include all agency deals
+        cursor_policy_effective_date: DEPRECATED - use cursor_created_at instead
 
     Returns:
         Dictionary with deals, has_more, and next_cursor
     """
+    # Support legacy parameter name
+    if cursor_policy_effective_date and not cursor_created_at:
+        cursor_created_at = cursor_policy_effective_date
     is_admin = user.is_admin or user.role == 'admin'
 
     # Build visible agent filter based on view scope (P2-027)
@@ -196,12 +202,12 @@ def get_book_of_business(
         order_direction = 'DESC'
         cursor_comparison = '<'
 
-    # Keyset pagination
-    if cursor_policy_effective_date and cursor_id:
+    # Keyset pagination using created_at (matches RPC behavior)
+    if cursor_created_at and cursor_id:
         where_clauses.append(f"""
-            (d.policy_effective_date, d.id) {cursor_comparison} (%s, %s)
+            (d.created_at, d.id) {cursor_comparison} (%s::timestamp, %s)
         """)
-        params.extend([cursor_policy_effective_date.isoformat(), str(cursor_id)])
+        params.extend([cursor_created_at.isoformat(), str(cursor_id)])
 
     where_sql = " AND ".join(where_clauses)
 
@@ -252,7 +258,7 @@ def get_book_of_business(
         LEFT JOIN public.products p ON p.id = d.product_id
         LEFT JOIN public.users u ON u.id = d.agent_id
         WHERE {where_sql}
-        ORDER BY d.policy_effective_date {order_direction} NULLS LAST, d.id {order_direction}
+        ORDER BY d.created_at {order_direction}, d.id {order_direction}
         LIMIT %s
     """
 
@@ -331,12 +337,12 @@ def get_book_of_business(
                 } if deal['agent_id'] else None,
             })
 
-        # Build next cursor
+        # Build next cursor using created_at (matches RPC behavior)
         next_cursor = None
         if has_more and deals:
             last_deal = deals[-1]
             next_cursor = {
-                'policy_effective_date': last_deal['policy_effective_date'],
+                'created_at': last_deal['created_at'],
                 'id': last_deal['id'],
             }
 

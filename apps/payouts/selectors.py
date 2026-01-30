@@ -120,16 +120,17 @@ def get_expected_payouts(
         ),
 
         -- Filter by status impact (positive or neutral only)
+        -- Uses INNER JOIN to match RPC behavior - deals without status mapping are excluded
         filtered_deals AS (
             SELECT
                 rd.*,
                 COALESCE(ht.hierarchy_total_percentage, 0) as hierarchy_total_percentage
             FROM relevant_deals rd
             LEFT JOIN hierarchy_totals ht ON ht.deal_id = rd.deal_id
-            LEFT JOIN public.status_mapping sm
+            INNER JOIN public.status_mapping sm
                 ON sm.carrier_id = rd.carrier_id
                 AND LOWER(sm.raw_status) = LOWER(rd.status)
-            WHERE (sm.impact IS NULL OR sm.impact IN ('positive', 'neutral'))
+            WHERE sm.impact IN ('positive', 'neutral')
         ),
 
         -- Get agent-specific payout info from hierarchy snapshot

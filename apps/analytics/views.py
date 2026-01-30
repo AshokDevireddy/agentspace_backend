@@ -177,8 +177,14 @@ class DownlineDistributionView(APIView):
                 end_date=end_date,
             )
 
+            # Calculate totals for frontend contract
+            total_production = sum(entry.get('total_production', 0) for entry in result)
+            total_deals = len(result)  # Each entry represents an agent's production
+
             return Response({
-                'distribution': result,
+                'entries': result,
+                'total_production': total_production,
+                'total_deals': total_deals,
                 'agent_id': str(agent_id),
             })
 

@@ -558,3 +558,64 @@ class AgencyByPhoneView(AuthenticatedAPIView, APIView):
                 {'error': 'ServerError', 'message': 'Failed to find agency'},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
+
+
+class AgencyWhitelabelView(AuthenticatedAPIView, APIView):
+    """
+    GET /api/agencies/{agency_id}/whitelabel - Get agency whitelabel configuration
+
+    Returns minimal whitelabel info needed for login flow.
+    Used by login page to validate whitelabel domains.
+
+    Supports CronSecretAuthentication for server-to-server calls.
+    """
+    authentication_classes = [CronSecretAuthentication, SupabaseJWTAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, agency_id: str):
+        """Get agency whitelabel configuration."""
+        user = self.get_user(request)
+
+        # System users (from CronSecretAuthentication) can access any agency
+        is_system_user = user.email == 'system@internal' and user.is_admin
+
+        # Verify user belongs to this agency (unless system user)
+        if not is_system_user and str(user.agency_id) != agency_id:
+            return Response(
+                {'error': 'Forbidden', 'message': 'You can only access your own agency'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute("""
+                    SELECT
+                        id, name, display_name, whitelabel_domain,
+                        logo_url, primary_color, theme_mode
+                    FROM public.agencies
+                    WHERE id = %s
+                """, [agency_id])
+                row = cursor.fetchone()
+
+            if not row:
+                return Response(
+                    {'error': 'NotFound', 'message': 'Agency not found'},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+
+            return Response({
+                'id': str(row[0]),
+                'name': row[1],
+                'display_name': row[2],
+                'whitelabel_domain': row[3],
+                'logo_url': row[4],
+                'primary_color': row[5],
+                'theme_mode': row[6],
+            })
+
+        except Exception as e:
+            logger.error(f'Error getting agency whitelabel: {e}')
+            return Response(
+                {'error': 'ServerError', 'message': 'Failed to get agency whitelabel'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )

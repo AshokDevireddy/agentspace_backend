@@ -13,6 +13,7 @@ from .views import (
     AgencyPhoneView,
     AgencyScoreboardSettingsView,
     AgencySettingsView,
+    AgencyWhitelabelView,
 )
 
 urlpatterns = [
@@ -30,4 +31,7 @@ urlpatterns = [
     path('<str:agency_id>/settings', AgencySettingsView.as_view(), name='agency_settings'),
     path('<str:agency_id>/scoreboard-settings', AgencyScoreboardSettingsView.as_view(), name='agency_scoreboard_settings'),
     path('<str:agency_id>/logo', AgencyLogoUploadView.as_view(), name='agency_logo'),
+
+    # Whitelabel configuration (for login flow)
+    path('<str:agency_id>/whitelabel', AgencyWhitelabelView.as_view(), name='agency_whitelabel'),
 ]

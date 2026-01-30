@@ -5,12 +5,10 @@ Provides client-related endpoints:
 - GET /api/clients - Get paginated client list
 - GET /api/clients/{id} - Get client detail
 - POST /api/clients/invite - Invite a new client
+- POST /api/clients/resend-invite - Resend client invitation
 """
 import logging
-import uuid as uuid_module
 from uuid import UUID
-
-from django.db import connection
 
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
@@ -25,6 +23,7 @@ from .selectors import (
     get_client_own_deals,
     get_clients_list,
 )
+from .services import invite_client, resend_client_invite
 
 logger = logging.getLogger(__name__)
 
@@ -226,24 +225,23 @@ class ClientInviteView(APIView):
     """
     POST /api/clients/invite
 
-    Invite a new client. Creates a client record with an optional user record
-    for client portal access.
+    Invite a new client to the agency.
+    Creates Supabase auth user, sends invite email, and creates DB user record.
 
     Request body:
         {
             "email": "client@example.com",
-            "first_name": "Jane",
-            "last_name": "Smith",
-            "phone": "+1234567890",      // optional
-            "create_portal_access": true  // optional - create user for client portal
+            "firstName": "Jane",
+            "lastName": "Smith",
+            "phoneNumber": "+1234567890"  // optional
         }
 
-    Response (201):
+    Response (200):
         {
             "success": true,
-            "client_id": "uuid",
-            "user_id": "uuid",  // if portal access created
-            ...
+            "userId": "uuid",
+            "message": "Client invited successfully",
+            "alreadyExists": false
         }
     """
     permission_classes = [IsAuthenticated]
@@ -257,11 +255,11 @@ class ClientInviteView(APIView):
             )
 
         data = request.data
+        # Support both camelCase (frontend) and snake_case (backend) params
         email = data.get('email', '').strip().lower()
-        first_name = data.get('first_name', '').strip()
-        last_name = data.get('last_name', '').strip()
-        phone = data.get('phone', '').strip() if data.get('phone') else None
-        create_portal_access = data.get('create_portal_access', False)
+        first_name = data.get('firstName') or data.get('first_name', '')
+        last_name = data.get('lastName') or data.get('last_name', '')
+        phone_number = data.get('phoneNumber') or data.get('phone_number') or data.get('phone')
 
         # Validate required fields
         if not email:
@@ -269,98 +267,110 @@ class ClientInviteView(APIView):
                 {'error': 'email is required'},
                 status=status.HTTP_400_BAD_REQUEST
             )
-        if not first_name:
-            return Response(
-                {'error': 'first_name is required'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-        if not last_name:
-            return Response(
-                {'error': 'last_name is required'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
 
         try:
-            with connection.cursor() as cursor:
-                # Check if client already exists
-                cursor.execute("""
-                    SELECT id, email FROM clients
-                    WHERE email = %s AND agency_id = %s
-                    LIMIT 1
-                """, [email, str(user.agency_id)])
+            result = invite_client(
+                inviter_id=user.id,
+                agency_id=user.agency_id,
+                email=email,
+                first_name=first_name,
+                last_name=last_name,
+                phone_number=phone_number,
+            )
 
-                existing = cursor.fetchone()
-                if existing:
-                    return Response({
-                        'success': True,
-                        'client_id': str(existing[0]),
-                        'message': 'Client already exists',
-                        'existing': True
-                    })
+            if not result.get('success'):
+                return Response(
+                    {'error': result.get('error', 'Failed to invite client')},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
 
-                # Create client record
-                client_id = uuid_module.uuid4()
-                cursor.execute("""
-                    INSERT INTO clients (
-                        id, agency_id, first_name, last_name, email, phone,
-                        created_at, updated_at
-                    )
-                    VALUES (%s, %s, %s, %s, %s, %s, NOW(), NOW())
-                    RETURNING id, email, first_name, last_name
-                """, [
-                    str(client_id),
-                    str(user.agency_id),
-                    first_name,
-                    last_name,
-                    email,
-                    phone,
-                ])
-
-                client_row = cursor.fetchone()
-                if not client_row:
-                    return Response(
-                        {'error': 'Failed to create client'},
-                        status=status.HTTP_500_INTERNAL_SERVER_ERROR
-                    )
-
-                result = {
-                    'success': True,
-                    'client_id': str(client_row[0]),
-                    'email': client_row[1],
-                    'first_name': client_row[2],
-                    'last_name': client_row[3],
-                }
-
-                # Optionally create user record for portal access
-                if create_portal_access:
-                    user_id = uuid_module.uuid4()
-                    cursor.execute("""
-                        INSERT INTO users (
-                            id, email, first_name, last_name, phone_number,
-                            agency_id, role, status, created_at, updated_at
-                        )
-                        VALUES (%s, %s, %s, %s, %s, %s, 'client', 'invited', NOW(), NOW())
-                        ON CONFLICT (email, agency_id) DO NOTHING
-                        RETURNING id
-                    """, [
-                        str(user_id),
-                        email,
-                        first_name,
-                        last_name,
-                        phone,
-                        str(user.agency_id),
-                    ])
-
-                    user_row = cursor.fetchone()
-                    if user_row:
-                        result['user_id'] = str(user_row[0])
-                        result['portal_access'] = True
-
-                return Response(result, status=status.HTTP_201_CREATED)
+            # Return with camelCase keys for frontend compatibility
+            return Response({
+                'success': True,
+                'userId': result.get('user_id'),
+                'message': result.get('message', 'Client invited successfully'),
+                'alreadyExists': result.get('already_exists', False),
+                'status': result.get('status'),
+            })
 
         except Exception as e:
             logger.error(f'Client invite failed: {e}')
             return Response(
                 {'error': 'Failed to invite client', 'detail': str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
+class ClientResendInviteView(APIView):
+    """
+    POST /api/clients/resend-invite
+
+    Resend an invitation to a client who has not yet completed onboarding.
+    Unlinks old auth account, deletes it, creates new invite, and updates user record.
+
+    Request body:
+        {
+            "clientId": "uuid"
+        }
+
+    Response (200):
+        {
+            "success": true,
+            "message": "Invitation resent successfully to Jane Smith"
+        }
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        user = get_user_context(request)
+        if not user:
+            return Response(
+                {'error': 'Unauthorized'},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
+        data = request.data
+        # Support both camelCase and snake_case
+        client_id_str = data.get('clientId') or data.get('client_id')
+
+        if not client_id_str:
+            return Response(
+                {'error': 'Client ID is required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            client_uuid = UUID(client_id_str)
+        except ValueError:
+            return Response(
+                {'error': 'Invalid clientId format'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            result = resend_client_invite(
+                requester_id=user.id,
+                agency_id=user.agency_id,
+                client_id=client_uuid,
+            )
+
+            if not result.get('success'):
+                error_msg = result.get('error', 'Failed to resend invite')
+                # Determine appropriate status code
+                if 'not found' in error_msg.lower():
+                    return Response({'error': error_msg}, status=status.HTTP_404_NOT_FOUND)
+                if 'other agencies' in error_msg.lower():
+                    return Response({'error': error_msg}, status=status.HTTP_403_FORBIDDEN)
+                return Response({'error': error_msg}, status=status.HTTP_400_BAD_REQUEST)
+
+            return Response({
+                'success': True,
+                'message': result.get('message', 'Invitation resent successfully'),
+            })
+
+        except Exception as e:
+            logger.error(f'Client resend invite failed: {e}')
+            return Response(
+                {'error': 'Failed to resend invite', 'detail': str(e)},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
