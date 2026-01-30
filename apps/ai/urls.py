@@ -10,6 +10,7 @@ from .views import (
     AIMessagesView,
     AIQuickChatView,
     AISuggestionsView,
+    AIUsageView,
 )
 
 urlpatterns = [
@@ -26,4 +27,7 @@ urlpatterns = [
 
     # AI Analytics Insights (P2-038)
     path('analytics/insights', AIAnalyticsInsightsView.as_view(), name='ai_analytics_insights'),
+
+    # AI Usage tracking (for chat route)
+    path('usage', AIUsageView.as_view(), name='ai_usage'),
 ]

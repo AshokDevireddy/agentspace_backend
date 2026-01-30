@@ -135,8 +135,7 @@ def get_dashboard_summary(
     is_admin = user_ctx.is_admin
 
     # Determine date field and production mode filter
-    # Match Supabase RPC behavior: always use policy_effective_date for date range
-    # For issue_paid mode, add status check and 7-day cutoff
+    # production_mode affects which date field to use and any additional status filters
     if production_mode == 'issue_paid':
         # Issue/Paid mode: filter by policy_effective_date, require 'active' status and 7-day maturity
         date_field = "d.policy_effective_date"
@@ -150,9 +149,9 @@ def get_dashboard_summary(
         date_field = "d.submission_date"
         mode_condition = ""
 
-    # Build date range filter
+    # Build date range filter - use the date_field determined by production_mode
     if use_date_range:
-        date_filter = f"AND d.policy_effective_date BETWEEN %s AND %s"
+        date_filter = f"AND {date_field} BETWEEN %s AND %s"
         date_params = [start_date.isoformat(), end_date.isoformat()]  # type: ignore[union-attr]
         reference_date = end_date  # type: ignore[assignment]
     else:

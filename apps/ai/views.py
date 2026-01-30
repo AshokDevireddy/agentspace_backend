@@ -344,3 +344,105 @@ class AIAnalyticsInsightsView(AuthenticatedAPIView, APIView):
             'period': period,
             'insight_type': insight_type,
         }
+
+
+class AIUsageView(AuthenticatedAPIView, APIView):
+    """
+    GET/POST /api/ai/usage - AI usage data and counter management.
+
+    Used by frontend AI chat route to check user permissions and track usage.
+
+    GET returns:
+        - id, is_admin, role, agency_id, subscription_tier
+        - ai_requests_count, ai_requests_reset_date
+        - stripe_subscription_id, billing_cycle_end
+
+    POST with action: "increment" or "reset" updates ai_requests_count.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        """Get AI usage data for the authenticated user."""
+        user = self.get_user(request)
+
+        with connection.cursor() as cursor:
+            cursor.execute("""
+                SELECT
+                    u.id,
+                    u.is_admin,
+                    u.role,
+                    u.agency_id,
+                    u.subscription_tier,
+                    u.ai_requests_count,
+                    u.ai_requests_reset_date,
+                    u.stripe_subscription_id,
+                    u.billing_cycle_end
+                FROM public.users u
+                WHERE u.id = %s
+                LIMIT 1
+            """, [str(user.id)])
+            row = cursor.fetchone()
+
+        if not row:
+            return Response(
+                {'error': 'User not found'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        return Response({
+            'id': str(row[0]),
+            'is_admin': row[1] or False,
+            'role': row[2],
+            'agency_id': str(row[3]) if row[3] else None,
+            'subscription_tier': row[4],
+            'ai_requests_count': row[5] or 0,
+            'ai_requests_reset_date': row[6].isoformat() if row[6] else None,
+            'stripe_subscription_id': row[7],
+            'billing_cycle_end': row[8].isoformat() if row[8] else None,
+        })
+
+    def post(self, request):
+        """Update AI usage counter."""
+        user = self.get_user(request)
+        action = request.data.get('action')
+
+        if action not in ('increment', 'reset'):
+            return Response(
+                {'error': 'Invalid action. Must be "increment" or "reset"'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        with connection.cursor() as cursor:
+            if action == 'increment':
+                cursor.execute("""
+                    UPDATE public.users
+                    SET ai_requests_count = COALESCE(ai_requests_count, 0) + 1,
+                        ai_requests_reset_date = COALESCE(ai_requests_reset_date, NOW()),
+                        updated_at = NOW()
+                    WHERE id = %s
+                    RETURNING ai_requests_count, ai_requests_reset_date
+                """, [str(user.id)])
+            else:  # reset
+                cursor.execute("""
+                    UPDATE public.users
+                    SET ai_requests_count = 0,
+                        ai_requests_reset_date = NOW(),
+                        updated_at = NOW()
+                    WHERE id = %s
+                    RETURNING ai_requests_count, ai_requests_reset_date
+                """, [str(user.id)])
+
+            row = cursor.fetchone()
+
+        if not row:
+            return Response(
+                {'error': 'User not found'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        return Response({
+            'success': True,
+            'ai_requests_count': row[0],
+            'ai_requests_reset_date': row[1].isoformat() if row[1] else None,
+        })

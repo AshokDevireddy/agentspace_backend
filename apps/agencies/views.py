@@ -65,7 +65,7 @@ class AgencySettingsView(AuthenticatedAPIView, APIView):
                         sms_holiday_enabled, sms_holiday_template,
                         sms_quarterly_enabled, sms_quarterly_template,
                         sms_policy_packet_enabled, sms_policy_packet_template,
-                        default_scoreboard_start_date
+                        default_scoreboard_start_date, deactivated_post_a_deal
                     FROM public.agencies
                     WHERE id = %s
                 """, [agency_id])
@@ -110,6 +110,7 @@ class AgencySettingsView(AuthenticatedAPIView, APIView):
                 'sms_policy_packet_enabled': row[29],
                 'sms_policy_packet_template': row[30],
                 'default_scoreboard_start_date': str(row[31]) if row[31] else None,
+                'deactivated_post_a_deal': row[32] or False,
             })
 
         except Exception as e:
