@@ -18,3 +18,8 @@ urlpatterns = [
     path('statuses', views.StatusMappingsView.as_view(), name='status_mappings'),
     path('standardized-statuses', views.StandardizedStatusesView.as_view(), name='standardized_statuses'),
 ]
+
+# Contracts endpoints (mounted at /api/contracts/)
+contracts_urlpatterns = [
+    path('', views.ContractsListView.as_view(), name='contracts_list'),
+]

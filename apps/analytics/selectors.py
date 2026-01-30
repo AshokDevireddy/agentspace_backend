@@ -847,7 +847,7 @@ def get_persistency_analytics(
                 WHERE d.agency_id = %s
                     AND COALESCE(d.policy_effective_date, d.submission_date) IS NOT NULL
                     AND date_trunc('month', COALESCE(d.policy_effective_date, d.submission_date))::date
-                        BETWEEN (aom.month_start - make_interval(months => 11))
+                        BETWEEN (aom.month_start - make_interval(months => 8))
                             AND aom.month_start
                     {carrier_filter}
             ),

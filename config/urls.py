@@ -9,6 +9,7 @@ from django.urls import include, path
 from apps.core.views import health_check
 from apps.clients.urls import client_dashboard_urlpatterns
 from apps.auth_api.user_urls import users_urlpatterns
+from apps.carriers.urls import contracts_urlpatterns
 from apps.search.urls import (
     search_agents_filter_urlpatterns,
     search_agents_urlpatterns,
@@ -39,6 +40,9 @@ urlpatterns = [
 
     # Carriers endpoints
     path('api/carriers/', include('apps.carriers.urls')),
+
+    # Contracts endpoints (agent carrier numbers)
+    path('api/contracts/', include(contracts_urlpatterns)),
 
     # Products endpoints
     path('api/products/', include('apps.products.urls')),

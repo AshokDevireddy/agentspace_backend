@@ -9,7 +9,9 @@ from uuid import UUID
 
 from django.db.models import Prefetch
 
-from apps.core.models import Carrier, Product, StatusMapping
+import math
+
+from apps.core.models import AgentCarrierNumber, Carrier, Product, StatusMapping
 
 
 def get_active_carriers() -> list[dict]:
@@ -227,3 +229,97 @@ def get_standardized_statuses() -> list[dict]:
     """
     from apps.core.constants import STANDARDIZED_STATUSES
     return STANDARDIZED_STATUSES
+
+
+# =============================================================================
+# Contracts (Agent Carrier Numbers)
+# =============================================================================
+
+def get_contracts_paginated(
+    agency_id: UUID,
+    page: int = 1,
+    limit: int = 20,
+) -> dict:
+    """
+    Get paginated agent carrier numbers (contracts) for an agency.
+
+    Uses Django ORM with select_related to prevent N+1 queries.
+
+    Args:
+        agency_id: The agency UUID
+        page: Page number (1-indexed)
+        limit: Items per page
+
+    Returns:
+        Dictionary with contracts list and pagination info
+    """
+    offset = (page - 1) * limit
+
+    # Get total count
+    total_count = AgentCarrierNumber.objects.filter(agency_id=agency_id).count()  # type: ignore[attr-defined]
+
+    if total_count == 0:
+        return {
+            'contracts': [],
+            'pagination': {
+                'currentPage': page,
+                'totalPages': 0,
+                'totalCount': 0,
+                'limit': limit,
+                'hasNextPage': False,
+                'hasPrevPage': False,
+            },
+        }
+
+    # Get paginated contracts with related data
+    contracts = (
+        AgentCarrierNumber.objects  # type: ignore[attr-defined]
+        .filter(agency_id=agency_id)
+        .select_related('carrier', 'agent')
+        .order_by('-start_date', '-created_at')
+        [offset:offset + limit]
+    )
+
+    # Format contracts to match frontend expectations
+    formatted_contracts = []
+    for contract in contracts:
+        # Format start date like frontend does
+        start_date_str = '—'
+        if contract.start_date:
+            start_date_str = contract.start_date.strftime('%b %d, %Y')
+
+        # Get carrier name (display_name preferred, fallback to name)
+        carrier_name = 'Unknown'
+        if contract.carrier:
+            carrier_name = getattr(contract.carrier, 'display_name', None) or contract.carrier.name
+
+        # Get agent name in "Last, First" format
+        agent_name = 'Unknown'
+        if contract.agent:
+            agent_name = f"{contract.agent.last_name or ''}, {contract.agent.first_name or ''}".strip(', ')
+            if not agent_name:
+                agent_name = 'Unknown'
+
+        formatted_contracts.append({
+            'id': str(contract.id),
+            'carrier': carrier_name,
+            'agent': agent_name,
+            'loa': contract.loa or 'None',
+            'status': 'Active' if contract.is_active else 'Inactive',
+            'startDate': start_date_str,
+            'agentNumber': contract.agent_number,
+        })
+
+    total_pages = math.ceil(total_count / limit)
+
+    return {
+        'contracts': formatted_contracts,
+        'pagination': {
+            'currentPage': page,
+            'totalPages': total_pages,
+            'totalCount': total_count,
+            'limit': limit,
+            'hasNextPage': page < total_pages,
+            'hasPrevPage': page > 1,
+        },
+    }

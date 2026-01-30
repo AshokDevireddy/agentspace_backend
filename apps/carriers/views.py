@@ -22,6 +22,7 @@ from .selectors import (
     get_carrier_names,
     get_carriers_for_agency,
     get_carriers_with_products_for_agency,
+    get_contracts_paginated,
     get_standardized_statuses,
     get_status_mappings,
 )
@@ -339,5 +340,75 @@ class CarrierLoginsView(APIView):
             logger.error(f'Carrier login save failed: {e}')
             return Response(
                 {'error': 'Failed to save carrier login', 'detail': str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
+class ContractsListView(APIView):
+    """
+    GET /api/contracts
+
+    List agent carrier numbers (contracts) with pagination.
+    Returns contracts for the user's agency.
+
+    Query params:
+        page: Page number (default: 1)
+        limit: Items per page (default: 20, max: 100)
+
+    Response (200):
+        {
+            "contracts": [
+                {
+                    "id": "uuid",
+                    "carrier": "Carrier Name",
+                    "agent": "Agent Name",
+                    "loa": "LOA info",
+                    "status": "Active",
+                    "startDate": "Jan 1, 2024",
+                    "agentNumber": "12345"
+                }
+            ],
+            "pagination": {
+                "currentPage": 1,
+                "totalPages": 5,
+                "totalCount": 100,
+                "limit": 20,
+                "hasNextPage": true,
+                "hasPrevPage": false
+            }
+        }
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = get_user_context(request)
+        if not user:
+            return Response(
+                {'error': 'Unauthorized', 'message': 'Authentication required'},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
+        # Parse pagination params
+        try:
+            page = max(1, int(request.query_params.get('page', 1)))
+        except ValueError:
+            page = 1
+
+        try:
+            limit = min(100, max(1, int(request.query_params.get('limit', 20))))
+        except ValueError:
+            limit = 20
+
+        try:
+            result = get_contracts_paginated(
+                agency_id=user.agency_id,
+                page=page,
+                limit=limit,
+            )
+            return Response(result)
+        except Exception as e:
+            logger.error(f'Contracts list failed: {e}')
+            return Response(
+                {'error': 'Failed to fetch contracts', 'detail': str(e)},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )

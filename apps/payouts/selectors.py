@@ -77,11 +77,12 @@ def get_expected_payouts(
     where_sql = " AND ".join(where_clauses)
 
     # Build production type filter for hierarchy level
+    # Note: hierarchy_level is computed in the agent_hierarchy_levels CTE, aliased as ahl
     hierarchy_level_filter = ""
     if production_type == 'personal':
-        hierarchy_level_filter = "AND dhs.hierarchy_level = 0"
+        hierarchy_level_filter = "AND COALESCE(ahl.hierarchy_level, 0) = 0"
     elif production_type == 'downline':
-        hierarchy_level_filter = "AND dhs.hierarchy_level > 0"
+        hierarchy_level_filter = "AND COALESCE(ahl.hierarchy_level, 0) > 0"
 
     # Add visible_ids_list to params for the first use in query
     params.extend(visible_ids_list)  # type: ignore[arg-type]
@@ -99,9 +100,10 @@ def get_expected_payouts(
                 d.status_standardized,
                 d.carrier_id,
                 d.client_id,
+                d.client_name,
                 d.product_id
             FROM public.deals d
-            INNER JOIN public.deal_hierarchy_snapshots dhs ON dhs.deal_id = d.id
+            INNER JOIN public.deal_hierarchy_snapshot dhs ON dhs.deal_id = d.id
             WHERE {where_sql}
               AND dhs.agent_id = ANY(%s::uuid[])
               AND d.annual_premium IS NOT NULL
@@ -133,6 +135,32 @@ def get_expected_payouts(
             WHERE sm.impact IN ('positive', 'neutral')
         ),
 
+        -- Calculate hierarchy level (depth from writing agent) for each agent in each deal
+        agent_hierarchy_levels AS (
+            SELECT
+                dhs.deal_id,
+                dhs.agent_id,
+                -- Count how many upline hops from writing agent (level 0)
+                (
+                    SELECT COUNT(*)
+                    FROM public.deal_hierarchy_snapshot parent
+                    WHERE parent.deal_id = dhs.deal_id
+                      AND parent.agent_id != dhs.agent_id
+                      -- Parent must be in the chain between this agent and deal
+                      AND (
+                          dhs.upline_id IS NOT NULL
+                          AND (parent.agent_id = dhs.upline_id
+                               OR EXISTS (
+                                   SELECT 1 FROM public.deal_hierarchy_snapshot grandparent
+                                   WHERE grandparent.deal_id = dhs.deal_id
+                                     AND grandparent.agent_id = dhs.upline_id
+                               ))
+                      )
+                )::int as hierarchy_level
+            FROM public.deal_hierarchy_snapshot dhs
+            WHERE dhs.deal_id IN (SELECT deal_id FROM filtered_deals)
+        ),
+
         -- Get agent-specific payout info from hierarchy snapshot
         agent_payouts AS (
             SELECT
@@ -144,10 +172,11 @@ def get_expected_payouts(
                 fd.status_standardized,
                 fd.hierarchy_total_percentage,
                 dhs.agent_id,
-                dhs.hierarchy_level,
+                COALESCE(ahl.hierarchy_level, 0) as hierarchy_level,
                 dhs.commission_percentage as agent_commission_percentage,
-                cl.first_name as client_first_name,
-                cl.last_name as client_last_name,
+                fd.client_name,
+                cli.first_name as client_first_name,
+                cli.last_name as client_last_name,
                 ca.name as carrier_name,
                 pr.name as product_name,
                 u.first_name as agent_first_name,
@@ -163,12 +192,13 @@ def get_expected_payouts(
                     ELSE 0
                 END as expected_payout
             FROM filtered_deals fd
-            INNER JOIN public.deal_hierarchy_snapshots dhs ON dhs.deal_id = fd.deal_id
-            LEFT JOIN public.clients cl ON cl.id = fd.client_id
+            INNER JOIN public.deal_hierarchy_snapshot dhs ON dhs.deal_id = fd.deal_id
+            LEFT JOIN agent_hierarchy_levels ahl ON ahl.deal_id = dhs.deal_id AND ahl.agent_id = dhs.agent_id
+            LEFT JOIN public.users cli ON cli.id = fd.client_id AND cli.role = 'client'
             LEFT JOIN public.carriers ca ON ca.id = fd.carrier_id
             LEFT JOIN public.products pr ON pr.id = fd.product_id
             LEFT JOIN public.users u ON u.id = dhs.agent_id
-            LEFT JOIN public.positions po ON po.id = dhs.position_id
+            LEFT JOIN public.positions po ON po.id = u.position_id
             WHERE dhs.agent_id = ANY(%s::uuid[])
               AND dhs.commission_percentage IS NOT NULL
               {hierarchy_level_filter}
@@ -185,6 +215,7 @@ def get_expected_payouts(
             agent_id,
             hierarchy_level,
             agent_commission_percentage,
+            client_name,
             client_first_name,
             client_last_name,
             carrier_name,
@@ -224,8 +255,11 @@ def get_expected_payouts(
 
             total_expected += expected
 
+            # Check if this is a new deal BEFORE adding to seen_deals
+            is_new_deal = deal_id not in seen_deals
+
             # Only count premium once per unique deal
-            if deal_id not in seen_deals:
+            if is_new_deal:
                 total_premium += premium
                 seen_deals.add(deal_id)
 
@@ -239,7 +273,7 @@ def get_expected_payouts(
             carrier = payout['carrier_name'] or 'Unknown'
             if carrier not in by_carrier:
                 by_carrier[carrier] = {'premium': 0.0, 'payout': 0.0, 'count': 0}
-            if deal_id not in seen_deals:
+            if is_new_deal:
                 by_carrier[carrier]['premium'] += premium  # type: ignore[operator]
             by_carrier[carrier]['payout'] += expected  # type: ignore[operator]
             by_carrier[carrier]['count'] += 1  # type: ignore[operator]
@@ -256,10 +290,15 @@ def get_expected_payouts(
             else:
                 by_agent[agent_key]['downline'] += expected  # type: ignore[operator]
 
+            # Build client name - prefer from clients table join, fallback to deal's denormalized client_name
+            client_name = f"{payout['client_first_name'] or ''} {payout['client_last_name'] or ''}".strip()
+            if not client_name:
+                client_name = payout.get('client_name') or ''
+
             payouts.append({
                 'deal_id': deal_id,
                 'policy_number': payout['policy_number'],
-                'client_name': f"{payout['client_first_name'] or ''} {payout['client_last_name'] or ''}".strip(),
+                'client_name': client_name,
                 'carrier_name': payout['carrier_name'],
                 'product_name': payout['product_name'],
                 'agent_id': str(payout['agent_id']) if payout['agent_id'] else None,

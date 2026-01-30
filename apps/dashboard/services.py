@@ -134,18 +134,25 @@ def get_dashboard_summary(
     agency_id = str(user_ctx.agency_id)
     is_admin = user_ctx.is_admin
 
-    # Determine date field and range filter based on production_mode
+    # Determine date field and production mode filter
+    # Match Supabase RPC behavior: always use policy_effective_date for date range
+    # For issue_paid mode, add status check and 7-day cutoff
     if production_mode == 'issue_paid':
-        date_field = "COALESCE(d.policy_effective_date, d.submission_date)"
-        # For issue_paid mode, only count deals where effective date is at least 7 days ago
-        cutoff_condition = f"AND ({date_field} <= CURRENT_DATE - INTERVAL '7 days')"
+        # Issue/Paid mode: filter by policy_effective_date, require 'active' status and 7-day maturity
+        date_field = "d.policy_effective_date"
+        # Match RPC: issue_paid requires status_standardized = 'active' AND policy_effective_date <= 7 days ago
+        mode_condition = """AND (
+            d.status_standardized = 'active'
+            AND d.policy_effective_date IS NOT NULL
+            AND d.policy_effective_date <= CURRENT_DATE - INTERVAL '7 days'
+        )"""
     else:  # 'submitted'
         date_field = "d.submission_date"
-        cutoff_condition = ""
+        mode_condition = ""
 
     # Build date range filter
     if use_date_range:
-        date_filter = f"AND {date_field} BETWEEN %s AND %s"
+        date_filter = f"AND d.policy_effective_date BETWEEN %s AND %s"
         date_params = [start_date.isoformat(), end_date.isoformat()]  # type: ignore[union-attr]
         reference_date = end_date  # type: ignore[assignment]
     else:
@@ -175,7 +182,7 @@ def get_dashboard_summary(
                     WHERE d.agency_id = %s
                         AND d.agent_id = %s
                         {date_filter}
-                        {cutoff_condition}
+                        {mode_condition}
                 ),
                 your_active AS (
                     SELECT * FROM your_base WHERE impact = 'positive'
@@ -196,7 +203,7 @@ def get_dashboard_summary(
                         AND d.agent_id = %s
                         AND d.client_id IS NOT NULL
                         {date_filter}
-                        {cutoff_condition}
+                        {mode_condition}
                 ),
                 your_carriers_active AS (
                     SELECT
@@ -268,7 +275,7 @@ def get_dashboard_summary(
                         AND m.raw_status = d.status
                     WHERE {base_downline_filter}
                         {date_filter}
-                        {cutoff_condition}
+                        {mode_condition}
                 ),
                 downline_active AS (
                     SELECT * FROM downline_base WHERE impact = 'positive'
@@ -288,7 +295,7 @@ def get_dashboard_summary(
                     WHERE {base_downline_filter}
                         AND d.client_id IS NOT NULL
                         {date_filter}
-                        {cutoff_condition}
+                        {mode_condition}
                 ),
                 downline_carriers_active AS (
                     SELECT

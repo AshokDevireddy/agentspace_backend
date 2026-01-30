@@ -14,6 +14,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.core.authentication import get_user_context
+from apps.core.permissions import get_visible_agent_ids
 
 from .selectors import (
     search_agents_all,
@@ -265,8 +266,9 @@ class SearchAgentsFuzzyView(APIView):
             threshold = 0.3
 
         # Get allowed agent IDs based on user permissions
+        # Admins can search all agency agents, non-admins limited to downline
         is_admin = user.is_admin or user.role == 'admin'
-        allowed_ids = None if is_admin else None  # Fuzzy search handles this internally
+        allowed_ids = None if is_admin else get_visible_agent_ids(user)
 
         try:
             results = search_agents_fuzzy(
@@ -325,11 +327,15 @@ class SearchClientsFuzzyView(APIView):
         except ValueError:
             threshold = 0.3
 
+        # Admins can search all agency clients, non-admins limited to their downline's clients
+        is_admin = user.is_admin or user.role == 'admin'
+        allowed_ids = None if is_admin else get_visible_agent_ids(user)
+
         try:
             results = search_clients_fuzzy(
                 query=query,
                 agency_id=user.agency_id,
-                allowed_agent_ids=None,  # Permission checking done internally
+                allowed_agent_ids=allowed_ids,
                 limit=limit,
                 similarity_threshold=threshold,
             )
@@ -382,11 +388,15 @@ class SearchPoliciesFuzzyView(APIView):
         except ValueError:
             threshold = 0.3
 
+        # Admins can search all agency policies, non-admins limited to their downline's policies
+        is_admin = user.is_admin or user.role == 'admin'
+        allowed_ids = None if is_admin else get_visible_agent_ids(user)
+
         try:
             results = search_policies_fuzzy(
                 query=query,
                 agency_id=user.agency_id,
-                allowed_agent_ids=None,
+                allowed_agent_ids=allowed_ids,
                 limit=limit,
                 similarity_threshold=threshold,
             )

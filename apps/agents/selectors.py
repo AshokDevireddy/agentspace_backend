@@ -53,8 +53,8 @@ def get_agent_downline(agent_id: UUID) -> list[dict]:
     results = (
         cte.queryset()
         .with_cte(cte)
-        .annotate(level=F('depth'))
         .order_by('depth', 'last_name', 'first_name')
+        .values('id', 'first_name', 'last_name', 'email', 'depth')
     )
 
     return [
@@ -65,7 +65,7 @@ def get_agent_downline(agent_id: UUID) -> list[dict]:
             'email': r['email'],
             'level': r['depth'],
         }
-        for r in results.values('id', 'first_name', 'last_name', 'email', 'depth')
+        for r in results
     ]
 
 
