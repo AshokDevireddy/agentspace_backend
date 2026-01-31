@@ -31,7 +31,14 @@ from .selectors import (
     get_agents_table,
     get_agents_without_positions,
 )
-from .services import assign_position_to_agent, invite_agent, resend_agent_invite, update_agent_position
+from .services import (
+    assign_position_to_agent,
+    deactivate_agent,
+    invite_agent,
+    resend_agent_invite,
+    update_agent,
+    update_agent_position,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -292,9 +299,10 @@ class AgentsListView(APIView):
 
 class AgentDetailView(APIView):
     """
-    GET /api/agents/{id}
+    GET /api/agents/{id} - Get full agent details
+    PUT /api/agents/{id} - Update agent details
+    DELETE /api/agents/{id} - Soft-delete (deactivate) agent
 
-    Get full agent details including profile, performance stats, and hierarchy info.
     Implements P1-007.
 
     Supports CronSecretAuthentication for server-to-server calls.
@@ -339,6 +347,149 @@ class AgentDetailView(APIView):
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
+    def put(self, request, agent_id):
+        """
+        Update agent details.
+
+        Permission: Admin or agent's upline.
+
+        Request body (all optional):
+            {
+                "firstName": "John",
+                "lastName": "Doe",
+                "phoneNumber": "+1234567890",
+                "email": "agent@example.com",
+                "uplineId": "uuid"
+            }
+
+        Response (200):
+            {
+                "success": true,
+                "agent": { ... }
+            }
+        """
+        user = get_user_context(request)
+        if not user:
+            return Response(
+                {'error': 'Unauthorized'},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
+        try:
+            agent_uuid = UUID(agent_id)
+        except ValueError:
+            return Response(
+                {'error': 'Invalid agent_id format'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        data = request.data
+        # Support both camelCase (frontend) and snake_case params
+        first_name = data.get('firstName') or data.get('first_name')
+        last_name = data.get('lastName') or data.get('last_name')
+        phone_number = data.get('phoneNumber') or data.get('phone_number')
+        email = data.get('email')
+        upline_id_str = data.get('uplineId') or data.get('upline_id')
+
+        upline_id = None
+        if upline_id_str:
+            try:
+                upline_id = UUID(upline_id_str)
+            except ValueError:
+                return Response(
+                    {'error': 'Invalid uplineId format'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+        try:
+            result = update_agent(
+                requester_id=user.id,
+                agent_id=agent_uuid,
+                agency_id=user.agency_id,
+                first_name=first_name,
+                last_name=last_name,
+                phone_number=phone_number,
+                email=email,
+                upline_id=upline_id,
+            )
+
+            if not result.get('success'):
+                error_msg = result.get('error', 'Failed to update agent')
+                if 'permission' in error_msg.lower():
+                    return Response({'error': error_msg}, status=status.HTTP_403_FORBIDDEN)
+                if 'not found' in error_msg.lower():
+                    return Response({'error': error_msg}, status=status.HTTP_404_NOT_FOUND)
+                return Response({'error': error_msg}, status=status.HTTP_400_BAD_REQUEST)
+
+            return Response(result)
+
+        except Exception as e:
+            logger.error(f'Agent update failed: {e}')
+            return Response(
+                {'error': 'Failed to update agent', 'detail': str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+    def delete(self, request, agent_id):
+        """
+        Soft-delete (deactivate) an agent.
+
+        Permission: Admin only.
+
+        Query params:
+            reassignDownlines: If 'true' (default), reassign agent's downlines to their upline
+
+        Response (200):
+            {
+                "success": true,
+                "message": "Agent has been deactivated",
+                "reassigned_downlines": 5
+            }
+        """
+        user = get_user_context(request)
+        if not user:
+            return Response(
+                {'error': 'Unauthorized'},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
+        try:
+            agent_uuid = UUID(agent_id)
+        except ValueError:
+            return Response(
+                {'error': 'Invalid agent_id format'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Parse query param for reassigning downlines
+        reassign_param = request.query_params.get('reassignDownlines', 'true')
+        reassign_downlines = reassign_param.lower() == 'true'
+
+        try:
+            result = deactivate_agent(
+                requester_id=user.id,
+                agent_id=agent_uuid,
+                agency_id=user.agency_id,
+                reassign_downlines=reassign_downlines,
+            )
+
+            if not result.get('success'):
+                error_msg = result.get('error', 'Failed to deactivate agent')
+                if 'admin' in error_msg.lower():
+                    return Response({'error': error_msg}, status=status.HTTP_403_FORBIDDEN)
+                if 'not found' in error_msg.lower():
+                    return Response({'error': error_msg}, status=status.HTTP_404_NOT_FOUND)
+                return Response({'error': error_msg}, status=status.HTTP_400_BAD_REQUEST)
+
+            return Response(result)
+
+        except Exception as e:
+            logger.error(f'Agent deactivation failed: {e}')
+            return Response(
+                {'error': 'Failed to deactivate agent', 'detail': str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
 
 class AgentRecursiveDownlineView(APIView):
     """
@@ -348,7 +499,7 @@ class AgentRecursiveDownlineView(APIView):
     Implements P1-008.
 
     Query params:
-        depth: Maximum depth to traverse (default: unlimited, max: 20)
+        depth: Maximum depth to traverse (default: unlimited, max: 50)
         include_self: Include the agent themselves (default: true)
     """
     permission_classes = [IsAuthenticated]

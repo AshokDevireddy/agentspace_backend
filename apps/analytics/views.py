@@ -19,8 +19,10 @@ from rest_framework.views import APIView
 from apps.core.authentication import get_user_context
 
 from .selectors import (
+    get_analytics_for_agent,
     get_analytics_from_deals,
     get_analytics_split_view,
+    get_carrier_metrics,
     get_downline_production_distribution,
     get_persistency_analytics,
 )
@@ -320,5 +322,214 @@ class PersistencyAnalyticsView(APIView):
             logger.error(f'Persistency analytics failed: {e}')
             return Response(
                 {'error': 'Failed to fetch persistency data', 'detail': str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
+class AgentDealsAnalyticsView(APIView):
+    """
+    GET /api/analytics/agent-deals
+
+    Get analytics for deals visible to a specific agent.
+    Maps to Supabase RPC: get_analytics_from_deals_for_agent
+
+    Query params:
+        agent_id: Optional agent UUID (default: current user)
+        as_of: Reference date (default: today, format: YYYY-MM-DD)
+        all_time_months: Number of months for all-time window (default: 12)
+        carrier_ids: Comma-separated carrier UUIDs to filter by
+        include_series: Include monthly time series (default: true)
+        include_windows_by_carrier: Include window calculations per carrier (default: true)
+        include_breakdowns_status: Include status breakdown (default: true)
+        include_breakdowns_state: Include state breakdown (default: true)
+        include_breakdowns_age: Include age band breakdown (default: true)
+        top_states: Number of top states to include (default: 50)
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = get_user_context(request)
+        if not user:
+            return Response(
+                {'error': 'Unauthorized'},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
+        try:
+            # Parse agent_id (default to current user)
+            agent_id_str = request.query_params.get('agent_id')
+            target_user = user
+            if agent_id_str:
+                try:
+                    target_agent_id = UUID(agent_id_str)
+                    from dataclasses import replace
+                    target_user = replace(user, id=target_agent_id)
+                except ValueError:
+                    return Response(
+                        {'error': 'Invalid agent_id format'},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+
+            # Parse as_of date
+            as_of = None
+            as_of_str = request.query_params.get('as_of')
+            if as_of_str:
+                try:
+                    as_of = datetime.strptime(as_of_str, '%Y-%m-%d').date()
+                except ValueError:
+                    return Response(
+                        {'error': 'Invalid as_of format. Use YYYY-MM-DD.'},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+
+            # Parse all_time_months
+            all_time_months = int(request.query_params.get('all_time_months', 12))
+            all_time_months = max(1, min(all_time_months, 120))
+
+            # Parse carrier_ids
+            carrier_ids = None
+            carrier_ids_str = request.query_params.get('carrier_ids')
+            if carrier_ids_str:
+                try:
+                    carrier_ids = [UUID(cid.strip()) for cid in carrier_ids_str.split(',') if cid.strip()]
+                except ValueError:
+                    return Response(
+                        {'error': 'Invalid carrier_ids format. Use comma-separated UUIDs.'},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+
+            # Parse boolean flags
+            def parse_bool(param_name: str, default: bool = True) -> bool:
+                val = request.query_params.get(param_name)
+                if val is None:
+                    return default
+                return val.lower() in ('true', '1', 'yes')
+
+            include_series = parse_bool('include_series')
+            include_windows_by_carrier = parse_bool('include_windows_by_carrier')
+            include_breakdowns_status = parse_bool('include_breakdowns_status')
+            include_breakdowns_state = parse_bool('include_breakdowns_state')
+            include_breakdowns_age = parse_bool('include_breakdowns_age')
+
+            # Parse top_states
+            top_states = int(request.query_params.get('top_states', 50))
+            top_states = max(1, min(top_states, 100))
+
+            result = get_analytics_for_agent(
+                user=target_user,
+                as_of=as_of,
+                all_time_months=all_time_months,
+                carrier_ids=carrier_ids,
+                include_series=include_series,
+                include_windows_by_carrier=include_windows_by_carrier,
+                include_breakdowns_status=include_breakdowns_status,
+                include_breakdowns_state=include_breakdowns_state,
+                include_breakdowns_age=include_breakdowns_age,
+                top_states=top_states,
+            )
+
+            return Response(result)
+
+        except Exception as e:
+            logger.error(f'Agent deals analytics failed: {e}')
+            return Response(
+                {'error': 'Failed to fetch analytics', 'detail': str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
+class CarrierMetricsView(APIView):
+    """
+    GET /api/analytics/carrier-metrics
+
+    Get carrier-level metrics for the agency.
+    Maps to Supabase RPC: get_carrier_metrics_json
+
+    Query params:
+        as_of: Reference date (default: today, format: YYYY-MM-DD)
+        all_time_months: Number of months for all-time window (default: 12)
+        carrier_ids: Comma-separated carrier UUIDs to filter by
+        include_series: Include monthly time series (default: true)
+        include_windows_by_carrier: Include window calculations per carrier (default: true)
+        include_breakdowns_status: Include status breakdown (default: true)
+        include_breakdowns_state: Include state breakdown (default: true)
+        include_breakdowns_age: Include age band breakdown (default: true)
+        top_states: Number of top states to include (default: 7)
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = get_user_context(request)
+        if not user:
+            return Response(
+                {'error': 'Unauthorized'},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
+        try:
+            # Parse as_of date
+            as_of = None
+            as_of_str = request.query_params.get('as_of')
+            if as_of_str:
+                try:
+                    as_of = datetime.strptime(as_of_str, '%Y-%m-%d').date()
+                except ValueError:
+                    return Response(
+                        {'error': 'Invalid as_of format. Use YYYY-MM-DD.'},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+
+            # Parse all_time_months
+            all_time_months = int(request.query_params.get('all_time_months', 12))
+            all_time_months = max(1, min(all_time_months, 120))
+
+            # Parse carrier_ids
+            carrier_ids = None
+            carrier_ids_str = request.query_params.get('carrier_ids')
+            if carrier_ids_str:
+                try:
+                    carrier_ids = [UUID(cid.strip()) for cid in carrier_ids_str.split(',') if cid.strip()]
+                except ValueError:
+                    return Response(
+                        {'error': 'Invalid carrier_ids format. Use comma-separated UUIDs.'},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+
+            # Parse boolean flags
+            def parse_bool(param_name: str, default: bool = True) -> bool:
+                val = request.query_params.get(param_name)
+                if val is None:
+                    return default
+                return val.lower() in ('true', '1', 'yes')
+
+            include_series = parse_bool('include_series')
+            include_windows_by_carrier = parse_bool('include_windows_by_carrier')
+            include_breakdowns_status = parse_bool('include_breakdowns_status')
+            include_breakdowns_state = parse_bool('include_breakdowns_state')
+            include_breakdowns_age = parse_bool('include_breakdowns_age')
+
+            # Parse top_states
+            top_states = int(request.query_params.get('top_states', 7))
+            top_states = max(1, min(top_states, 100))
+
+            result = get_carrier_metrics(
+                agency_id=user.agency_id,
+                as_of=as_of,
+                all_time_months=all_time_months,
+                carrier_ids=carrier_ids,
+                include_series=include_series,
+                include_windows_by_carrier=include_windows_by_carrier,
+                include_breakdowns_status=include_breakdowns_status,
+                include_breakdowns_state=include_breakdowns_state,
+                include_breakdowns_age=include_breakdowns_age,
+                top_states=top_states,
+            )
+
+            return Response(result)
+
+        except Exception as e:
+            logger.error(f'Carrier metrics failed: {e}')
+            return Response(
+                {'error': 'Failed to fetch carrier metrics', 'detail': str(e)},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )

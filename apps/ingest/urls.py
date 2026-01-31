@@ -17,6 +17,7 @@ from .views import (
     IngestJobsView,
     LinkStagedAgentNumbersView,
     OrchestrateIngestView,
+    S3PresignView,
     StagingBulkInsertView,
     StagingRecordsView,
     StagingSummaryView,
@@ -33,6 +34,9 @@ urlpatterns = [
     path('jobs/<str:job_id>', IngestJobDetailView.as_view(), name='ingest_job_detail'),
     path('jobs/<str:job_id>/verify', VerifyJobExistsView.as_view(), name='ingest_job_verify'),
     path('jobs/<str:job_id>/files', UpsertJobFileView.as_view(), name='ingest_job_files'),
+
+    # S3 presigned URL generation (migrated from Next.js)
+    path('presign', S3PresignView.as_view(), name='ingest_presign'),
 
     # Existing endpoints
     path('enqueue-job', EnqueueJobView.as_view(), name='ingest_enqueue_job'),

@@ -40,6 +40,8 @@ dependencies = [
     "django-stubs-ext>=5.2.9",
     "mypy-extensions>=1.1.0",
     "django-stubs>=5.2.9",
+    # AWS S3
+    "boto3>=1.35.0",
 ]
 
 [project.optional-dependencies]

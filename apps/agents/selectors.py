@@ -37,11 +37,11 @@ def get_agent_downline(agent_id: UUID) -> list[dict]:
             .values('id', 'first_name', 'last_name', 'email', 'depth')
         )
 
-        # Recursive: get children, increment depth (limit to 20)
+        # Recursive: get children, increment depth (limit to 50)
         recursive = (
             cte.join(User, upline_id=cte.col.id)
             .annotate(depth=cte.col.depth + 1)
-            .filter(depth__lt=20)
+            .filter(depth__lt=50)
             .values('id', 'first_name', 'last_name', 'email', 'depth')
         )
 
@@ -92,11 +92,11 @@ def get_agent_upline_chain(agent_id: UUID) -> list[dict]:
             .values('id', 'upline_id', 'depth')
         )
 
-        # Recursive: follow upline_id chain (limit to 20)
+        # Recursive: follow upline_id chain (limit to 50)
         recursive = (
             cte.join(User, id=cte.col.upline_id)
             .annotate(depth=cte.col.depth + 1)
-            .filter(depth__lt=20)
+            .filter(depth__lt=50)
             .values('id', 'upline_id', 'depth')
         )
 
@@ -1024,7 +1024,7 @@ def get_agent_detail(agent_id: UUID, requesting_user_id: UUID) -> dict | None:
                 SELECT u.id, u.upline_id, uc.depth + 1
                 FROM users u
                 JOIN upline_chain uc ON u.id = uc.upline_id
-                WHERE uc.depth < 20
+                WHERE uc.depth < 50
             )
             SELECT MAX(depth) as hierarchy_depth
             FROM upline_chain
@@ -1091,13 +1091,13 @@ def get_agent_downline_with_depth(
 
     Args:
         agent_id: The root agent to get downline for
-        max_depth: Maximum depth to traverse (None for unlimited, max 20)
+        max_depth: Maximum depth to traverse (None for unlimited, max 50)
         include_self: Whether to include the agent themselves
 
     Returns:
         List of agents in downline with depth level and details
     """
-    effective_max_depth = min(max_depth or 20, 20)
+    effective_max_depth = min(max_depth or 50, 50)
 
     with connection.cursor() as cursor:
         cursor.execute("""

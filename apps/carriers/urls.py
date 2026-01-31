@@ -17,6 +17,9 @@ urlpatterns = [
     # Status endpoints (P1-020)
     path('statuses', views.StatusMappingsView.as_view(), name='status_mappings'),
     path('standardized-statuses', views.StandardizedStatusesView.as_view(), name='standardized_statuses'),
+
+    # Carrier detail (must be last to avoid matching other paths)
+    path('<str:carrier_id>', views.CarrierDetailView.as_view(), name='carrier_detail'),
 ]
 
 # Contracts endpoints (mounted at /api/contracts/)

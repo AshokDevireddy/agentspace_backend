@@ -2,6 +2,9 @@
 Client Selectors (P2-037)
 
 Complex queries for client data retrieval.
+
+Note: Clients are stored in a legacy `public.clients` table without a Django model.
+These selectors use raw SQL with proper parameterization for security.
 """
 import logging
 from uuid import UUID
@@ -49,7 +52,9 @@ def get_clients_list(
     if not visible_ids:
         return {'clients': [], 'pagination': _empty_pagination(page, limit)}
 
-    visible_ids_str = ','.join(f"'{str(vid)}'" for vid in visible_ids)
+    # Build parameterized placeholders for visible_ids
+    id_placeholders = ','.join(['%s'] * len(visible_ids))
+    visible_id_params = [str(vid) for vid in visible_ids]
 
     # Build search filter
     search_filter = ""
@@ -71,7 +76,7 @@ def get_clients_list(
         FROM public.clients c
         JOIN public.deals d ON d.client_id = c.id
         WHERE c.agency_id = %s
-          AND d.agent_id IN ({visible_ids_str})
+          AND d.agent_id IN ({id_placeholders})
           {search_filter}
     """
 
@@ -91,7 +96,7 @@ def get_clients_list(
         FROM public.clients c
         JOIN public.deals d ON d.client_id = c.id
         WHERE c.agency_id = %s
-          AND d.agent_id IN ({visible_ids_str})
+          AND d.agent_id IN ({id_placeholders})
           {search_filter}
         GROUP BY c.id, c.first_name, c.last_name, c.email, c.phone, c.created_at
         ORDER BY c.last_name, c.first_name
@@ -99,13 +104,15 @@ def get_clients_list(
     """
 
     try:
-        params = [str(user.agency_id)] + search_params
+        # Build parameter list: agency_id + visible_ids + search_params
+        count_params = [str(user.agency_id)] + visible_id_params + search_params
+        main_params = [str(user.agency_id)] + visible_id_params + search_params + [limit, offset]
 
         with connection.cursor() as cursor:
-            cursor.execute(count_query, params)
+            cursor.execute(count_query, count_params)
             total_count = cursor.fetchone()[0]
 
-            cursor.execute(main_query, params + [limit, offset])
+            cursor.execute(main_query, main_params)
             columns = [col[0] for col in cursor.description]
             rows = cursor.fetchall()
 
@@ -169,7 +176,9 @@ def get_client_detail(
     if not visible_ids:
         return None
 
-    visible_ids_str = ','.join(f"'{str(vid)}'" for vid in visible_ids)
+    # Build parameterized placeholders for visible_ids
+    id_placeholders = ','.join(['%s'] * len(visible_ids))
+    visible_id_params = [str(vid) for vid in visible_ids]
 
     query = f"""
         SELECT
@@ -184,13 +193,13 @@ def get_client_detail(
         JOIN public.deals d ON d.client_id = c.id
         WHERE c.id = %s
           AND c.agency_id = %s
-          AND d.agent_id IN ({visible_ids_str})
+          AND d.agent_id IN ({id_placeholders})
         LIMIT 1
     """
 
     try:
         with connection.cursor() as cursor:
-            cursor.execute(query, [str(client_id), str(user.agency_id)])
+            cursor.execute(query, [str(client_id), str(user.agency_id)] + visible_id_params)
             row = cursor.fetchone()
 
         if not row:
@@ -217,12 +226,12 @@ def get_client_detail(
             LEFT JOIN public.products pr ON pr.id = d.product_id
             LEFT JOIN public.users u ON u.id = d.agent_id
             WHERE d.client_id = %s
-              AND d.agent_id IN ({visible_ids_str})
+              AND d.agent_id IN ({id_placeholders})
             ORDER BY d.policy_effective_date DESC
         """
 
         with connection.cursor() as cursor:
-            cursor.execute(deals_query, [str(client_id)])
+            cursor.execute(deals_query, [str(client_id)] + visible_id_params)
             deal_columns = [col[0] for col in cursor.description]
             deal_rows = cursor.fetchall()
 

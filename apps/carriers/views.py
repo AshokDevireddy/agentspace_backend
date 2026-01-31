@@ -19,6 +19,7 @@ from apps.core.authentication import get_user_context
 
 from .selectors import (
     get_active_carriers,
+    get_carrier_by_id,
     get_carrier_names,
     get_carriers_for_agency,
     get_carriers_with_products_for_agency,
@@ -58,6 +59,52 @@ class CarriersListView(APIView):
             logger.error(f'Carriers list failed: {e}')
             return Response(
                 {'error': 'Failed to fetch carriers', 'detail': str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
+class CarrierDetailView(APIView):
+    """
+    GET /api/carriers/{id}
+
+    Get a single carrier by ID.
+
+    Response (200):
+        {
+            "id": "uuid",
+            "name": "Carrier Name",
+            "display_name": "Display Name",
+            "code": "CODE",
+            "is_active": true,
+            "created_at": "2024-01-01T00:00:00Z",
+            "updated_at": "2024-01-01T00:00:00Z"
+        }
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, carrier_id):
+        try:
+            carrier_uuid = UUID(carrier_id)
+        except ValueError:
+            return Response(
+                {'error': 'Invalid carrier_id format'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            carrier = get_carrier_by_id(carrier_uuid)
+
+            if not carrier:
+                return Response(
+                    {'error': 'Carrier not found'},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+
+            return Response(carrier)
+        except Exception as e:
+            logger.error(f'Carrier detail failed: {e}')
+            return Response(
+                {'error': 'Failed to fetch carrier', 'detail': str(e)},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 

@@ -559,3 +559,322 @@ def resend_agent_invite(
             'success': True,
             'message': f'Invitation resent successfully to {first_name} {last_name}',
         }
+
+
+@transaction.atomic
+def update_agent(
+    *,
+    requester_id: UUID,
+    agent_id: UUID,
+    agency_id: UUID,
+    first_name: str | None = None,
+    last_name: str | None = None,
+    phone_number: str | None = None,
+    email: str | None = None,
+    upline_id: UUID | None = None,
+) -> dict:
+    """
+    Update an agent's details.
+
+    Permission: Admin can update anyone in agency, non-admin can update their downlines.
+
+    Args:
+        requester_id: The requesting user's ID
+        agent_id: The agent to update
+        agency_id: The agency UUID for security check
+        first_name: New first name (optional)
+        last_name: New last name (optional)
+        phone_number: New phone number (optional)
+        email: New email (optional) - syncs to Supabase auth if changed
+        upline_id: New upline ID (optional)
+
+    Returns:
+        Dictionary with success status and updated agent data or error
+    """
+    with connection.cursor() as cursor:
+        # Get requester context
+        cursor.execute("""
+            SELECT
+                COALESCE(is_admin, false) OR perm_level = 'admin' OR role = 'admin' as is_admin
+            FROM users
+            WHERE id = %s AND agency_id = %s
+            LIMIT 1
+        """, [str(requester_id), str(agency_id)])
+
+        requester_row = cursor.fetchone()
+        if not requester_row:
+            return {'success': False, 'error': 'Requester not found'}
+
+        is_admin = requester_row[0]
+
+        # Get the agent to update
+        cursor.execute("""
+            SELECT id, auth_user_id, email, first_name, last_name, phone_number, upline_id, agency_id
+            FROM users
+            WHERE id = %s
+            LIMIT 1
+        """, [str(agent_id)])
+
+        agent_row = cursor.fetchone()
+        if not agent_row:
+            return {'success': False, 'error': 'Agent not found'}
+
+        (agent_id_db, auth_user_id, current_email, current_first_name, current_last_name,
+         current_phone, current_upline_id, agent_agency_id) = agent_row
+
+        # Verify agent is in the same agency
+        if str(agent_agency_id) != str(agency_id):
+            return {'success': False, 'error': 'Cannot update agents from other agencies'}
+
+        # Check permissions
+        has_permission = is_admin
+
+        if not is_admin:
+            # Check if agent_id is in the downline of requester_id
+            cursor.execute("""
+                WITH RECURSIVE downline AS (
+                    SELECT u.id
+                    FROM users u
+                    WHERE u.id = %s
+                    UNION ALL
+                    SELECT u.id
+                    FROM users u
+                    JOIN downline d ON u.upline_id = d.id
+                    WHERE d.id <> u.id
+                )
+                SELECT EXISTS (
+                    SELECT 1 FROM downline WHERE id = %s
+                )
+            """, [str(requester_id), str(agent_id)])
+
+            has_permission = cursor.fetchone()[0]
+
+        if not has_permission:
+            return {'success': False, 'error': 'You do not have permission to update this agent'}
+
+        # Build update fields
+        update_fields = []
+        update_values = []
+
+        if first_name is not None and first_name != current_first_name:
+            update_fields.append('first_name = %s')
+            update_values.append(first_name.strip())
+
+        if last_name is not None and last_name != current_last_name:
+            update_fields.append('last_name = %s')
+            update_values.append(last_name.strip())
+
+        if phone_number is not None and phone_number != current_phone:
+            update_fields.append('phone_number = %s')
+            update_values.append(phone_number.strip() if phone_number else None)
+
+        if upline_id is not None:
+            upline_id_str = str(upline_id) if upline_id else None
+            if upline_id_str != str(current_upline_id) if current_upline_id else None:
+                # Verify upline exists in same agency
+                if upline_id:
+                    cursor.execute("""
+                        SELECT id FROM users WHERE id = %s AND agency_id = %s
+                    """, [str(upline_id), str(agency_id)])
+                    if not cursor.fetchone():
+                        return {'success': False, 'error': 'Upline agent not found in this agency'}
+                update_fields.append('upline_id = %s')
+                update_values.append(str(upline_id) if upline_id else None)
+
+        # Handle email change - requires Supabase auth sync
+        email_changed = False
+        if email is not None and email.strip().lower() != current_email:
+            new_email = email.strip().lower()
+            # Check if email is already in use
+            cursor.execute("""
+                SELECT id FROM users WHERE email = %s AND id != %s
+            """, [new_email, str(agent_id)])
+            if cursor.fetchone():
+                return {'success': False, 'error': 'Email is already in use'}
+            update_fields.append('email = %s')
+            update_values.append(new_email)
+            email_changed = True
+
+        if not update_fields:
+            return {'success': True, 'message': 'No changes to apply', 'agent_id': str(agent_id)}
+
+        # Add updated_at
+        update_fields.append('updated_at = NOW()')
+
+        # Build and execute update query
+        update_values.append(str(agent_id))
+        update_values.append(str(agency_id))
+
+        cursor.execute(f"""
+            UPDATE users
+            SET {', '.join(update_fields)}
+            WHERE id = %s AND agency_id = %s
+            RETURNING id, email, first_name, last_name, phone_number, upline_id
+        """, update_values)
+
+        row = cursor.fetchone()
+        if not row:
+            return {'success': False, 'error': 'Failed to update agent'}
+
+        # Sync email to Supabase auth if changed
+        if email_changed and auth_user_id:
+            try:
+                _update_supabase_user_email(auth_user_id, email.strip().lower())
+            except Exception as e:
+                logger.warning(f'Failed to sync email to Supabase auth: {e}')
+                # Don't fail the update, just log
+
+        return {
+            'success': True,
+            'agent': {
+                'id': str(row[0]),
+                'email': row[1],
+                'first_name': row[2],
+                'last_name': row[3],
+                'phone_number': row[4],
+                'upline_id': str(row[5]) if row[5] else None,
+            },
+        }
+
+
+def _update_supabase_user_email(auth_user_id: str, new_email: str) -> None:
+    """Update a Supabase auth user's email."""
+    try:
+        with httpx.Client() as client:
+            response = client.put(
+                f'{SUPABASE_URL}/auth/v1/admin/users/{auth_user_id}',
+                json={'email': new_email},
+                headers={
+                    'apikey': SUPABASE_SERVICE_KEY,
+                    'Authorization': f'Bearer {SUPABASE_SERVICE_KEY}',
+                    'Content-Type': 'application/json',
+                },
+                timeout=10.0,
+            )
+            if response.status_code not in (200, 201):
+                logger.error(f'Failed to update Supabase user email: {response.text}')
+    except httpx.RequestError as e:
+        logger.error(f'Supabase request error updating email: {e}')
+
+
+@transaction.atomic
+def deactivate_agent(
+    *,
+    requester_id: UUID,
+    agent_id: UUID,
+    agency_id: UUID,
+    reassign_downlines: bool = True,
+) -> dict:
+    """
+    Soft-delete an agent by setting is_active=False.
+
+    Permission: Admin only.
+
+    Args:
+        requester_id: The requesting user's ID
+        agent_id: The agent to deactivate
+        agency_id: The agency UUID for security check
+        reassign_downlines: If True, reassign agent's downlines to agent's upline
+
+    Returns:
+        Dictionary with success status or error
+    """
+    with connection.cursor() as cursor:
+        # Verify requester is admin
+        cursor.execute("""
+            SELECT
+                COALESCE(is_admin, false) OR perm_level = 'admin' OR role = 'admin' as is_admin
+            FROM users
+            WHERE id = %s AND agency_id = %s
+            LIMIT 1
+        """, [str(requester_id), str(agency_id)])
+
+        requester_row = cursor.fetchone()
+        if not requester_row:
+            return {'success': False, 'error': 'Requester not found'}
+
+        if not requester_row[0]:
+            return {'success': False, 'error': 'Admin access required to deactivate agents'}
+
+        # Get the agent to deactivate
+        cursor.execute("""
+            SELECT id, auth_user_id, upline_id, email, first_name, last_name, is_active, agency_id
+            FROM users
+            WHERE id = %s
+            LIMIT 1
+        """, [str(agent_id)])
+
+        agent_row = cursor.fetchone()
+        if not agent_row:
+            return {'success': False, 'error': 'Agent not found'}
+
+        (agent_id_db, auth_user_id, upline_id, email, first_name, last_name,
+         is_active, agent_agency_id) = agent_row
+
+        # Verify agent is in the same agency
+        if str(agent_agency_id) != str(agency_id):
+            return {'success': False, 'error': 'Cannot deactivate agents from other agencies'}
+
+        # Prevent self-deactivation
+        if str(agent_id) == str(requester_id):
+            return {'success': False, 'error': 'Cannot deactivate yourself'}
+
+        # Check if already inactive
+        if not is_active:
+            return {'success': True, 'message': 'Agent is already inactive'}
+
+        # Optionally reassign downlines to the agent's upline
+        reassigned_count = 0
+        if reassign_downlines and upline_id:
+            cursor.execute("""
+                UPDATE users
+                SET upline_id = %s, updated_at = NOW()
+                WHERE upline_id = %s AND agency_id = %s
+                RETURNING id
+            """, [str(upline_id), str(agent_id), str(agency_id)])
+            reassigned_count = cursor.rowcount
+
+        # Deactivate the agent
+        cursor.execute("""
+            UPDATE users
+            SET is_active = false, status = 'inactive', updated_at = NOW()
+            WHERE id = %s AND agency_id = %s
+            RETURNING id
+        """, [str(agent_id), str(agency_id)])
+
+        if not cursor.fetchone():
+            return {'success': False, 'error': 'Failed to deactivate agent'}
+
+        # Deactivate Supabase auth user
+        if auth_user_id:
+            try:
+                _deactivate_supabase_user(auth_user_id)
+            except Exception as e:
+                logger.warning(f'Failed to deactivate Supabase auth user: {e}')
+                # Don't fail - DB change is primary
+
+        return {
+            'success': True,
+            'message': f'Agent {first_name} {last_name} has been deactivated',
+            'reassigned_downlines': reassigned_count,
+        }
+
+
+def _deactivate_supabase_user(auth_user_id: str) -> None:
+    """Deactivate a Supabase auth user (ban them)."""
+    try:
+        with httpx.Client() as client:
+            response = client.put(
+                f'{SUPABASE_URL}/auth/v1/admin/users/{auth_user_id}',
+                json={'ban_duration': 'none'},  # Permanent ban
+                headers={
+                    'apikey': SUPABASE_SERVICE_KEY,
+                    'Authorization': f'Bearer {SUPABASE_SERVICE_KEY}',
+                    'Content-Type': 'application/json',
+                },
+                timeout=10.0,
+            )
+            if response.status_code not in (200, 201):
+                logger.error(f'Failed to deactivate Supabase user: {response.text}')
+    except httpx.RequestError as e:
+        logger.error(f'Supabase request error deactivating user: {e}')

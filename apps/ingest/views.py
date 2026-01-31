@@ -6,8 +6,12 @@ Provides endpoints for policy report processing:
 - POST /api/ingest/orchestrate - Run full policy report ingest
 - POST /api/ingest/sync-staging - Sync staging to deals
 - GET /api/ingest/staging-summary - Get staging summary
+- POST /api/ingest/presign - Generate S3 presigned URLs for file uploads
 """
 import logging
+import os
+import re
+import uuid as uuid_module
 
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
@@ -1076,3 +1080,218 @@ class StagingRecordsView(APIView):
                 {'error': 'Failed to fetch records', 'detail': str(e)},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
+
+
+# =============================================================================
+# S3 Presigned URL Views (migrated from Next.js)
+# =============================================================================
+
+
+def _sanitize_filename(filename: str) -> str:
+    """Sanitize filename to be safe for S3 keys."""
+    return re.sub(r'[^a-zA-Z0-9._-]', '_', filename)
+
+
+class S3PresignView(APIView):
+    """
+    POST /api/ingest/presign
+
+    Generate S3 presigned URLs for file uploads.
+    Migrated from frontend/src/app/api/upload-policy-reports/sign/route.ts
+
+    Request body:
+        {
+            "jobId": "uuid",
+            "files": [
+                {
+                    "fileName": "report.csv",
+                    "contentType": "text/csv",
+                    "size": 12345
+                }
+            ]
+        }
+
+    Response (200):
+        {
+            "jobId": "uuid",
+            "files": [
+                {
+                    "fileId": "uuid",
+                    "fileName": "report.csv",
+                    "objectKey": "policy-reports/{agency}/{job}/{file}/report.csv",
+                    "presignedUrl": "https://...",
+                    "contentType": "text/csv",
+                    "size": 12345,
+                    "expiresInSeconds": 60
+                }
+            ]
+        }
+    """
+    authentication_classes = [CronSecretAuthentication, SupabaseJWTAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    # Allowed content types for upload
+    ALLOWED_TYPES = [
+        'text/csv',
+        'application/vnd.ms-excel',
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    ]
+    MAX_FILE_SIZE = 25 * 1024 * 1024  # 25MB per file
+
+    def post(self, request):
+        user = get_user_context(request)
+        if not user:
+            return Response(
+                {'error': 'Unauthorized'},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
+        if not user.agency_id:
+            return Response(
+                {'error': 'No agency for user'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        job_id = request.data.get('jobId')
+        files = request.data.get('files', [])
+
+        if not job_id or not files:
+            return Response(
+                {'error': 'jobId and files are required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Validate job_id format
+        try:
+            from uuid import UUID
+            job_uuid = UUID(job_id)
+        except (ValueError, TypeError):
+            return Response(
+                {'error': 'Invalid jobId format'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Verify job exists and belongs to user's agency
+        try:
+            from .services import verify_job_exists
+            if not verify_job_exists(job_uuid, user.agency_id):
+                return Response(
+                    {'error': 'Invalid jobId'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+        except Exception as e:
+            logger.error(f'Failed to verify job: {e}')
+            return Response(
+                {'error': 'Failed to verify job'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+        # Get S3 bucket from environment
+        bucket = os.getenv('AWS_S3_BUCKET_NAME')
+        if not bucket:
+            return Response(
+                {'error': 'AWS_S3_BUCKET_NAME not configured'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+        # Initialize boto3 S3 client
+        try:
+            import boto3
+            s3_client = boto3.client(
+                's3',
+                region_name=os.getenv('AWS_REGION', 'us-east-1'),
+                aws_access_key_id=os.getenv('AWS_ACCESS_KEY_ID'),
+                aws_secret_access_key=os.getenv('AWS_SECRET_ACCESS_KEY'),
+            )
+        except Exception as e:
+            logger.error(f'Failed to initialize S3 client: {e}')
+            return Response(
+                {'error': 'S3 service unavailable'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+        results = []
+
+        for file_info in files:
+            file_name = str(file_info.get('fileName', ''))
+            content_type = str(file_info.get('contentType', ''))
+            size = file_info.get('size', 0)
+
+            if not file_name or not content_type:
+                return Response(
+                    {'error': 'Each file requires fileName and contentType'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            try:
+                size = int(size)
+            except (ValueError, TypeError):
+                size = 0
+
+            # Validate content type
+            if content_type not in self.ALLOWED_TYPES:
+                return Response(
+                    {'error': f'Invalid file type: {content_type}'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            # Validate file size
+            if size > self.MAX_FILE_SIZE:
+                return Response(
+                    {'error': f'File too large: {file_name}'},
+                    status=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE
+                )
+
+            # Generate file ID and S3 key
+            file_id = str(uuid_module.uuid4())
+            safe_name = _sanitize_filename(file_name)
+            object_key = f'policy-reports/{user.agency_id}/{job_id}/{file_id}/{safe_name}'
+
+            # Upsert ingest_job_file record
+            try:
+                from .services import upsert_ingest_job_file
+                upsert_ingest_job_file(
+                    job_id=job_uuid,
+                    file_id=file_id,
+                    file_name=file_name,
+                    status='received',
+                )
+            except Exception as e:
+                logger.error(f'Failed to register file: {e}')
+                return Response(
+                    {'error': 'Failed to register file'},
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                )
+
+            # Generate presigned URL
+            try:
+                presigned_url = s3_client.generate_presigned_url(
+                    'put_object',
+                    Params={
+                        'Bucket': bucket,
+                        'Key': object_key,
+                        'ContentType': content_type,
+                    },
+                    ExpiresIn=60,  # 60 seconds
+                )
+            except Exception as e:
+                logger.error(f'Failed to generate presigned URL: {e}')
+                return Response(
+                    {'error': 'Failed to generate upload URL'},
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                )
+
+            results.append({
+                'fileId': file_id,
+                'fileName': file_name,
+                'objectKey': object_key,
+                'presignedUrl': presigned_url,
+                'contentType': content_type,
+                'size': size,
+                'expiresInSeconds': 60,
+            })
+
+        return Response({
+            'jobId': job_id,
+            'files': results,
+        })
