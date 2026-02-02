@@ -674,6 +674,68 @@ def update_deal_status_standardized(
         return row is not None
 
 
+def resolve_deal_notification(
+    deal_id: UUID,
+    user: AuthenticatedUser,
+) -> dict | None:
+    """
+    Resolve a deal notification by setting status_standardized to NULL.
+
+    Only allows resolving deals with 'lapse_notified' or 'needs_more_info_notified' status.
+
+    Args:
+        deal_id: The deal ID
+        user: The authenticated user
+
+    Returns:
+        Dict with success info or None if deal not found/not accessible
+
+    Raises:
+        DealValidationError: If deal does not have a notified status
+    """
+    with connection.cursor() as cursor:
+        # First check if the deal exists and has a notified status
+        cursor.execute("""
+            SELECT id, status_standardized
+            FROM public.deals
+            WHERE id = %s AND agency_id = %s
+        """, [str(deal_id), str(user.agency_id)])
+
+        row = cursor.fetchone()
+        if not row:
+            return None
+
+        current_status = row[1]
+
+        # Only allow resolving notified statuses
+        if current_status not in ('lapse_notified', 'needs_more_info_notified'):
+            raise DealValidationError(
+                message='Deal does not have a notified status to resolve',
+                code='invalid_status',
+                details={'current_status': current_status},
+            )
+
+        # Update status_standardized to NULL
+        cursor.execute("""
+            UPDATE public.deals
+            SET
+                status_standardized = NULL,
+                updated_at = NOW()
+            WHERE id = %s AND agency_id = %s
+            RETURNING id
+        """, [str(deal_id), str(user.agency_id)])
+
+        updated_row = cursor.fetchone()
+        if not updated_row:
+            return None
+
+        return {
+            'success': True,
+            'deal_id': str(deal_id),
+            'message': 'Notification resolved successfully',
+        }
+
+
 @transaction.atomic
 def delete_deal(
     deal_id: UUID,

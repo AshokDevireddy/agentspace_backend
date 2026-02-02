@@ -239,3 +239,62 @@ def sync_position_commissions(agency_id: UUID) -> int:
             RETURNING id
         """, [str(agency_id), str(agency_id)])
         return cursor.rowcount
+
+
+@transaction.atomic
+def upsert_position_commissions(
+    agency_id: UUID,
+    commissions: list[dict],
+) -> list[dict]:
+    """
+    Batch upsert position-product commissions.
+
+    Creates new entries or updates existing ones based on position_id + product_id combination.
+
+    Args:
+        agency_id: The agency UUID for security validation
+        commissions: List of dicts with position_id, product_id, commission_percentage
+
+    Returns:
+        List of upserted commission dictionaries
+    """
+    if not commissions:
+        return []
+
+    results = []
+
+    with connection.cursor() as cursor:
+        for comm in commissions:
+            position_id = str(comm['position_id'])
+            product_id = str(comm['product_id'])
+            commission_percentage = float(comm['commission_percentage'])
+
+            # Verify position belongs to agency
+            cursor.execute("""
+                SELECT id FROM positions
+                WHERE id = %s AND agency_id = %s
+            """, [position_id, str(agency_id)])
+
+            if not cursor.fetchone():
+                # Skip if position doesn't belong to agency
+                continue
+
+            # Upsert the commission
+            cursor.execute("""
+                INSERT INTO position_product_commissions (position_id, product_id, commission_percentage)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (position_id, product_id)
+                DO UPDATE SET commission_percentage = EXCLUDED.commission_percentage
+                RETURNING id, position_id, product_id, commission_percentage
+            """, [position_id, product_id, commission_percentage])
+
+            row = cursor.fetchone()
+            if row:
+                results.append({
+                    'id': str(row[0]),
+                    'position_id': str(row[1]),
+                    'product_id': str(row[2]),
+                    'commission_percentage': float(row[3]),
+                })
+
+    return results

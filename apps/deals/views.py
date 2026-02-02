@@ -36,6 +36,7 @@ from .services import (
     create_deal,
     delete_deal,
     get_deal_by_id,
+    resolve_deal_notification,
     update_deal,
     update_deal_status,
 )
@@ -485,3 +486,31 @@ class DealByPhoneView(AuthenticatedAPIView, APIView):
             'found': True,
             'deal': deal
         })
+
+
+class ResolveNotificationView(AuthenticatedAPIView, APIView):
+    """
+    POST /api/deals/{id}/resolve-notification - Resolve a deal notification
+
+    Sets status_standardized to NULL for deals with lapse_notified or needs_more_info_notified status.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, deal_id):
+        """Resolve a deal notification by clearing status_standardized."""
+        user = self.get_user(request)
+        deal_uuid = self.parse_uuid(deal_id, "deal_id")
+
+        try:
+            result = resolve_deal_notification(deal_uuid, user)
+            if not result:
+                return Response(
+                    {'error': 'Deal not found'},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+            return Response(result)
+        except DealValidationError as e:
+            return Response(
+                {'error': e.message},
+                status=status.HTTP_400_BAD_REQUEST
+            )

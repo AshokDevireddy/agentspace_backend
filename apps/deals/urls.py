@@ -12,6 +12,7 @@ from .views import (
     FilterOptionsView,
     FormDataView,
     ProductsByCarrierView,
+    ResolveNotificationView,
 )
 
 urlpatterns = [
@@ -29,4 +30,5 @@ urlpatterns = [
     # Detail endpoints (must come after specific paths)
     path('<str:deal_id>', DealDetailView.as_view(), name='deal_detail'),
     path('<str:deal_id>/status', DealStatusView.as_view(), name='deal_status'),
+    path('<str:deal_id>/resolve-notification', ResolveNotificationView.as_view(), name='resolve_notification'),
 ]

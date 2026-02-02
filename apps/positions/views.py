@@ -33,6 +33,7 @@ from .services import (
     sync_position_commissions,
     update_position,
     update_position_commission,
+    upsert_position_commissions,
 )
 
 logger = logging.getLogger(__name__)
@@ -264,8 +265,9 @@ class PositionDetailView(APIView):
 class PositionCommissionsView(APIView):
     """
     GET /api/positions/product-commissions?position_id={uuid}
+    POST /api/positions/product-commissions (batch upsert)
 
-    Get product commissions for a position.
+    Get product commissions for a position or batch upsert commissions.
     """
     permission_classes = [IsAuthenticated]
 
@@ -299,6 +301,85 @@ class PositionCommissionsView(APIView):
             logger.error(f'Position commissions failed: {e}')
             return Response(
                 {'error': 'Failed to fetch commissions', 'detail': str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+    def post(self, request):
+        """
+        Batch upsert position-product commissions.
+
+        Request body:
+            {
+                "commissions": [
+                    {"position_id": "uuid", "product_id": "uuid", "commission_percentage": 50.0},
+                    ...
+                ]
+            }
+        """
+        user = get_user_context(request)
+        if not user:
+            return Response(
+                {'error': 'Unauthorized', 'detail': 'Authentication required'},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
+        commissions = request.data.get('commissions', [])
+
+        if not isinstance(commissions, list) or not commissions:
+            return Response(
+                {'error': 'Missing required fields', 'detail': 'commissions array is required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Validate each commission entry
+        for comm in commissions:
+            if not isinstance(comm, dict):
+                return Response(
+                    {'error': 'Invalid commission data', 'detail': 'Each commission must be an object'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            position_id = comm.get('position_id')
+            product_id = comm.get('product_id')
+            commission_percentage = comm.get('commission_percentage')
+
+            if not position_id or not product_id or commission_percentage is None:
+                return Response(
+                    {'error': 'Invalid commission data', 'detail': 'Each commission must have position_id, product_id, and commission_percentage'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            # Validate UUIDs
+            try:
+                UUID(position_id)
+                UUID(product_id)
+            except ValueError:
+                return Response(
+                    {'error': 'Invalid UUID', 'detail': 'position_id and product_id must be valid UUIDs'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            # Validate commission_percentage range
+            try:
+                pct = float(commission_percentage)
+                if pct < 0 or pct > 999.99:
+                    return Response(
+                        {'error': 'Invalid commission percentage', 'detail': 'commission_percentage must be between 0 and 999.99'},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+            except (TypeError, ValueError):
+                return Response(
+                    {'error': 'Invalid commission percentage', 'detail': 'commission_percentage must be a number'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+        try:
+            result = upsert_position_commissions(user.agency_id, commissions)
+            return Response({'commissions': result}, status=status.HTTP_201_CREATED)
+        except Exception as e:
+            logger.error(f'Commission upsert failed: {e}')
+            return Response(
+                {'error': 'Failed to create/update commissions', 'detail': str(e)},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
