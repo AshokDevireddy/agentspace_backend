@@ -721,6 +721,8 @@ class AIMessage(models.Model):
 
     # Token tracking (P1-015)
     tokens_used = models.IntegerField(null=True, blank=True)
+    input_tokens = models.IntegerField(null=True, blank=True)
+    output_tokens = models.IntegerField(null=True, blank=True)
 
     # Chart generation (P1-015)
     chart_code = models.TextField(null=True, blank=True)
