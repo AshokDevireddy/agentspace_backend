@@ -409,11 +409,16 @@ def get_static_filter_options(user: AuthenticatedUser) -> dict:
     Returns carriers, products, statuses, agents, and other filter options
     in {value, label} format with "All X" placeholders.
 
+    Note: The 'agents' key in the return dictionary is a Django enhancement
+    not present in the original Supabase RPC. It provides a list of agents
+    who have deals, filtered by the user's hierarchy visibility. This was
+    added for frontend convenience and backward compatibility.
+
     Args:
         user: The authenticated user
 
     Returns:
-        Dictionary with filter options matching RPC structure
+        Dictionary with filter options matching RPC structure (plus 'agents' enhancement)
     """
     from apps.core.models import Carrier, Deal, Product, StatusMapping, User
 
@@ -503,7 +508,8 @@ def get_static_filter_options(user: AuthenticatedUser) -> dict:
             if ls:
                 lead_sources.append({'value': ls, 'label': ls.title()})
 
-        # Get agents (visible based on hierarchy) who have deals - not in RPC but keeping for backward compat
+        # Get agents (visible based on hierarchy) who have deals
+        # NOTE: This 'agents' array is a Django enhancement not in the original RPC
         agents = []
         agent_visible_ids = get_visible_agent_ids(user, include_full_agency=is_admin)
         if agent_visible_ids:

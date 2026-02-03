@@ -404,6 +404,7 @@ def get_unread_message_count(
     Get count of unread inbound messages.
 
     Uses Django ORM with django-cte for downlines.
+    Filters by conversation type='sms' and is_active=True to match RPC behavior.
     """
     from django_cte import With
 
@@ -412,12 +413,19 @@ def get_unread_message_count(
     is_admin = user.is_admin or user.role == 'admin'
 
     try:
+        # Base filter matching RPC: type='sms' and is_active=True
+        base_filter = {
+            'conversation__type': 'sms',
+            'conversation__is_active': True,
+            'direction': 'inbound',
+            'read_at__isnull': True,
+        }
+
         if view_mode == 'all' and is_admin:
             return (
                 Message.objects.filter(  # type: ignore[attr-defined]
                     conversation__agent__agency_id=user.agency_id,
-                    direction='inbound',
-                    read_at__isnull=True
+                    **base_filter
                 )
                 .count()
             )
@@ -426,8 +434,7 @@ def get_unread_message_count(
             return (
                 Message.objects.filter(  # type: ignore[attr-defined]
                     conversation__agent_id=user.id,
-                    direction='inbound',
-                    read_at__isnull=True
+                    **base_filter
                 )
                 .count()
             )
@@ -451,8 +458,7 @@ def get_unread_message_count(
             return (
                 Message.objects.filter(  # type: ignore[attr-defined]
                     conversation__agent_id__in=downline_ids,
-                    direction='inbound',
-                    read_at__isnull=True
+                    **base_filter
                 )
                 .count()
             )

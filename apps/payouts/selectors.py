@@ -24,6 +24,8 @@ def get_expected_payouts(
     carrier_id: UUID | None = None,
     include_full_agency: bool = False,
     production_type: str | None = None,  # 'personal', 'downline', or None for all
+    months_past: int | None = None,  # Alternative to start_date: N months before today
+    months_future: int | None = None,  # Alternative to end_date: N months after today
 ) -> dict:
     """
     Calculate expected commission payouts using historical hierarchy snapshots.
@@ -39,10 +41,27 @@ def get_expected_payouts(
         carrier_id: Filter by carrier
         include_full_agency: If True and user is admin, include all agency payouts
         production_type: 'personal' (hierarchy_level=0), 'downline' (level>0), or None (all)
+        months_past: Alternative to start_date - calculates start as N months before today
+        months_future: Alternative to end_date - calculates end as N months after today
 
     Returns:
         Dictionary with payouts list, totals, and summary breakdown
+
+    Note:
+        Parameter transformation for RPC compatibility:
+        - If months_past provided and start_date is None: start_date = today - months_past months
+        - If months_future provided and end_date is None: end_date = today + months_future months
     """
+    from datetime import timedelta
+    from dateutil.relativedelta import relativedelta
+
+    # Transform months_past/months_future to dates if provided
+    today = date.today()
+    if months_past is not None and start_date is None:
+        start_date = today - relativedelta(months=months_past)
+    if months_future is not None and end_date is None:
+        end_date = today + relativedelta(months=months_future)
+
     is_admin = user.is_admin or user.role == 'admin'
 
     # Build visible agent filter

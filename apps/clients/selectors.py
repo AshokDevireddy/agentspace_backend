@@ -359,6 +359,165 @@ def get_client_dashboard_data(user_id: UUID, auth_user_id: str) -> dict | None:
         raise
 
 
+def get_clients_overview(
+    user: AuthenticatedUser,
+    p_view: str = 'self',
+    page: int = 1,
+    limit: int = 20,
+    search_query: str | None = None,
+) -> dict:
+    """
+    Get clients overview with view mode support.
+    Translated from Supabase RPC: get_clients_overview
+
+    Uses deal_hierarchy_snapshot for visibility logic (not org hierarchy).
+
+    Args:
+        user: The authenticated user
+        p_view: View mode - 'self' | 'downlines' | 'all'
+        page: Page number (1-based)
+        limit: Page size
+        search_query: Search by client name, email, or phone
+
+    Returns:
+        Dictionary with clients and pagination
+    """
+    is_admin = user.is_admin or user.role == 'admin'
+    offset = (page - 1) * limit
+
+    # Build visibility filter based on p_view
+    # Uses deal_hierarchy_snapshot for visibility (matches RPC behavior)
+    if p_view == 'all' and is_admin:
+        # Admin sees all agency clients
+        visibility_join = ""
+        visibility_filter = ""
+        visibility_params: list = []
+    elif p_view == 'downlines':
+        # User sees clients from deals where they appear in hierarchy (excluding own deals)
+        visibility_join = """
+            INNER JOIN deal_hierarchy_snapshot dhs ON dhs.deal_id = d.id
+        """
+        visibility_filter = "AND dhs.agent_id = %s AND d.agent_id != %s"
+        visibility_params = [str(user.id), str(user.id)]
+    else:  # 'self'
+        # User sees only their own deals' clients
+        visibility_join = ""
+        visibility_filter = "AND d.agent_id = %s"
+        visibility_params = [str(user.id)]
+
+    # Build search filter
+    search_filter = ""
+    search_params: list = []
+    if search_query:
+        search_filter = """
+            AND (c.first_name ILIKE %s
+                 OR c.last_name ILIKE %s
+                 OR c.email ILIKE %s
+                 OR c.phone ILIKE %s
+                 OR CONCAT(c.first_name, ' ', c.last_name) ILIKE %s)
+        """
+        search_pattern = f"%{search_query}%"
+        search_params = [search_pattern] * 5
+
+    # Count query
+    count_query = f"""
+        SELECT COUNT(DISTINCT c.id)
+        FROM public.clients c
+        JOIN public.deals d ON d.client_id = c.id
+        {visibility_join}
+        WHERE c.agency_id = %s
+          {visibility_filter}
+          {search_filter}
+    """
+
+    # Main query - includes supporting_agent and client_phone to match RPC
+    main_query = f"""
+        SELECT
+            c.id,
+            c.first_name,
+            c.last_name,
+            c.email,
+            c.phone as client_phone,
+            c.created_at,
+            COUNT(DISTINCT d.id) as deal_count,
+            SUM(CASE WHEN d.status_standardized = 'active' THEN 1 ELSE 0 END) as active_deals,
+            SUM(COALESCE(d.annual_premium, 0)) as total_premium,
+            MAX(d.policy_effective_date) as latest_policy_date,
+            -- Supporting agent (first non-writing agent in hierarchy, if any)
+            (
+                SELECT CONCAT(sa.first_name, ' ', sa.last_name)
+                FROM deal_hierarchy_snapshot dhs2
+                JOIN users sa ON sa.id = dhs2.agent_id
+                WHERE dhs2.deal_id = (SELECT id FROM deals WHERE client_id = c.id ORDER BY created_at DESC LIMIT 1)
+                  AND dhs2.agent_id != (SELECT agent_id FROM deals WHERE client_id = c.id ORDER BY created_at DESC LIMIT 1)
+                ORDER BY dhs2.hierarchy_level ASC
+                LIMIT 1
+            ) as supporting_agent
+        FROM public.clients c
+        JOIN public.deals d ON d.client_id = c.id
+        {visibility_join}
+        WHERE c.agency_id = %s
+          {visibility_filter}
+          {search_filter}
+        GROUP BY c.id, c.first_name, c.last_name, c.email, c.phone, c.created_at
+        ORDER BY c.last_name, c.first_name
+        LIMIT %s OFFSET %s
+    """
+
+    try:
+        # Build parameter lists
+        count_params = [str(user.agency_id)] + visibility_params + search_params
+        main_params = [str(user.agency_id)] + visibility_params + search_params + [limit, offset]
+
+        with connection.cursor() as cursor:
+            cursor.execute(count_query, count_params)
+            total_count = cursor.fetchone()[0]
+
+            cursor.execute(main_query, main_params)
+            columns = [col[0] for col in cursor.description]
+            rows = cursor.fetchall()
+
+        clients = []
+        for row in rows:
+            client = dict(zip(columns, row, strict=False))
+            clients.append({
+                'id': str(client['id']),
+                'first_name': client['first_name'],
+                'last_name': client['last_name'],
+                'name': f"{client['first_name'] or ''} {client['last_name'] or ''}".strip(),
+                'email': client['email'],
+                'client_phone': client['client_phone'],  # Added to match RPC
+                'created_at': client['created_at'].isoformat() if client['created_at'] else None,
+                'deal_count': client['deal_count'] or 0,
+                'active_deals': client['active_deals'] or 0,
+                'total_premium': float(client['total_premium']) if client['total_premium'] else 0,
+                'latest_policy_date': (
+                    client['latest_policy_date'].isoformat()
+                    if client['latest_policy_date']
+                    else None
+                ),
+                'supporting_agent': client['supporting_agent'],  # Added to match RPC
+            })
+
+        total_pages = (total_count + limit - 1) // limit if limit > 0 else 0
+
+        return {
+            'clients': clients,
+            'pagination': {
+                'currentPage': page,
+                'totalPages': total_pages,
+                'totalCount': total_count,
+                'limit': limit,
+                'hasNextPage': page < total_pages,
+                'hasPrevPage': page > 1,
+            },
+        }
+
+    except Exception as e:
+        logger.error(f'Error getting clients overview: {e}')
+        raise
+
+
 def get_client_own_deals(user_id: UUID) -> list[dict]:
     """
     Get deals for a client viewing their own policies.

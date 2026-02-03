@@ -76,7 +76,7 @@ def complete_job(
     files: list[str] | None = None,
     carriers: list[str] | None = None,
     error: str | None = None,
-) -> bool:
+) -> None:
     """
     Mark a NIPR job as completed or failed.
     Translated from Supabase RPC: complete_nipr_job
@@ -89,7 +89,7 @@ def complete_job(
         error: Error message if failed
 
     Returns:
-        True if job was updated
+        None (matches RPC void return type)
     """
     files = files or []
     carriers = carriers or []
@@ -107,19 +107,14 @@ def complete_job(
                 result_carriers = %s,
                 error_message = %s
             WHERE id = %s
-            RETURNING id
         """, [success, success, files, carriers, error, str(job_id)])
-
-        row = cursor.fetchone()
-
-    return row is not None
 
 
 def update_job_progress(
     job_id: UUID,
     progress: int,
     message: str | None = None,
-) -> bool:
+) -> None:
     """
     Update the progress of a running NIPR job.
     Translated from Supabase RPC: update_nipr_job_progress
@@ -130,7 +125,7 @@ def update_job_progress(
         message: Optional progress message
 
     Returns:
-        True if job was updated
+        None (matches RPC void return type)
     """
     with connection.cursor() as cursor:
         cursor.execute("""
@@ -139,12 +134,7 @@ def update_job_progress(
                 progress = %s,
                 progress_message = COALESCE(%s, progress_message)
             WHERE id = %s
-            RETURNING id
         """, [progress, message, str(job_id)])
-
-        row = cursor.fetchone()
-
-    return row is not None
 
 
 def release_stale_locks() -> int:

@@ -792,14 +792,18 @@ def get_analytics_from_deals(
     }
 
 
-def get_persistency_analytics(
+def analyze_persistency_for_deals(
     agency_id: UUID,
     as_of: date | None = None,
     carrier_id: UUID | None = None,
 ) -> dict[str, Any]:
     """
-    Get persistency analytics for an agency.
-    Native Django implementation matching analyze_persistency_for_deals RPC.
+    Full persistency analytics matching RPC analyze_persistency_for_deals.
+
+    Returns complete structure with:
+    - carriers: Array with timeRanges (3, 6, 9, All), statusBreakdowns
+    - overall_analytics: activeCount, inactiveCount, overallPersistency, timeRanges
+    - carrier_comparison: activeShareByCarrier, inactiveShareByCarrier
 
     Args:
         agency_id: The agency ID
@@ -807,7 +811,7 @@ def get_persistency_analytics(
         carrier_id: Optional carrier ID to filter by
 
     Returns:
-        Persistency analytics data with by_carrier breakdown and overall metrics
+        Full persistency analytics matching RPC structure
     """
     if as_of is None:
         as_of = date.today()
@@ -825,13 +829,22 @@ def get_persistency_analytics(
                     1
                 ) as month_start
             ),
+            -- Time bucket definitions
+            time_buckets AS (
+                SELECT * FROM (VALUES
+                    ('3', 3),
+                    ('6', 6),
+                    ('9', 9),
+                    ('All', 24)
+                ) AS t(bucket_key, bucket_months)
+            ),
             base_deals AS (
                 SELECT
                     d.id,
                     d.carrier_id,
                     c.name as carrier_name,
-                    d.agent_id,
-                    u.first_name || ' ' || u.last_name as agent_name,
+                    d.status as raw_status,
+                    date_trunc('month', COALESCE(d.policy_effective_date, d.submission_date))::date as effective_month,
                     CASE
                         WHEN sm.impact = 'positive' THEN 'Active'
                         WHEN sm.impact = 'negative' THEN 'Inactive'
@@ -839,7 +852,6 @@ def get_persistency_analytics(
                     END as status_class
                 FROM deals d
                 JOIN carriers c ON c.id = d.carrier_id
-                LEFT JOIN users u ON u.id = d.agent_id
                 LEFT JOIN status_mapping sm
                     ON sm.carrier_id = d.carrier_id
                     AND sm.raw_status = d.status
@@ -847,76 +859,150 @@ def get_persistency_analytics(
                 WHERE d.agency_id = %s
                     AND COALESCE(d.policy_effective_date, d.submission_date) IS NOT NULL
                     AND date_trunc('month', COALESCE(d.policy_effective_date, d.submission_date))::date
-                        BETWEEN (aom.month_start - make_interval(months => 8))
+                        BETWEEN (aom.month_start - make_interval(months => 23))
                             AND aom.month_start
                     {carrier_filter}
             ),
-            -- By carrier
-            carrier_stats AS (
+            -- Carrier metrics by time bucket
+            carrier_time_metrics AS (
                 SELECT
-                    carrier_id,
-                    carrier_name,
-                    count(*)::int as total_policies,
-                    sum(CASE WHEN status_class = 'Active' THEN 1 ELSE 0 END)::int as active_policies,
-                    sum(CASE WHEN status_class = 'Inactive' THEN 1 ELSE 0 END)::int as inactive_policies
-                FROM base_deals
-                GROUP BY carrier_id, carrier_name
+                    bd.carrier_id,
+                    bd.carrier_name,
+                    tb.bucket_key,
+                    count(*)::int as total_count,
+                    sum(CASE WHEN bd.status_class = 'Active' THEN 1 ELSE 0 END)::int as positive_count,
+                    sum(CASE WHEN bd.status_class = 'Inactive' THEN 1 ELSE 0 END)::int as negative_count
+                FROM base_deals bd
+                CROSS JOIN as_of_month aom
+                JOIN time_buckets tb ON bd.effective_month >= (aom.month_start - make_interval(months => tb.bucket_months - 1))
+                GROUP BY bd.carrier_id, bd.carrier_name, tb.bucket_key
             ),
-            -- By agent
-            agent_stats AS (
+            -- Status breakdown by carrier and time bucket (top 7 + Other)
+            status_breakdown_raw AS (
                 SELECT
-                    agent_id,
-                    agent_name,
-                    count(*)::int as total_policies,
-                    sum(CASE WHEN status_class = 'Active' THEN 1 ELSE 0 END)::int as active_policies
-                FROM base_deals
-                GROUP BY agent_id, agent_name
+                    bd.carrier_id,
+                    bd.carrier_name,
+                    tb.bucket_key,
+                    COALESCE(bd.raw_status, 'Unknown') as status_value,
+                    count(*)::int as cnt,
+                    row_number() over (
+                        partition by bd.carrier_id, tb.bucket_key
+                        order by count(*) desc
+                    ) as rn
+                FROM base_deals bd
+                CROSS JOIN as_of_month aom
+                JOIN time_buckets tb ON bd.effective_month >= (aom.month_start - make_interval(months => tb.bucket_months - 1))
+                GROUP BY bd.carrier_id, bd.carrier_name, tb.bucket_key, COALESCE(bd.raw_status, 'Unknown')
             ),
-            -- Overall
-            overall_stats AS (
+            -- Overall metrics by time bucket
+            overall_time_metrics AS (
                 SELECT
-                    count(*)::int as total_policies,
-                    sum(CASE WHEN status_class = 'Active' THEN 1 ELSE 0 END)::int as active_policies
-                FROM base_deals
+                    tb.bucket_key,
+                    count(*)::int as total_count,
+                    sum(CASE WHEN bd.status_class = 'Active' THEN 1 ELSE 0 END)::int as active_count,
+                    sum(CASE WHEN bd.status_class = 'Inactive' THEN 1 ELSE 0 END)::int as inactive_count
+                FROM base_deals bd
+                CROSS JOIN as_of_month aom
+                JOIN time_buckets tb ON bd.effective_month >= (aom.month_start - make_interval(months => tb.bucket_months - 1))
+                GROUP BY tb.bucket_key
+            ),
+            -- Carrier comparison (share of active/inactive by carrier for 'All' bucket)
+            carrier_shares AS (
+                SELECT
+                    bd.carrier_name,
+                    sum(CASE WHEN bd.status_class = 'Active' THEN 1 ELSE 0 END)::float as active_cnt,
+                    sum(CASE WHEN bd.status_class = 'Inactive' THEN 1 ELSE 0 END)::float as inactive_cnt,
+                    (SELECT sum(CASE WHEN status_class = 'Active' THEN 1 ELSE 0 END) FROM base_deals)::float as total_active,
+                    (SELECT sum(CASE WHEN status_class = 'Inactive' THEN 1 ELSE 0 END) FROM base_deals)::float as total_inactive
+                FROM base_deals bd
+                GROUP BY bd.carrier_name
             )
             SELECT
+                -- Carriers array with timeRanges and statusBreakdowns
                 coalesce(
                     (SELECT jsonb_agg(
                         jsonb_build_object(
-                            'carrier_id', cs.carrier_id,
-                            'carrier_name', cs.carrier_name,
-                            'total_policies', cs.total_policies,
-                            'active_policies', cs.active_policies,
-                            'persistency_rate', round(
-                                (cs.active_policies::numeric / nullif(cs.total_policies, 0)) * 100, 2
+                            'carrier', c.carrier_name,
+                            'timeRanges', (
+                                SELECT jsonb_object_agg(
+                                    ctm.bucket_key,
+                                    jsonb_build_object(
+                                        'positivePercentage', round((ctm.positive_count::numeric / nullif(ctm.total_count, 0)) * 100, 2),
+                                        'positiveCount', ctm.positive_count,
+                                        'negativePercentage', round((ctm.negative_count::numeric / nullif(ctm.total_count, 0)) * 100, 2),
+                                        'negativeCount', ctm.negative_count
+                                    )
+                                )
+                                FROM carrier_time_metrics ctm
+                                WHERE ctm.carrier_id = c.carrier_id
+                            ),
+                            'statusBreakdowns', (
+                                SELECT jsonb_object_agg(
+                                    sbr.bucket_key,
+                                    (
+                                        SELECT jsonb_object_agg(
+                                            CASE WHEN sbr2.rn <= 7 THEN sbr2.status_value ELSE 'Other' END,
+                                            jsonb_build_object(
+                                                'count', sbr2.cnt,
+                                                'percentage', round((sbr2.cnt::numeric / nullif(
+                                                    (SELECT sum(cnt) FROM status_breakdown_raw WHERE carrier_id = c.carrier_id AND bucket_key = sbr.bucket_key), 0
+                                                )) * 100, 2)
+                                            )
+                                        )
+                                        FROM status_breakdown_raw sbr2
+                                        WHERE sbr2.carrier_id = c.carrier_id AND sbr2.bucket_key = sbr.bucket_key
+                                    )
+                                )
+                                FROM (SELECT DISTINCT bucket_key FROM status_breakdown_raw WHERE carrier_id = c.carrier_id) sbr
+                            ),
+                            'totalPolicies', (SELECT sum(total_count) FROM carrier_time_metrics WHERE carrier_id = c.carrier_id AND bucket_key = 'All'),
+                            'persistencyRate', (
+                                SELECT round((positive_count::numeric / nullif(total_count, 0)) * 100, 2)
+                                FROM carrier_time_metrics WHERE carrier_id = c.carrier_id AND bucket_key = 'All'
                             )
                         )
-                        ORDER BY cs.carrier_name
-                    ) FROM carrier_stats cs),
-                    '[]'::jsonb
-                ) as by_carrier,
-                coalesce(
-                    (SELECT jsonb_agg(
-                        jsonb_build_object(
-                            'agent_id', ast.agent_id,
-                            'agent_name', ast.agent_name,
-                            'total_policies', ast.total_policies,
-                            'active_policies', ast.active_policies,
-                            'persistency_rate', round(
-                                (ast.active_policies::numeric / nullif(ast.total_policies, 0)) * 100, 2
-                            )
-                        )
-                        ORDER BY ast.agent_name
-                    ) FROM agent_stats ast),
-                    '[]'::jsonb
-                ) as by_agent,
-                (SELECT jsonb_build_object(
-                    'total_policies', os.total_policies,
-                    'active_policies', os.active_policies,
-                    'overall_persistency', round(
-                        (os.active_policies::numeric / nullif(os.total_policies, 0)) * 100, 2
+                        ORDER BY c.carrier_name
                     )
-                ) FROM overall_stats os) as overall
+                    FROM (SELECT DISTINCT carrier_id, carrier_name FROM carrier_time_metrics) c),
+                    '[]'::jsonb
+                ) as carriers,
+                -- Overall analytics
+                jsonb_build_object(
+                    'activeCount', (SELECT coalesce(sum(active_count), 0) FROM overall_time_metrics WHERE bucket_key = 'All'),
+                    'inactiveCount', (SELECT coalesce(sum(inactive_count), 0) FROM overall_time_metrics WHERE bucket_key = 'All'),
+                    'overallPersistency', (
+                        SELECT round((active_count::numeric / nullif(active_count + inactive_count, 0)) * 100, 2)
+                        FROM overall_time_metrics WHERE bucket_key = 'All'
+                    ),
+                    'timeRanges', (
+                        SELECT jsonb_object_agg(
+                            otm.bucket_key,
+                            jsonb_build_object(
+                                'activeCount', otm.active_count,
+                                'inactiveCount', otm.inactive_count,
+                                'activePercentage', round((otm.active_count::numeric / nullif(otm.total_count, 0)) * 100, 2)
+                            )
+                        )
+                        FROM overall_time_metrics otm
+                    )
+                ) as overall_analytics,
+                -- Carrier comparison
+                jsonb_build_object(
+                    'activeShareByCarrier', (
+                        SELECT jsonb_object_agg(
+                            cs.carrier_name,
+                            round((cs.active_cnt / nullif(cs.total_active, 0)) * 100, 2)
+                        )
+                        FROM carrier_shares cs
+                    ),
+                    'inactiveShareByCarrier', (
+                        SELECT jsonb_object_agg(
+                            cs.carrier_name,
+                            round((cs.inactive_cnt / nullif(cs.total_inactive, 0)) * 100, 2)
+                        )
+                        FROM carrier_shares cs
+                    )
+                ) as carrier_comparison
         """, [
             as_of, as_of,
             str(agency_id),
@@ -927,19 +1013,53 @@ def get_persistency_analytics(
 
     if not row:
         return {
-            'by_carrier': [],
-            'by_agent': [],
-            'overall_persistency': 0,
+            'carriers': [],
+            'overall_analytics': {
+                'activeCount': 0,
+                'inactiveCount': 0,
+                'overallPersistency': 0,
+                'timeRanges': {},
+            },
+            'carrier_comparison': {
+                'activeShareByCarrier': {},
+                'inactiveShareByCarrier': {},
+            },
         }
 
-    by_carrier, by_agent, overall = row
+    carriers, overall_analytics, carrier_comparison = row
 
     return {
-        'by_carrier': by_carrier or [],
-        'by_agent': by_agent or [],
-        'overall_persistency': (overall or {}).get('overall_persistency', 0),
-        'total_policies': (overall or {}).get('total_policies', 0),
-        'active_policies': (overall or {}).get('active_policies', 0),
+        'carriers': carriers or [],
+        'overall_analytics': overall_analytics or {},
+        'carrier_comparison': carrier_comparison or {},
+    }
+
+
+# Alias for backward compatibility
+def get_persistency_analytics(
+    agency_id: UUID,
+    as_of: date | None = None,
+    carrier_id: UUID | None = None,
+) -> dict[str, Any]:
+    """
+    Backward-compatible wrapper for analyze_persistency_for_deals.
+    Returns simplified structure for existing callers.
+    """
+    result = analyze_persistency_for_deals(agency_id, as_of, carrier_id)
+    overall = result.get('overall_analytics', {})
+    return {
+        'by_carrier': [
+            {
+                'carrier_name': c.get('carrier'),
+                'total_policies': c.get('totalPolicies', 0),
+                'persistency_rate': c.get('persistencyRate', 0),
+            }
+            for c in result.get('carriers', [])
+        ],
+        'by_agent': [],  # Not available in new structure
+        'overall_persistency': overall.get('overallPersistency', 0),
+        'total_policies': overall.get('activeCount', 0) + overall.get('inactiveCount', 0),
+        'active_policies': overall.get('activeCount', 0),
     }
 
 

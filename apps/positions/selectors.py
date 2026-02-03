@@ -13,18 +13,21 @@ from django.db.models import Count, Q
 from apps.core.models import Position, PositionProductCommission, User
 
 
-def get_positions_for_agency(user_id: UUID) -> list[dict]:
+def get_positions_for_agency(user_id: UUID, include_agent_count: bool = False) -> list[dict]:
     """
     Get all positions for a user's agency.
     Translated from Supabase RPC: get_positions_for_agency
 
-    Uses Django ORM with annotation for agent count.
+    Uses Django ORM with optional annotation for agent count.
 
     Args:
         user_id: The user UUID (to determine agency)
+        include_agent_count: If True, include agent_count (optional, not in RPC)
 
     Returns:
-        List of position dictionaries with counts
+        List of position dictionaries matching RPC structure
+        - position_id (not 'id') to match RPC
+        - Ordered by level DESC (not ASC) to match RPC
     """
     # Get user's agency first
     user = User.objects.filter(id=user_id).values('agency_id').first()  # type: ignore[attr-defined]
@@ -33,32 +36,39 @@ def get_positions_for_agency(user_id: UUID) -> list[dict]:
 
     agency_id = user['agency_id']
 
-    # Query positions with agent count annotation
+    # Query positions - order by level DESC to match RPC
     positions = (
         Position.objects  # type: ignore[attr-defined]
         .filter(agency_id=agency_id)
-        .annotate(
+        .order_by('-level', 'name')  # Changed to DESC to match RPC
+    )
+
+    # Only annotate agent_count if requested (not in RPC, but kept for backward compatibility)
+    if include_agent_count:
+        positions = positions.annotate(
             agent_count=Count(
                 'users',
                 filter=Q(users__agency_id=agency_id)
             )
         )
-        .order_by('level', 'name')
-    )
 
-    return [
-        {
-            'id': p.id,
+    result = []
+    for p in positions:
+        item = {
+            'position_id': p.id,  # Changed from 'id' to 'position_id' to match RPC
             'name': p.name,
             'level': p.level,
             'description': p.description,
             'is_active': p.is_active,
             'created_at': p.created_at,
             'updated_at': p.updated_at,
-            'agent_count': p.agent_count,
         }
-        for p in positions
-    ]
+        # Only include agent_count if requested
+        if include_agent_count:
+            item['agent_count'] = p.agent_count
+        result.append(item)
+
+    return result
 
 
 def get_position_by_id(position_id: UUID, agency_id: UUID) -> dict | None:

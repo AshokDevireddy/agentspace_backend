@@ -41,13 +41,13 @@ def get_agent_downline(agent_id: UUID, agency_id: UUID) -> list[dict]:
             .values('id', 'first_name', 'last_name', 'email', 'agency_id', 'depth')
         )
 
-        # Recursive: get children, increment depth (limit to 50)
+        # Recursive: get children, increment depth
         # SECURITY FIX: Include agency_id filter in recursive step
+        # NOTE: No depth limit to match RPC behavior (agency_id is intentional security enhancement)
         recursive = (
             cte.join(User, upline_id=cte.col.id)
             .filter(agency_id=agency_id)
             .annotate(depth=cte.col.depth + 1)
-            .filter(depth__lt=50)
             .values('id', 'first_name', 'last_name', 'email', 'agency_id', 'depth')
         )
 
@@ -102,13 +102,13 @@ def get_agent_upline_chain(agent_id: UUID, agency_id: UUID) -> list[dict]:
             .values('id', 'upline_id', 'agency_id', 'depth')
         )
 
-        # Recursive: follow upline_id chain (limit to 50)
+        # Recursive: follow upline_id chain
         # SECURITY FIX: Include agency_id filter in recursive step
+        # NOTE: No depth limit to match RPC behavior (agency_id is intentional security enhancement)
         recursive = (
             cte.join(User, id=cte.col.upline_id)
             .filter(agency_id=agency_id)
             .annotate(depth=cte.col.depth + 1)
-            .filter(depth__lt=50)
             .values('id', 'upline_id', 'agency_id', 'depth')
         )
 
@@ -154,11 +154,10 @@ def get_agent_options(user_id: UUID, include_full_agency: bool = False) -> list[
         if not user:
             return []
 
-        # Get all active agents in the agency using ORM
+        # Get all agents in the agency using ORM (no is_active filter to match RPC)
         agents = (
             User.objects.filter(  # type: ignore[attr-defined]
                 agency_id=user['agency_id'],
-                is_active=True
             )
             .exclude(role='client')
             .order_by('last_name', 'first_name')
@@ -225,11 +224,10 @@ def get_agents_hierarchy_nodes(user_id: UUID, include_full_agency: bool = False)
         if not user:
             return []
 
-        # Get all active agents with position info using ORM
+        # Get all agents with position info using ORM (no is_active filter to match RPC)
         agents = (
             User.objects.filter(  # type: ignore[attr-defined]
                 agency_id=user['agency_id'],
-                is_active=True
             )
             .exclude(role='client')
             .select_related('position')
@@ -265,9 +263,9 @@ def get_agents_hierarchy_nodes(user_id: UUID, include_full_agency: bool = False)
             .values_list('id', flat=True)
         )
 
-        # Fetch full user data with positions using ORM
+        # Fetch full user data with positions using ORM (no is_active filter to match RPC)
         agents = (
-            User.objects.filter(id__in=downline_ids, is_active=True)  # type: ignore[attr-defined]
+            User.objects.filter(id__in=downline_ids)  # type: ignore[attr-defined]
             .exclude(role='client')
             .select_related('position')
             .order_by('last_name', 'first_name')
@@ -304,7 +302,7 @@ def get_agents_table(
     user_id: UUID,
     filters: dict[str, Any] | None = None,
     include_full_agency: bool = False,
-    limit: int = 50,
+    limit: int = 20,
     offset: int = 0,
 ) -> list[dict]:
     """
@@ -349,8 +347,9 @@ def get_agents_table(
 
     with connection.cursor() as cursor:
         # Build the query dynamically based on filters
+        # NOTE: No is_active filter to match RPC behavior
         params = [str(user_id)]
-        where_clauses = ["u.role <> 'client'", "u.is_active = true"]
+        where_clauses = ["u.role <> 'client'"]
 
         # Base query - either full agency or user's downline
         if include_full_agency:
@@ -362,7 +361,7 @@ def get_agents_table(
                     SELECT u.id
                     FROM users u
                     JOIN current_usr cu ON cu.agency_id = u.agency_id
-                    WHERE u.role <> 'client' AND u.is_active = true
+                    WHERE u.role <> 'client'
                 )
             """
         else:
@@ -488,7 +487,8 @@ def get_agents_table(
 
         where_sql = " AND ".join(where_clauses)
 
-        # Main query
+        # Main query - includes total_prod, total_policies_sold, downline_count to match RPC
+        # NOTE: phone_number removed to match RPC
         query = f"""
             {base_cte}
             SELECT
@@ -496,7 +496,6 @@ def get_agents_table(
                 u.first_name,
                 u.last_name,
                 u.email,
-                u.phone_number as phone_number,
                 u.status,
                 u.perm_level,
                 u.position_id,
@@ -505,6 +504,9 @@ def get_agents_table(
                 u.upline_id,
                 upline.first_name || ' ' || upline.last_name as upline_name,
                 u.created_at,
+                u.total_prod,
+                u.total_policies_sold,
+                (SELECT COUNT(*) FROM users d WHERE d.upline_id = u.id) as downline_count,
                 COUNT(*) OVER() as total_count
             FROM users u
             JOIN visible_agents va ON va.id = u.id
@@ -521,7 +523,7 @@ def get_agents_table(
         return [dict(zip(columns, row, strict=False)) for row in cursor.fetchall()]
 
 
-def get_agents_without_positions(user_id: UUID) -> list[dict]:
+def get_agents_without_positions(user_id: UUID) -> dict:
     """
     Get agents who don't have a position assigned.
     Translated from Supabase RPC: get_agents_without_positions
@@ -532,7 +534,7 @@ def get_agents_without_positions(user_id: UUID) -> list[dict]:
         user_id: The requesting user's ID
 
     Returns:
-        List of agents without positions
+        Dict with agents list and total_count (matching RPC structure)
     """
     from apps.core.models import User
 
@@ -542,17 +544,16 @@ def get_agents_without_positions(user_id: UUID) -> list[dict]:
     ).first()
 
     if not user:
-        return []
+        return {'agents': [], 'total_count': 0}
 
     is_admin = user['is_admin'] or user['perm_level'] == 'admin' or user['role'] == 'admin'
 
     if is_admin:
-        # Admin sees all agency agents without positions
+        # Admin sees all agency agents without positions (no is_active filter to match RPC)
         agents = (
             User.objects.filter(  # type: ignore[attr-defined]
                 agency_id=user['agency_id'],
                 position_id__isnull=True,
-                is_active=True
             )
             .exclude(role='client')
             .select_related('upline')
@@ -572,31 +573,35 @@ def get_agents_without_positions(user_id: UUID) -> list[dict]:
             .values_list('id', flat=True)
         )
 
-        # Filter to agents without positions in downline
+        # Filter to agents without positions in downline (no is_active filter to match RPC)
         agents = (
             User.objects.filter(  # type: ignore[attr-defined]
                 id__in=downline_ids,
                 position_id__isnull=True,
-                is_active=True
             )
             .exclude(role='client')
             .select_related('upline')
             .order_by('last_name', 'first_name')
         )
 
-    return [
-        {
-            'agent_id': a.id,
-            'first_name': a.first_name,
-            'last_name': a.last_name,
-            'email': a.email,
-            'phone_number': a.phone,
-            'role': a.role,
-            'upline_name': f"{a.upline.first_name or ''} {a.upline.last_name or ''}".strip() if a.upline else None,
-            'created_at': a.created_at,
-        }
-        for a in agents
-    ]
+    agents_list = list(agents)
+    return {
+        'agents': [
+            {
+                'agent_id': a.id,
+                'first_name': a.first_name,
+                'last_name': a.last_name,
+                'email': a.email,
+                'phone_number': a.phone,
+                'status': a.status,  # Changed from 'role' to 'status' to match RPC
+                # Changed format from "First Last" to "Last, First" to match RPC
+                'upline_name': f"{a.upline.last_name or ''}, {a.upline.first_name or ''}".strip(', ') if a.upline else None,
+                'created_at': a.created_at,
+            }
+            for a in agents_list
+        ],
+        'total_count': len(agents_list),
+    }
 
 
 def get_agent_downlines_with_details(agent_id: UUID, agency_id: UUID) -> list[dict]:
@@ -672,13 +677,13 @@ def check_agent_upline_positions(agent_id: UUID, agency_id: UUID) -> dict:
             .values('id', 'first_name', 'last_name', 'email', 'position_id', 'upline_id', 'agency_id', 'depth')
         )
 
-        # Recursive: follow upline chain (limit to 50)
+        # Recursive: follow upline chain
         # SECURITY FIX: Include agency_id filter in recursive step
+        # NOTE: No depth limit to match RPC behavior (agency_id is intentional security enhancement)
         recursive = (
             cte.join(User, id=cte.col.upline_id)
             .filter(agency_id=agency_id)
             .annotate(depth=cte.col.depth + 1)
-            .filter(depth__lt=50)
             .values('id', 'first_name', 'last_name', 'email', 'position_id', 'upline_id', 'agency_id', 'depth')
         )
 
@@ -909,6 +914,7 @@ def get_agents_debt_production(
             )
 
             -- Final result: combine individual and hierarchy metrics
+            -- Includes net_production (production - debt) to match RPC structure
             SELECT
                 a.id as agent_id,
                 ROUND(COALESCE(idc.total_debt, 0), 2) as individual_debt,
@@ -923,7 +929,13 @@ def get_agents_debt_production(
                     WHEN COALESCE(hm.h_production, 0) > 0
                     THEN ROUND(COALESCE(hm.h_debt, 0) / hm.h_production, 4)
                     ELSE NULL
-                END as debt_to_production_ratio
+                END as debt_to_production_ratio,
+                -- Net production: (individual + hierarchy production) - (individual + hierarchy debt)
+                ROUND(
+                    (COALESCE(ipc.total_production, 0) + COALESCE(hm.h_production, 0))
+                    - (COALESCE(idc.total_debt, 0) + COALESCE(hm.h_debt, 0)),
+                    2
+                ) as net_production
             FROM unnest(%s::uuid[]) as a(id)
             LEFT JOIN individual_debt_calc idc ON idc.agent_id = a.id
             LEFT JOIN individual_prod_calc ipc ON ipc.agent_id = a.id
