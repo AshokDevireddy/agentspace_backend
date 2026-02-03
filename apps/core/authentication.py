@@ -3,6 +3,7 @@ Supabase JWT Authentication for Django REST Framework
 
 Validates JWTs issued by Supabase Auth and attaches user context to requests.
 """
+import hmac
 import logging
 from dataclasses import dataclass
 from uuid import UUID
@@ -120,17 +121,30 @@ class SupabaseJWTAuthentication(authentication.BaseAuthentication):
             return None
 
         try:
+            # Build the expected issuer URL from Supabase URL
+            supabase_url = getattr(settings, 'SUPABASE_URL', '')
+            expected_issuer = f'{supabase_url}/auth/v1' if supabase_url else None
+
             # Supabase JWTs use HS256 algorithm
-            payload = jwt.decode(
-                token,
-                jwt_secret,
-                algorithms=['HS256'],
-                audience='authenticated',
-                options={
-                    'verify_exp': True,
-                    'verify_aud': True,
-                }
-            )
+            decode_options = {
+                'verify_exp': True,
+                'verify_aud': True,
+                'verify_iss': bool(expected_issuer),
+            }
+
+            decode_kwargs = {
+                'jwt': token,
+                'key': jwt_secret,
+                'algorithms': ['HS256'],
+                'audience': 'authenticated',
+                'options': decode_options,
+            }
+
+            # Add issuer validation if we have the Supabase URL configured
+            if expected_issuer:
+                decode_kwargs['issuer'] = expected_issuer
+
+            payload = jwt.decode(**decode_kwargs)
             return payload
         except jwt.ExpiredSignatureError:
             logger.debug('JWT has expired')
@@ -251,7 +265,8 @@ class CronSecretAuthentication(authentication.BaseAuthentication):
             logger.error('CRON_SECRET not configured in settings')
             return None
 
-        if cron_secret != expected_secret:
+        # Use constant-time comparison to prevent timing attacks
+        if not hmac.compare_digest(cron_secret, expected_secret):
             raise exceptions.AuthenticationFailed('Invalid cron secret')
 
         # Return a system-level user for cron jobs

@@ -26,6 +26,7 @@ class SupabaseAuthMiddleware:
     """
 
     # Routes that don't require authentication
+    # Security: Use specific patterns instead of broad wildcards
     PUBLIC_ROUTES: list[str] = [
         r'^/api/health$',
         r'^/api/auth/login$',
@@ -33,8 +34,12 @@ class SupabaseAuthMiddleware:
         r'^/api/auth/verify-invite$',
         r'^/api/auth/forgot-password$',
         r'^/api/auth/reset-password$',
-        r'^/api/cron/',
-        r'^/api/webhooks/',
+        r'^/api/auth/refresh$',
+        # Cron endpoints use X-Cron-Secret header authentication
+        r'^/api/cron/[a-z0-9-]+$',
+        # Webhook endpoints use signature verification
+        r'^/api/webhooks/stripe$',
+        r'^/api/webhooks/telnyx$',
     ]
 
     def __init__(self, get_response: Callable):
@@ -75,10 +80,11 @@ class SupabaseAuthMiddleware:
 
         except Exception as e:
             logger.warning(f'Authentication failed: {e}')
+            # Don't expose internal error details to clients - security fix
             return JsonResponse(
                 {
                     'error': 'Unauthorized',
-                    'message': str(e)
+                    'message': 'Authentication failed'
                 },
                 status=401
             )

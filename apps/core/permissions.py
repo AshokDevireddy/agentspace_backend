@@ -154,8 +154,12 @@ class IsSameAgency(permissions.BasePermission):
 
         obj_agency_id = getattr(obj, 'agency_id', None)
         if obj_agency_id is None:
-            # Object doesn't have agency_id - allow (not agency-scoped)
-            return True
+            # SECURITY FIX: Fail closed - deny access if agency_id is missing
+            # This prevents accidental data exposure from misconfigured models
+            logger.warning(
+                f'IsSameAgency check failed: object {type(obj).__name__} has no agency_id'
+            )
+            return False
 
         return str(obj_agency_id) == str(user.agency_id)
 
@@ -273,6 +277,7 @@ class SubscriptionTierPermission(permissions.BasePermission):
             # OR
             required_tier = 'pro'  # Minimum tier required
     """
+    # Note: Default message is used if no specific denial reason
     message = 'Subscription upgrade required for this feature'
 
     def has_permission(self, request, view):
@@ -287,7 +292,9 @@ class SubscriptionTierPermission(permissions.BasePermission):
         required_features = getattr(view, 'required_features', [])
         for feature in required_features:
             if not tier_config.get(feature, False):
-                self.message = f'Upgrade to access {feature.replace("_", " ")}'
+                # SECURITY FIX: Store denial reason on request instead of instance
+                # to prevent thread-safety issues with shared permission instances
+                request._permission_denied_message = f'Upgrade to access {feature.replace("_", " ")}'
                 return False
 
         # Check minimum tier
@@ -297,7 +304,8 @@ class SubscriptionTierPermission(permissions.BasePermission):
             user_tier_index = tier_order.index(user_tier) if user_tier in tier_order else 0
             required_tier_index = tier_order.index(required_tier) if required_tier in tier_order else 0
             if user_tier_index < required_tier_index:
-                self.message = f'Upgrade to {required_tier} tier to access this feature'
+                # SECURITY FIX: Store denial reason on request instead of instance
+                request._permission_denied_message = f'Upgrade to {required_tier} tier to access this feature'
                 return False
 
         return True

@@ -65,11 +65,25 @@ MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
+    # SECURITY FIX: Add CSRF protection middleware
+    'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'apps.core.middleware.SupabaseAuthMiddleware',
     'apps.core.middleware.AgencyContextMiddleware',  # Sets request.agency_id for multi-tenancy
 ]
+
+# CSRF Settings
+# Since we use token-based auth (JWT), CSRF protection is handled differently
+# The cookie will be set for clients that need it
+CSRF_COOKIE_SECURE = not DEBUG
+CSRF_COOKIE_HTTPONLY = True
+CSRF_COOKIE_SAMESITE = 'Strict'
+CSRF_TRUSTED_ORIGINS = config(
+    'CSRF_TRUSTED_ORIGINS',
+    default='http://localhost:3000',
+    cast=Csv()
+)
 
 ROOT_URLCONF = 'config.urls'
 
@@ -112,6 +126,9 @@ DATABASES = {
         'OPTIONS': {
             'sslmode': config('DJANGO_DB_SSLMODE', default='require'),
         },
+        # Connection pooling settings for better performance
+        'CONN_MAX_AGE': 60,  # Keep connections alive for 60 seconds
+        'CONN_HEALTH_CHECKS': True,  # Verify connection health before reuse
     }
 }
 
@@ -146,6 +163,17 @@ REST_FRAMEWORK = {
     ],
     'EXCEPTION_HANDLER': 'apps.core.exceptions.custom_exception_handler',
     'UNAUTHENTICATED_USER': None,
+    # SECURITY FIX: Add rate limiting to prevent brute-force attacks
+    'DEFAULT_THROTTLE_CLASSES': [
+        'rest_framework.throttling.AnonRateThrottle',
+        'rest_framework.throttling.UserRateThrottle',
+    ],
+    'DEFAULT_THROTTLE_RATES': {
+        'anon': '100/hour',      # Anonymous users (login attempts, etc.)
+        'user': '1000/hour',     # Authenticated users
+        'auth': '5/minute',      # Auth endpoints (login, register)
+        'uploads': '20/day',     # File upload endpoints
+    },
 }
 
 # =============================================================================

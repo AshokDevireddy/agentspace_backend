@@ -14,6 +14,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.core.authentication import get_user_context
+from apps.core.throttles import AuthRateThrottle
 from apps.onboarding.services import create_onboarding_progress
 
 logger = logging.getLogger(__name__)
@@ -50,6 +51,8 @@ class LoginView(APIView):
         403: Account inactive/invited
     """
     permission_classes = [AllowAny]
+    # SECURITY FIX: Rate limit login attempts to prevent brute-force attacks
+    throttle_classes = [AuthRateThrottle]
 
     def post(self, request):
         email = request.data.get('email', '').strip().lower()
@@ -224,6 +227,8 @@ class RegisterView(APIView):
         }
     """
     permission_classes = [AllowAny]
+    # SECURITY FIX: Rate limit registration to prevent abuse
+    throttle_classes = [AuthRateThrottle]
 
     def post(self, request):
         email = request.data.get('email', '').strip().lower()
@@ -530,6 +535,8 @@ class ForgotPasswordView(APIView):
         {"message": "Password reset email sent"}
     """
     permission_classes = [AllowAny]
+    # SECURITY FIX: Rate limit password reset to prevent abuse/enumeration
+    throttle_classes = [AuthRateThrottle]
 
     def post(self, request):
         email = request.data.get('email', '').strip().lower()
@@ -583,6 +590,8 @@ class ResetPasswordView(APIView):
         {"message": "Password reset successful"}
     """
     permission_classes = [AllowAny]
+    # SECURITY FIX: Rate limit password reset to prevent abuse
+    throttle_classes = [AuthRateThrottle]
 
     def post(self, request):
         access_token = request.data.get('access_token', '')
@@ -1145,8 +1154,12 @@ class UserNIPRDataView(APIView):
         try:
             import json
             with connection.cursor() as cursor:
-                # For admin (including cron jobs), don't filter by agency_id
-                if user.is_admin:
+                # Check if this is a system cron user (has all-zeros UUID)
+                is_cron_system_user = str(user.id) == '00000000-0000-0000-0000-000000000000'
+
+                # SECURITY FIX: For cron system users, allow cross-agency access
+                # For regular admins, still enforce agency boundary
+                if is_cron_system_user:
                     cursor.execute("""
                         UPDATE public.users
                         SET
@@ -1161,6 +1174,7 @@ class UserNIPRDataView(APIView):
                         user_id,
                     ])
                 else:
+                    # Regular users (including admins) are scoped to their agency
                     cursor.execute("""
                         UPDATE public.users
                         SET

@@ -14,15 +14,18 @@ from django.db.models import F, IntegerField, Value
 from django_cte import With
 
 
-def get_agent_downline(agent_id: UUID) -> list[dict]:
+def get_agent_downline(agent_id: UUID, agency_id: UUID) -> list[dict]:
     """
     Get all agents in the downline hierarchy of a given agent.
     Translated from Supabase RPC: get_agent_downline
 
     Uses django-cte for recursive traversal.
 
+    SECURITY: agency_id is required to enforce multi-tenant isolation.
+
     Args:
         agent_id: The root agent to get downline for
+        agency_id: The agency to scope the query to (required for security)
 
     Returns:
         List of agents in downline including self with depth level
@@ -31,18 +34,21 @@ def get_agent_downline(agent_id: UUID) -> list[dict]:
 
     def make_downline_cte(cte):
         # Anchor: the agent themselves at depth 0
+        # SECURITY FIX: Filter by agency_id to prevent cross-tenant access
         anchor = (
-            User.objects.filter(id=agent_id)  # type: ignore[attr-defined]
+            User.objects.filter(id=agent_id, agency_id=agency_id)  # type: ignore[attr-defined]
             .annotate(depth=Value(0, output_field=IntegerField()))
-            .values('id', 'first_name', 'last_name', 'email', 'depth')
+            .values('id', 'first_name', 'last_name', 'email', 'agency_id', 'depth')
         )
 
         # Recursive: get children, increment depth (limit to 50)
+        # SECURITY FIX: Include agency_id filter in recursive step
         recursive = (
             cte.join(User, upline_id=cte.col.id)
+            .filter(agency_id=agency_id)
             .annotate(depth=cte.col.depth + 1)
             .filter(depth__lt=50)
-            .values('id', 'first_name', 'last_name', 'email', 'depth')
+            .values('id', 'first_name', 'last_name', 'email', 'agency_id', 'depth')
         )
 
         return anchor.union(recursive, all=True)
@@ -69,15 +75,18 @@ def get_agent_downline(agent_id: UUID) -> list[dict]:
     ]
 
 
-def get_agent_upline_chain(agent_id: UUID) -> list[dict]:
+def get_agent_upline_chain(agent_id: UUID, agency_id: UUID) -> list[dict]:
     """
     Get the complete upline chain from an agent to the top of hierarchy.
     Translated from Supabase RPC: get_agent_upline_chain
 
     Uses django-cte for recursive traversal.
 
+    SECURITY: agency_id is required to enforce multi-tenant isolation.
+
     Args:
         agent_id: The agent to get upline chain for
+        agency_id: The agency to scope the query to (required for security)
 
     Returns:
         Upline chain from self to top
@@ -86,18 +95,21 @@ def get_agent_upline_chain(agent_id: UUID) -> list[dict]:
 
     def make_upline_cte(cte):
         # Anchor: the agent themselves
+        # SECURITY FIX: Filter by agency_id to prevent cross-tenant access
         anchor = (
-            User.objects.filter(id=agent_id)  # type: ignore[attr-defined]
+            User.objects.filter(id=agent_id, agency_id=agency_id)  # type: ignore[attr-defined]
             .annotate(depth=Value(0, output_field=IntegerField()))
-            .values('id', 'upline_id', 'depth')
+            .values('id', 'upline_id', 'agency_id', 'depth')
         )
 
         # Recursive: follow upline_id chain (limit to 50)
+        # SECURITY FIX: Include agency_id filter in recursive step
         recursive = (
             cte.join(User, id=cte.col.upline_id)
+            .filter(agency_id=agency_id)
             .annotate(depth=cte.col.depth + 1)
             .filter(depth__lt=50)
-            .values('id', 'upline_id', 'depth')
+            .values('id', 'upline_id', 'agency_id', 'depth')
         )
 
         return anchor.union(recursive, all=True)
@@ -587,22 +599,30 @@ def get_agents_without_positions(user_id: UUID) -> list[dict]:
     ]
 
 
-def get_agent_downlines_with_details(agent_id: UUID) -> list[dict]:
+def get_agent_downlines_with_details(agent_id: UUID, agency_id: UUID) -> list[dict]:
     """
     Get direct downlines with position details and metrics.
 
     Uses Django ORM with select_related to prevent N+1 queries.
 
+    SECURITY: agency_id is required to enforce multi-tenant isolation.
+
     Args:
         agent_id: The parent agent ID
+        agency_id: The agency to scope the query to (required for security)
 
     Returns:
         List of downline agents with details
     """
     from apps.core.models import User
 
+    # SECURITY FIX: Filter by agency_id to prevent cross-tenant access
     downlines = (
-        User.objects.filter(upline_id=agent_id, is_active=True)  # type: ignore[attr-defined]
+        User.objects.filter(  # type: ignore[attr-defined]
+            upline_id=agent_id,
+            agency_id=agency_id,
+            is_active=True
+        )
         .select_related('position')
         .order_by('-created_at')
     )
@@ -622,15 +642,18 @@ def get_agent_downlines_with_details(agent_id: UUID) -> list[dict]:
     ]
 
 
-def check_agent_upline_positions(agent_id: UUID) -> dict:
+def check_agent_upline_positions(agent_id: UUID, agency_id: UUID) -> dict:
     """
     Check if all agents in the upline chain have positions assigned.
     Translated from Supabase RPC: check_agent_upline_positions
 
     Uses django-cte for upline traversal.
 
+    SECURITY: agency_id is required to enforce multi-tenant isolation.
+
     Args:
         agent_id: The agent to start checking from
+        agency_id: The agency to scope the query to (required for security)
 
     Returns:
         Dictionary with:
@@ -642,18 +665,21 @@ def check_agent_upline_positions(agent_id: UUID) -> dict:
 
     def make_upline_cte(cte):
         # Anchor: start with the given agent
+        # SECURITY FIX: Filter by agency_id to prevent cross-tenant access
         anchor = (
-            User.objects.filter(id=agent_id)  # type: ignore[attr-defined]
+            User.objects.filter(id=agent_id, agency_id=agency_id)  # type: ignore[attr-defined]
             .annotate(depth=Value(0, output_field=IntegerField()))
-            .values('id', 'first_name', 'last_name', 'email', 'position_id', 'upline_id', 'depth')
+            .values('id', 'first_name', 'last_name', 'email', 'position_id', 'upline_id', 'agency_id', 'depth')
         )
 
         # Recursive: follow upline chain (limit to 50)
+        # SECURITY FIX: Include agency_id filter in recursive step
         recursive = (
             cte.join(User, id=cte.col.upline_id)
+            .filter(agency_id=agency_id)
             .annotate(depth=cte.col.depth + 1)
             .filter(depth__lt=50)
-            .values('id', 'first_name', 'last_name', 'email', 'position_id', 'upline_id', 'depth')
+            .values('id', 'first_name', 'last_name', 'email', 'position_id', 'upline_id', 'agency_id', 'depth')
         )
 
         return anchor.union(recursive, all=True)
@@ -1082,6 +1108,7 @@ def get_agent_detail(agent_id: UUID, requesting_user_id: UUID) -> dict | None:
 
 def get_agent_downline_with_depth(
     agent_id: UUID,
+    agency_id: UUID,
     max_depth: int | None = None,
     include_self: bool = True,
 ) -> list[dict]:
@@ -1089,8 +1116,11 @@ def get_agent_downline_with_depth(
     Get all agents in the downline hierarchy with optional depth limit.
     Implements P1-008: Recursive Downline Endpoint.
 
+    SECURITY: agency_id is required to enforce multi-tenant isolation.
+
     Args:
         agent_id: The root agent to get downline for
+        agency_id: The agency to scope the query to (required for security)
         max_depth: Maximum depth to traverse (None for unlimited, max 50)
         include_self: Whether to include the agent themselves
 
@@ -1100,6 +1130,7 @@ def get_agent_downline_with_depth(
     effective_max_depth = min(max_depth or 50, 50)
 
     with connection.cursor() as cursor:
+        # SECURITY FIX: Add agency_id filter to prevent cross-tenant access
         cursor.execute("""
             WITH RECURSIVE downline AS (
                 -- Anchor: the agent themselves at depth 0
@@ -1112,9 +1143,10 @@ def get_agent_downline_with_depth(
                     status,
                     position_id,
                     upline_id,
+                    agency_id,
                     0 as depth
                 FROM users
-                WHERE id = %s
+                WHERE id = %s AND agency_id = %s
 
                 UNION ALL
 
@@ -1128,10 +1160,11 @@ def get_agent_downline_with_depth(
                     u.status,
                     u.position_id,
                     u.upline_id,
+                    u.agency_id,
                     d.depth + 1
                 FROM users u
                 JOIN downline d ON u.upline_id = d.id
-                WHERE d.depth < %s
+                WHERE d.depth < %s AND u.agency_id = %s
             )
             SELECT
                 d.id,
@@ -1145,12 +1178,12 @@ def get_agent_downline_with_depth(
                 p.name as position_name,
                 p.level as position_level,
                 d.upline_id,
-                (SELECT COUNT(*) FROM users WHERE upline_id = d.id) as direct_downline_count
+                (SELECT COUNT(*) FROM users WHERE upline_id = d.id AND agency_id = %s) as direct_downline_count
             FROM downline d
             LEFT JOIN positions p ON p.id = d.position_id
             WHERE %s OR d.depth > 0
             ORDER BY d.depth, d.last_name, d.first_name
-        """, [str(agent_id), effective_max_depth, include_self])
+        """, [str(agent_id), str(agency_id), effective_max_depth, str(agency_id), str(agency_id), include_self])
 
         columns = [col[0] for col in cursor.description]
         rows = cursor.fetchall()

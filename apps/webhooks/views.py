@@ -56,6 +56,16 @@ class StripeWebhookView(APIView):
                 )
 
             # Verify webhook signature
+            # SECURITY FIX: Always verify signature, even in DEBUG mode
+            # Bypassing signature verification creates a security hole that
+            # could be exploited if DEBUG accidentally gets enabled in production
+            if not STRIPE_WEBHOOK_SECRET:
+                logger.error('STRIPE_WEBHOOK_SECRET not configured')
+                return Response(
+                    {'error': 'Webhook not configured'},
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                )
+
             try:
                 event = stripe.Webhook.construct_event(
                     payload,
@@ -64,17 +74,10 @@ class StripeWebhookView(APIView):
                 )
             except stripe.error.SignatureVerificationError as e:
                 logger.error(f'Webhook signature verification failed: {e}')
-
-                # In development, allow bypassing signature verification
-                if os.getenv('DEBUG', 'False').lower() == 'true':
-                    logger.warning('DEV MODE: Bypassing signature verification')
-                    import json
-                    event = json.loads(payload)
-                else:
-                    return Response(
-                        {'error': 'Invalid signature'},
-                        status=status.HTTP_400_BAD_REQUEST
-                    )
+                return Response(
+                    {'error': 'Invalid signature'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
 
             event_type = event.get('type') if isinstance(event, dict) else event.type
             event_data = event.get('data', {}).get('object', {}) if isinstance(event, dict) else event.data.object
