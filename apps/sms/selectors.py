@@ -47,7 +47,7 @@ def get_sms_conversations(
 
     try:
         # Start with base queryset - filter for SMS type only
-        qs = Conversation.objects.filter(agency_id=user.agency_id, type='sms')  # type: ignore[attr-defined]
+        qs = Conversation.objects.filter(agency_id=user.agency_id, type='sms', is_active=True)  # type: ignore[attr-defined]
 
         # Apply view mode filter
         if view_mode == 'all' and is_admin:
@@ -217,6 +217,20 @@ def get_sms_messages(
             if conversation.agent_id not in visible_ids:
                 return {'messages': [], 'pagination': _empty_pagination(page, limit)}
 
+        # Mark inbound messages as read (matches RPC side effect)
+        from django.db import connection as db_connection
+        with db_connection.cursor() as cursor:
+            cursor.execute("""
+                UPDATE public.messages m
+                SET read_at = NOW()
+                FROM public.conversations c
+                WHERE m.conversation_id = %s
+                    AND m.conversation_id = c.id
+                    AND c.agency_id = %s
+                    AND m.direction = 'inbound'
+                    AND m.read_at IS NULL
+            """, [str(conversation_id), str(user.agency_id)])
+
         # Get messages with optimized query
         qs = (
             Message.objects.filter(conversation_id=conversation_id)  # type: ignore[attr-defined]
@@ -293,9 +307,11 @@ def get_draft_messages(
     is_admin = user.is_admin or user.role == 'admin'
 
     try:
-        # Start with base queryset - draft messages in the agency
+        # Start with base queryset - draft messages in the agency (SMS only, active conversations)
         qs = Message.objects.filter(  # type: ignore[attr-defined]
             conversation__agency_id=user.agency_id,
+            conversation__type='sms',
+            conversation__is_active=True,
             status='draft'
         )
 

@@ -72,7 +72,10 @@ def get_book_of_business(
     Get paginated book of business (deals) with keyset pagination.
 
     Uses keyset pagination for performance on large datasets.
-    Filters by user's visible agents based on hierarchy.
+    Filters by user's visible deals based on view mode:
+    - 'self': Only deals where user is the writing agent
+    - 'downlines': Deals visible via deal_hierarchy_snapshot (or all for admins)
+    - 'all': All agency deals (admin only)
 
     Args:
         user: The authenticated user
@@ -100,39 +103,60 @@ def get_book_of_business(
     Returns:
         Dictionary with deals, has_more, and next_cursor
     """
+    from apps.core.models import DealHierarchySnapshot
+
     # Support legacy parameter name
     if cursor_policy_effective_date and not cursor_created_at:
         cursor_created_at = cursor_policy_effective_date
     is_admin = user.is_admin or user.role == 'admin'
 
-    # Build visible agent filter based on view scope (P2-027)
+    # Normalize view mode (matching RPC behavior)
+    normalized_view = (view or 'downlines').lower()
+
+    # For admins viewing 'downlines', auto-promote to 'all' (matches RPC)
+    if normalized_view == 'downlines' and is_admin:
+        normalized_view = 'all'
+
+    # Determine visibility based on view mode
+    use_deal_filter = False  # Whether to filter by deal IDs vs agent IDs
+    visible_deal_ids: list[str] = []
+    visible_agent_ids: list[str] = []
+
     if agent_id:
-        # Specific agent requested - verify access
-        visible_ids = [agent_id]
-    elif view == 'self':
-        # Only user's own deals
-        visible_ids = [user.id]
-    elif view == 'all' and is_admin:
-        # Admin viewing all agency deals
-        visible_ids = get_visible_agent_ids(user, include_full_agency=True)
-    else:
-        # Default: user + downlines
-        visible_ids = get_visible_agent_ids(user, include_full_agency=include_full_agency and is_admin)
+        # Specific agent requested - filter by agent
+        visible_agent_ids = [str(agent_id)]
+    elif normalized_view == 'self':
+        # Only user's own deals (where they are the writing agent)
+        visible_agent_ids = [str(user.id)]
+    elif normalized_view == 'all':
+        # Admin viewing all agency deals - no agent filter needed, just agency
+        pass  # Will filter by agency_id only
+    elif normalized_view == 'downlines':
+        # Non-admin viewing downlines - use deal_hierarchy_snapshot
+        use_deal_filter = True
+        visible_deal_ids = list(
+            DealHierarchySnapshot.objects.filter(agent_id=user.id)  # type: ignore[attr-defined]
+            .values_list('deal_id', flat=True)
+            .distinct()
+        )
+        visible_deal_ids = [str(did) for did in visible_deal_ids]
+        if not visible_deal_ids:
+            return {'deals': [], 'has_more': False, 'next_cursor': None}
 
-    if not visible_ids:
-        return {'deals': [], 'has_more': False, 'next_cursor': None}
-
-    # Convert visible_ids to list of strings for PostgreSQL array parameter (safe from SQL injection)
-    visible_ids_list = [str(vid) for vid in visible_ids]
-
-    # Build query parameters - visible_ids_list is added as second parameter for ANY(%s::uuid[])
-    params = [str(user.agency_id), visible_ids_list]
+    # Build query parameters
+    params: list = [str(user.agency_id)]
 
     # Build WHERE clauses
-    where_clauses = [
-        "d.agency_id = %s",
-        "d.agent_id = ANY(%s::uuid[])",
-    ]
+    where_clauses = ["d.agency_id = %s"]
+
+    # Add visibility filter
+    if use_deal_filter:
+        where_clauses.append("d.id = ANY(%s::uuid[])")
+        params.append(visible_deal_ids)
+    elif visible_agent_ids:
+        where_clauses.append("d.agent_id = ANY(%s::uuid[])")
+        params.append(visible_agent_ids)
+    # else: admin 'all' view - no additional filter (agency_id is enough)
 
     if carrier_id:
         where_clauses.append("d.carrier_id = %s")
@@ -152,8 +176,9 @@ def get_book_of_business(
         params.append(status)
 
     if status_standardized:
-        where_clauses.append("d.status_standardized = %s")
-        params.append(status_standardized)
+        # Use ILIKE for substring match (matches RPC behavior)
+        where_clauses.append("sm.status_standardized ILIKE %s")
+        params.append(f"%{status_standardized}%")
 
     if date_from:
         where_clauses.append("d.policy_effective_date >= %s")
@@ -181,46 +206,63 @@ def get_book_of_business(
     if search_query:
         where_clauses.append("""
             (d.policy_number ILIKE %s
-             OR cl.first_name ILIKE %s
-             OR cl.last_name ILIKE %s
-             OR CONCAT(cl.first_name, ' ', cl.last_name) ILIKE %s)
+             OR d.client_name ILIKE %s)
         """)
         search_pattern = f"%{search_query}%"
-        params.extend([search_pattern, search_pattern, search_pattern, search_pattern])
+        params.extend([search_pattern, search_pattern])
 
     if client_phone:
         # Normalize phone: remove non-digits for comparison
         normalized_phone = ''.join(filter(str.isdigit, client_phone))
-        where_clauses.append("REGEXP_REPLACE(cl.phone, '[^0-9]', '', 'g') LIKE %s")
+        where_clauses.append("d.client_phone LIKE %s")
         params.append(f"%{normalized_phone}%")
 
-    # Determine sort order (P2-027)
-    if effective_date_sort == 'oldest':
-        order_direction = 'ASC'
-        cursor_comparison = '>'
-    else:
-        order_direction = 'DESC'
-        cursor_comparison = '<'
-
-    # Keyset pagination using created_at (matches RPC behavior)
+    # Keyset pagination using created_at (matches RPC behavior - always uses created_at for cursor)
     if cursor_created_at and cursor_id:
-        where_clauses.append(f"""
-            (d.created_at, d.id) {cursor_comparison} (%s::timestamp, %s)
+        where_clauses.append("""
+            (d.created_at < %s::timestamp OR (d.created_at = %s::timestamp AND d.id < %s))
         """)
-        params.extend([cursor_created_at.isoformat(), str(cursor_id)])
+        params.extend([cursor_created_at.isoformat(), cursor_created_at.isoformat(), str(cursor_id)])
 
     where_sql = " AND ".join(where_clauses)
 
     # Fetch limit + 1 to determine if there are more records
     fetch_limit = limit + 1
-    params.append(str(fetch_limit))
+    params.append(fetch_limit)
+
+    # Build ORDER BY based on effective_date_sort
+    # Uses effective_sort_date (policy_effective_date if valid, else created_at) for sorting
+    # but always uses created_at for cursor pagination (matches RPC)
+    if effective_date_sort == 'oldest':
+        order_by = """
+            CASE
+                WHEN d.policy_effective_date IS NOT NULL
+                     AND EXTRACT(YEAR FROM d.policy_effective_date) >= 2000
+                THEN d.policy_effective_date::timestamp
+                ELSE d.created_at
+            END ASC,
+            d.id ASC
+        """
+    elif effective_date_sort == 'newest':
+        order_by = """
+            CASE
+                WHEN d.policy_effective_date IS NOT NULL
+                     AND EXTRACT(YEAR FROM d.policy_effective_date) >= 2000
+                THEN d.policy_effective_date::timestamp
+                ELSE d.created_at
+            END DESC,
+            d.id DESC
+        """
+    else:
+        # Default: sort by created_at DESC
+        order_by = "d.created_at DESC, d.id DESC"
 
     query = f"""
         SELECT
             d.id,
             d.policy_number,
             d.status,
-            d.status_standardized,
+            COALESCE(d.status_standardized, sm.status_standardized) as status_standardized,
             d.annual_premium,
             d.monthly_premium,
             d.policy_effective_date,
@@ -247,18 +289,21 @@ def get_book_of_business(
             d.payment_method,
             ca.id as carrier_id,
             ca.name as carrier_name,
+            ca.display_name as carrier_display_name,
             p.id as product_id,
             p.name as product_name,
             u.id as agent_id,
             u.first_name as agent_first_name,
             u.last_name as agent_last_name,
-            u.email as agent_email
+            u.email as agent_email,
+            sm.impact as status_impact
         FROM public.deals d
         LEFT JOIN public.carriers ca ON ca.id = d.carrier_id
         LEFT JOIN public.products p ON p.id = d.product_id
         LEFT JOIN public.users u ON u.id = d.agent_id
+        LEFT JOIN public.status_mapping sm ON sm.carrier_id = d.carrier_id AND sm.raw_status = d.status
         WHERE {where_sql}
-        ORDER BY d.created_at {order_direction}, d.id {order_direction}
+        ORDER BY {order_by}
         LIMIT %s
     """
 
@@ -361,87 +406,129 @@ def get_static_filter_options(user: AuthenticatedUser) -> dict:
     """
     Get static filter options for deals (P2-028).
 
-    Uses Django ORM for all queries - optimized with select_related.
-
-    Returns carriers, products, statuses, and agents available for filtering.
+    Returns carriers, products, statuses, agents, and other filter options
+    in {value, label} format with "All X" placeholders.
 
     Args:
         user: The authenticated user
 
     Returns:
-        Dictionary with filter options
+        Dictionary with filter options matching RPC structure
     """
-    from apps.core.models import Carrier, Deal, Product, User
+    from apps.core.models import Carrier, Deal, Product, StatusMapping, User
 
     is_admin = user.is_admin or user.role == 'admin'
 
     try:
-        # Get carriers that have deals in this agency
-        carrier_ids = (
-            Deal.objects.filter(agency_id=user.agency_id, carrier_id__isnull=False)  # type: ignore[attr-defined]
-            .values_list('carrier_id', flat=True)
-            .distinct()
+        # Build visible agent IDs for non-admin filtering
+        visible_ids = None
+        if not is_admin:
+            visible_ids = get_visible_agent_ids(user, include_full_agency=False)
+
+        # Get all carriers (RPC returns all carriers, not just those with deals)
+        carriers = [{'value': 'all', 'label': 'All Carriers'}]
+        for c in Carrier.objects.all().order_by('display_name'):  # type: ignore[attr-defined]
+            carriers.append({'value': str(c.id), 'label': c.display_name or c.name})
+
+        # Get products for this agency
+        products = [{'value': 'all', 'label': 'All Products'}]
+        for p in Product.objects.filter(agency_id=user.agency_id, is_active=True).order_by('name'):  # type: ignore[attr-defined]
+            products.append({'value': str(p.id), 'label': p.name})
+
+        # Get distinct raw statuses from deals
+        statuses = [{'value': 'all', 'label': 'All Statuses'}]
+        status_qs = Deal.objects.filter(  # type: ignore[attr-defined]
+            agency_id=user.agency_id,
+            status__isnull=False
         )
-        carriers = [
-            {'id': str(c.id), 'name': c.name}
-            for c in Carrier.objects.filter(id__in=carrier_ids).order_by('name')  # type: ignore[attr-defined]
+        if visible_ids is not None:
+            status_qs = status_qs.filter(agent_id__in=visible_ids)
+
+        for st in status_qs.values_list('status', flat=True).distinct().order_by('status'):
+            if st:
+                statuses.append({'value': st, 'label': st.title()})
+
+        # Get distinct standardized statuses from status_mapping with bucketing
+        status_standardized = [{'value': 'all', 'label': 'All Statuses'}]
+        seen_buckets = set()
+        for sm in StatusMapping.objects.filter(status_standardized__isnull=False).values_list('status_standardized', flat=True).distinct():  # type: ignore[attr-defined]
+            if sm:
+                # Apply bucketing logic matching RPC
+                lower_sm = sm.lower()
+                if 'active' in lower_sm:
+                    bucket = 'active'
+                elif 'lapse pending' in lower_sm:
+                    bucket = 'lapse pending'
+                else:
+                    bucket = sm
+
+                if bucket not in seen_buckets:
+                    seen_buckets.add(bucket)
+                    status_standardized.append({'value': bucket, 'label': bucket.title()})
+
+        # Sort standardized statuses (after "All")
+        status_standardized = [status_standardized[0]] + sorted(
+            status_standardized[1:], key=lambda x: x['value']
+        )
+
+        # Effective date sort options
+        effective_date_sort = [
+            {'value': 'newest', 'label': 'Newest'},
+            {'value': 'oldest', 'label': 'Oldest'},
         ]
 
-        # Get products that have deals in this agency (with carrier info)
-        product_ids = (
-            Deal.objects.filter(agency_id=user.agency_id, product_id__isnull=False)  # type: ignore[attr-defined]
-            .values_list('product_id', flat=True)
-            .distinct()
+        # Get distinct billing cycles from deals
+        billing_cycles = [{'value': 'all', 'label': 'All Billing Cycles'}]
+        bc_qs = Deal.objects.filter(  # type: ignore[attr-defined]
+            agency_id=user.agency_id,
+            billing_cycle__isnull=False
         )
-        products = [
-            {'id': str(p.id), 'name': p.name, 'carrier_name': p.carrier.name if p.carrier else None}
-            for p in Product.objects.filter(id__in=product_ids).select_related('carrier').order_by('name')  # type: ignore[attr-defined]
-        ]
+        if visible_ids is not None:
+            bc_qs = bc_qs.filter(agent_id__in=visible_ids)
 
-        # Get distinct statuses
-        statuses = list(
-            Deal.objects.filter(agency_id=user.agency_id, status__isnull=False)  # type: ignore[attr-defined]
-            .values_list('status', flat=True)
-            .distinct()
-            .order_by('status')
+        for bc in bc_qs.values_list('billing_cycle', flat=True).distinct().order_by('billing_cycle'):
+            if bc:
+                billing_cycles.append({'value': bc, 'label': bc.title()})
+
+        # Get distinct lead sources from deals
+        lead_sources = [{'value': 'all', 'label': 'All Lead Sources'}]
+        ls_qs = Deal.objects.filter(  # type: ignore[attr-defined]
+            agency_id=user.agency_id,
+            lead_source__isnull=False
         )
+        if visible_ids is not None:
+            ls_qs = ls_qs.filter(agent_id__in=visible_ids)
 
-        # Get distinct standardized statuses
-        statuses_standardized = list(
-            Deal.objects.filter(agency_id=user.agency_id, status_standardized__isnull=False)  # type: ignore[attr-defined]
-            .values_list('status_standardized', flat=True)
-            .distinct()
-            .order_by('status_standardized')
-        )
+        for ls in ls_qs.values_list('lead_source', flat=True).distinct().order_by('lead_source'):
+            if ls:
+                lead_sources.append({'value': ls, 'label': ls.title()})
 
-        # Get agents (visible based on hierarchy) who have deals
-        visible_ids = get_visible_agent_ids(user, include_full_agency=is_admin)
-        if visible_ids:
-            # Get agent IDs that have deals in this agency and are visible
+        # Get agents (visible based on hierarchy) who have deals - not in RPC but keeping for backward compat
+        agents = []
+        agent_visible_ids = get_visible_agent_ids(user, include_full_agency=is_admin)
+        if agent_visible_ids:
             agent_ids_with_deals = (
                 Deal.objects.filter(  # type: ignore[attr-defined]
                     agency_id=user.agency_id,
-                    agent_id__in=visible_ids
+                    agent_id__in=agent_visible_ids
                 )
                 .values_list('agent_id', flat=True)
                 .distinct()
             )
-            agents = [
-                {
-                    'id': str(u.id),
-                    'name': f"{u.first_name or ''} {u.last_name or ''}".strip() or u.email,
-                    'email': u.email,
-                }
-                for u in User.objects.filter(id__in=agent_ids_with_deals).order_by('first_name', 'last_name')  # type: ignore[attr-defined]
-            ]
-        else:
-            agents = []
+            for u in User.objects.filter(id__in=agent_ids_with_deals).order_by('first_name', 'last_name'):  # type: ignore[attr-defined]
+                agents.append({
+                    'value': str(u.id),
+                    'label': f"{u.first_name or ''} {u.last_name or ''}".strip() or u.email,
+                })
 
         return {
             'carriers': carriers,
             'products': products,
             'statuses': statuses,
-            'statuses_standardized': statuses_standardized,
+            'statusStandardized': status_standardized,
+            'effectiveDateSort': effective_date_sort,
+            'billingCycles': billing_cycles,
+            'leadSources': lead_sources,
             'agents': agents,
         }
 

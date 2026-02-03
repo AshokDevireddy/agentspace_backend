@@ -42,8 +42,8 @@ class DealCreateInput:
     policy_effective_date: str | None = None
     submission_date: str | None = None
     billing_cycle: str | None = None
-    billing_day_of_month: int | None = None
-    billing_weekday: str | None = None
+    billing_day_of_month: str | None = None  # '1st', '2nd', '3rd', '4th'
+    billing_weekday: str | None = None  # 'Monday', 'Tuesday', etc.
     lead_source: str | None = None
     # Client fields (for when client_id is not provided)
     client_name: str | None = None
@@ -72,8 +72,8 @@ class DealUpdateInput:
     policy_effective_date: str | None = None
     submission_date: str | None = None
     billing_cycle: str | None = None
-    billing_day_of_month: int | None = None
-    billing_weekday: str | None = None
+    billing_day_of_month: str | None = None  # '1st', '2nd', '3rd', '4th'
+    billing_weekday: str | None = None  # 'Monday', 'Tuesday', etc.
     lead_source: str | None = None
     # Client fields
     client_name: str | None = None

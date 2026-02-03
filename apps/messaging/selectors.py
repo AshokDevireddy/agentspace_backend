@@ -10,7 +10,6 @@ Cron job queries for automated messaging translated from Supabase RPC functions:
 - get_policy_packet_checkup_deals -> get_policy_packet_checkup_deals()
 - get_quarterly_checkin_deals -> get_quarterly_checkin_deals()
 """
-import calendar
 import logging
 from datetime import date, timedelta
 
@@ -19,9 +18,63 @@ from django.db import connection
 logger = logging.getLogger(__name__)
 
 
+def get_nth_weekday_of_month(year: int, month: int, nth: str, weekday: str) -> date | None:
+    """
+    Get the Nth occurrence of a specific weekday in a given month.
+
+    Port of RPC get_nth_weekday_of_month function.
+
+    Args:
+        year: The year
+        month: The month (1-12)
+        nth: '1st', '2nd', '3rd', or '4th'
+        weekday: 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'
+
+    Returns:
+        The date, or None if invalid or doesn't exist in the month
+    """
+    # Convert nth text to integer
+    nth_map = {'1st': 1, '2nd': 2, '3rd': 3, '4th': 4}
+    n = nth_map.get(nth, 1)
+
+    # Convert weekday name to ISO weekday number (Monday=1, Sunday=7)
+    weekday_map = {
+        'Monday': 1, 'Tuesday': 2, 'Wednesday': 3, 'Thursday': 4,
+        'Friday': 5, 'Saturday': 6, 'Sunday': 7
+    }
+    target_weekday = weekday_map.get(weekday, 1)
+
+    try:
+        # Get the first day of the month
+        first_day = date(year, month, 1)
+
+        # Get the ISO weekday of the first day (Monday=1, Sunday=7)
+        first_weekday = first_day.isoweekday()
+
+        # Calculate days until first occurrence of target weekday
+        if target_weekday >= first_weekday:
+            days_until = target_weekday - first_weekday
+        else:
+            days_until = 7 - first_weekday + target_weekday
+
+        # Calculate the first occurrence
+        first_occurrence = first_day + timedelta(days=days_until)
+
+        # Calculate the nth occurrence (add (n-1) weeks)
+        result = first_occurrence + timedelta(weeks=n - 1)
+
+        # Verify the result is still in the same month
+        if result.month != month:
+            return None
+
+        return result
+    except ValueError:
+        return None
+
+
 def calculate_next_billing_date(
-    billing_day_of_month: int | None,
-    billing_weekday: int | None,
+    billing_day_of_month: str | None,
+    billing_weekday: str | None,
     billing_cycle: str,
     reference_date: date,
     today: date | None = None
@@ -31,10 +84,14 @@ def calculate_next_billing_date(
 
     Port of RPC calculate_next_billing_date function.
 
+    The billing pattern is defined by billing_day_of_month ('1st', '2nd', '3rd', '4th')
+    and billing_weekday ('Monday', 'Tuesday', etc.) together representing patterns
+    like "2nd Wednesday of month".
+
     Args:
-        billing_day_of_month: Day of month (1-31) for monthly billing, or None
-        billing_weekday: Weekday (0=Monday, 6=Sunday) for weekly billing, or None
-        billing_cycle: 'monthly', 'quarterly', 'semi-annually', 'annually', or 'weekly'
+        billing_day_of_month: Ordinal text ('1st', '2nd', '3rd', '4th') or None
+        billing_weekday: Weekday name ('Monday', 'Tuesday', etc.) or None
+        billing_cycle: 'monthly', 'quarterly', 'semi-annually', 'annually'
         reference_date: The policy effective date or last billing date
         today: Override for current date (for testing)
 
@@ -44,76 +101,49 @@ def calculate_next_billing_date(
     if today is None:
         today = date.today()
 
-    if not reference_date:
+    # If billing pattern is not set, return None (matches RPC behavior)
+    if billing_day_of_month is None or billing_weekday is None:
         return None
 
-    # Determine billing interval in months
+    # Determine month increment based on billing cycle
     interval_map = {
         'monthly': 1,
         'quarterly': 3,
         'semi-annually': 6,
         'annually': 12,
-        'weekly': 0,  # Special case handled separately
     }
     billing_cycle_lower = (billing_cycle or 'monthly').lower()
-    interval_months = interval_map.get(billing_cycle_lower, 1)
+    month_increment = interval_map.get(billing_cycle_lower, 1)
 
-    # Weekly billing uses weekday
-    if billing_cycle_lower == 'weekly' and billing_weekday is not None:
-        # Find next occurrence of billing_weekday after today
-        days_ahead = billing_weekday - today.weekday()
-        if days_ahead <= 0:
-            days_ahead += 7
-        return today + timedelta(days=days_ahead)
+    # Start with current month from reference_date
+    current_year = reference_date.year
+    current_month = reference_date.month
+    max_iterations = 50
 
-    # Monthly/Quarterly/etc. billing uses day of month
-    if billing_day_of_month is not None and 1 <= billing_day_of_month <= 31:
-        # Start from reference_date and find next billing date after today
-        current_year = reference_date.year
-        current_month = reference_date.month
+    for _ in range(max_iterations):
+        # Calculate the billing date for the current test month
+        candidate_date = get_nth_weekday_of_month(
+            current_year,
+            current_month,
+            billing_day_of_month,
+            billing_weekday
+        )
 
-        # Generate billing dates until we find one after today
-        for _ in range(60):  # Max 5 years of monthly billing
-            # Clamp billing day to valid range for this month
-            _, days_in_month = calendar.monthrange(current_year, current_month)
-            actual_day = min(billing_day_of_month, days_in_month)
+        # If we found a valid date and it's in the future, return it
+        if candidate_date is not None and candidate_date > reference_date:
+            return candidate_date
 
-            try:
-                billing_date = date(current_year, current_month, actual_day)
-                if billing_date > today:
-                    return billing_date
-            except ValueError:
-                pass  # Invalid date, skip
+        # Move to next billing period
+        test_month = current_month + month_increment
+        test_year = current_year
 
-            # Move to next billing period
-            current_month += interval_months
-            while current_month > 12:
-                current_month -= 12
-                current_year += 1
+        # Handle year rollover
+        while test_month > 12:
+            test_month -= 12
+            test_year += 1
 
-        return None
-
-    # Fallback: use reference_date day of month
-    if reference_date:
-        ref_day = reference_date.day
-        current_year = reference_date.year
-        current_month = reference_date.month
-
-        for _ in range(60):
-            _, days_in_month = calendar.monthrange(current_year, current_month)
-            actual_day = min(ref_day, days_in_month)
-
-            try:
-                billing_date = date(current_year, current_month, actual_day)
-                if billing_date > today:
-                    return billing_date
-            except ValueError:
-                pass
-
-            current_month += interval_months
-            while current_month > 12:
-                current_month -= 12
-                current_year += 1
+        current_month = test_month
+        current_year = test_year
 
     return None
 

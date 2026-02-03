@@ -153,59 +153,51 @@ def search_agents_all(
 
 def search_clients_for_filter(
     user_id: UUID,
-    search_term: str,
+    search_term: str = '',
     limit: int = 20,
 ) -> list[dict]:
     """
     Search clients for filter dropdown.
     Translated from Supabase RPC: search_clients_for_filter
 
+    Returns {value, label} format for select dropdowns.
+    Searches users with role='client' who have deals.
+
     Args:
         user_id: The requesting user's ID
-        search_term: Search term
+        search_term: Search term (empty returns all)
         limit: Maximum results
 
     Returns:
-        List of matching clients
+        List of {value, label} dicts
     """
     with connection.cursor() as cursor:
         cursor.execute("""
             WITH user_agency AS (
                 SELECT agency_id FROM users WHERE id = %s LIMIT 1
-            ),
-            RECURSIVE user_downline AS (
-                SELECT id FROM users WHERE id = %s
-                UNION ALL
-                SELECT u.id
-                FROM users u
-                JOIN user_downline ud ON u.upline_id = ud.id
             )
-            SELECT DISTINCT
-                c.id,
-                c.first_name,
-                c.last_name,
-                c.email,
-                c.phone,
-                CONCAT(c.first_name, ' ', c.last_name) as display_name
-            FROM clients c
-            JOIN deals d ON d.client_id = c.id
-            JOIN user_downline ud ON d.agent_id = ud.id
-            WHERE c.agency_id = (SELECT agency_id FROM user_agency)
+            SELECT
+                u.id::text AS value,
+                CONCAT(u.first_name, ' ', u.last_name) AS label
+            FROM users u
+            WHERE u.agency_id = (SELECT agency_id FROM user_agency)
+                AND u.role = 'client'
                 AND (
-                    LOWER(c.first_name) LIKE %s
-                    OR LOWER(c.last_name) LIKE %s
-                    OR LOWER(c.email) LIKE %s
-                    OR LOWER(CONCAT(c.first_name, ' ', c.last_name)) LIKE %s
+                    %s = ''
+                    OR u.first_name ILIKE '%%' || %s || '%%'
+                    OR u.last_name ILIKE '%%' || %s || '%%'
+                    OR u.email ILIKE '%%' || %s || '%%'
                 )
-            ORDER BY c.last_name, c.first_name
+                -- Only show clients with deals
+                AND EXISTS (SELECT 1 FROM deals d WHERE d.client_id = u.id)
+            ORDER BY u.last_name, u.first_name
             LIMIT %s
         """, [
             str(user_id),
-            str(user_id),
-            f'%{search_term.lower()}%',
-            f'%{search_term.lower()}%',
-            f'%{search_term.lower()}%',
-            f'%{search_term.lower()}%',
+            search_term,
+            search_term,
+            search_term,
+            search_term,
             limit,
         ])
 
