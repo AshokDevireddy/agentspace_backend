@@ -545,66 +545,6 @@ class APIResponseFormatTests(TestCase):
 
 
 # =============================================================================
-# Feature Flag Tests
-# =============================================================================
-
-class FeatureFlagTests(TestCase):
-    """Tests for feature flag functionality."""
-
-    def test_feature_flags_enum_defined(self):
-        """All expected feature flags are defined."""
-        from apps.core.feature_flags import FeatureFlags
-
-        expected_flags = [
-            'USE_DJANGO_AUTH',
-            'USE_DJANGO_DASHBOARD',
-            'USE_DJANGO_AGENTS',
-            'USE_DJANGO_DEALS',
-            'USE_DJANGO_CARRIERS',
-            'USE_DJANGO_PRODUCTS',
-            'USE_DJANGO_POSITIONS',
-            'USE_DJANGO_SMS',
-            'USE_DJANGO_PAYOUTS',
-            'USE_DJANGO_CLIENTS',
-        ]
-
-        for flag in expected_flags:
-            self.assertTrue(
-                hasattr(FeatureFlags, flag),
-                f"FeatureFlags missing {flag}"
-            )
-
-    @patch('apps.core.feature_flags.connection')
-    @patch('apps.core.feature_flags.cache')
-    def test_get_feature_flag_checks_database(self, mock_cache, mock_connection):
-        """get_feature_flag queries database when not cached."""
-        from apps.core.feature_flags import get_feature_flag
-
-        mock_cache.get.return_value = None
-        mock_cursor = MagicMock()
-        mock_cursor.fetchone.return_value = (True, 100)
-        mock_connection.cursor.return_value.__enter__.return_value = mock_cursor
-
-        result = get_feature_flag('test_flag')
-
-        self.assertTrue(result)
-        mock_cursor.execute.assert_called()
-
-    @patch('apps.core.feature_flags.connection')
-    @patch('apps.core.feature_flags.cache')
-    def test_get_feature_flag_uses_cache(self, mock_cache, mock_connection):
-        """get_feature_flag uses cached value when available."""
-        from apps.core.feature_flags import get_feature_flag
-
-        mock_cache.get.return_value = True
-
-        result = get_feature_flag('test_flag')
-
-        self.assertTrue(result)
-        mock_connection.cursor.assert_not_called()
-
-
-# =============================================================================
 # Hierarchy Service Tests
 # =============================================================================
 

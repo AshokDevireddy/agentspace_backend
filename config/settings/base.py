@@ -98,31 +98,34 @@ TEMPLATES = [
 
 # =============================================================================
 # Database
-# Connects to existing Supabase PostgreSQL - no migrations run
+# Connects to PostgreSQL (Supabase-hosted) - no migrations run
 # =============================================================================
 
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.postgresql',
-        'NAME': config('SUPABASE_DB_NAME', default='postgres'),
-        'USER': config('SUPABASE_DB_USER', default='postgres'),
-        'PASSWORD': config('SUPABASE_DB_PASSWORD', default=''),
-        'HOST': config('SUPABASE_DB_HOST', default='localhost'),
-        'PORT': config('SUPABASE_DB_PORT', default='5432'),
+        'NAME': config('DJANGO_DB_NAME', default='postgres'),
+        'USER': config('DJANGO_DB_USER', default='postgres'),
+        'PASSWORD': config('DJANGO_DB_PASSWORD', default=''),
+        'HOST': config('DJANGO_DB_HOST', default='localhost'),
+        'PORT': config('DJANGO_DB_PORT', default='5432'),
         'OPTIONS': {
-            'sslmode': config('SUPABASE_DB_SSLMODE', default='require'),
+            'sslmode': config('DJANGO_DB_SSLMODE', default='require'),
         },
     }
 }
 
 # =============================================================================
-# Supabase Configuration
+# Authentication Configuration
 # =============================================================================
 
+# Supabase URLs for auth proxy (Django proxies auth to Supabase)
 SUPABASE_URL = config('NEXT_PUBLIC_SUPABASE_URL', default='')
 SUPABASE_ANON_KEY = config('NEXT_PUBLIC_SUPABASE_ANON_KEY', default='')
 SUPABASE_SERVICE_ROLE_KEY = config('SUPABASE_SERVICE_ROLE_KEY', default='')
-SUPABASE_JWT_SECRET = config('SUPABASE_JWT_SECRET', default='')
+
+# JWT secret for validating auth tokens
+AUTH_JWT_SECRET = config('AUTH_JWT_SECRET', default='')
 
 # Cron authentication secret (shared with frontend)
 CRON_SECRET = config('CRON_SECRET', default='')

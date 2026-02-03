@@ -113,10 +113,10 @@ class SupabaseJWTAuthentication(authentication.BaseAuthentication):
             dict: The decoded payload if valid
             None: If token is invalid or expired
         """
-        jwt_secret = getattr(settings, 'SUPABASE_JWT_SECRET', None)
+        jwt_secret = getattr(settings, 'AUTH_JWT_SECRET', None)
 
         if not jwt_secret:
-            logger.error('SUPABASE_JWT_SECRET not configured')
+            logger.error('AUTH_JWT_SECRET not configured')
             return None
 
         try:

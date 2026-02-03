@@ -737,40 +737,6 @@ class AIMessage(models.Model):
         return f"{self.role}: {self.content[:50]}..."
 
 
-class FeatureFlag(models.Model):
-    """
-    Feature flags for controlling feature rollout.
-    Maps to: public.feature_flags
-    """
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4)
-    name = models.CharField(max_length=100, unique=True)
-    description = models.TextField(null=True, blank=True)
-    is_enabled = models.BooleanField(default=False)
-    agency = models.ForeignKey(
-        Agency,
-        on_delete=models.CASCADE,
-        null=True,
-        blank=True,
-        related_name='feature_flags',
-        help_text='If null, flag is global'
-    )
-    rollout_percentage = models.IntegerField(
-        default=0,
-        help_text='Percentage of users to enable for (0-100)'
-    )
-    metadata = models.JSONField(null=True, blank=True)
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
-
-    class Meta:
-        managed = False
-        db_table = 'feature_flags'
-
-    def __str__(self):
-        scope = f"Agency: {self.agency.name}" if self.agency else "Global"
-        return f"{self.name} ({scope}) - {'Enabled' if self.is_enabled else 'Disabled'}"
-
-
 # =============================================================================
 # NEW MODELS - Added for Supabase DB Sync
 # =============================================================================

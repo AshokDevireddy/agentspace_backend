@@ -72,10 +72,24 @@ class BaseService:
 
     def _load_user_context(self) -> None:
         """Load user context from database."""
-        # TODO: Implement Django ORM query
-        # SELECT agency_id, is_admin, perm_level, role
-        # FROM users WHERE id = self.user_id
-        pass
+        with connection.cursor() as cursor:
+            cursor.execute("""
+                SELECT agency_id, is_admin, perm_level, role
+                FROM public.users
+                WHERE id = %s
+                LIMIT 1
+            """, [str(self.user_id)])
+            row = cursor.fetchone()
+
+            if row:
+                self._agency_id = row[0]
+                self._is_admin = row[1] or row[3] == 'admin'
+                self._user_cache = {
+                    'agency_id': row[0],
+                    'is_admin': row[1],
+                    'perm_level': row[2],
+                    'role': row[3],
+                }
 
     def _check_hierarchy_access(self, target_agent_id: UUID) -> bool:
         """
@@ -90,14 +104,18 @@ class BaseService:
         Returns:
             bool: True if access is allowed
         """
-        if self.is_admin:
-            # Admin can access anyone in their agency
-            # TODO: Verify target is in same agency
+        from apps.core.hierarchy import is_in_agency, is_in_downline
+
+        # User can always access themselves
+        if target_agent_id == self.user_id:
             return True
 
+        if self.is_admin:
+            # Admin can access anyone in their agency
+            return is_in_agency(target_agent_id, self.agency_id)
+
         # Check if target is in user's downline
-        # TODO: Implement downline check
-        return target_agent_id == self.user_id
+        return is_in_downline(self.user_id, target_agent_id, self.agency_id)
 
     def _execute_raw_sql(self, sql: str, params: tuple = ()) -> list[dict]:
         """

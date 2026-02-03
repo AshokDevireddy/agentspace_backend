@@ -27,6 +27,8 @@ from .selectors import (
     get_nipr_job_with_progress,
     get_onboarding_progress,
 )
+from apps.agents.services import invite_agent
+
 from .services import (
     add_pending_invitation,
     clear_pending_invitations,
@@ -300,14 +302,49 @@ class SendInvitationsView(APIView):
                 'message': 'No invitations to send'
             })
 
-        # TODO: Actually send invitations using existing invite logic
-        # For now, return the invitations that need to be sent
-        # The frontend can call the existing invite API for each
+        # Send each invitation using the invite_agent service
+        results = []
+        errors = []
+
+        for inv in invitations:
+            try:
+                # Map invitation fields to invite_agent parameters
+                result = invite_agent(
+                    inviter_id=user.id,
+                    agency_id=user.agency_id,
+                    email=inv.get('email', ''),
+                    first_name=inv.get('firstName', ''),
+                    last_name=inv.get('lastName', ''),
+                    phone_number=inv.get('phoneNumber'),
+                    perm_level=inv.get('permissionLevel', 'agent'),
+                    upline_id=UUID(inv['uplineAgentId']) if inv.get('uplineAgentId') else None,
+                    pre_invite_user_id=UUID(inv['preInviteUserId']) if inv.get('preInviteUserId') else None,
+                )
+
+                if result.get('success'):
+                    results.append({
+                        'email': inv.get('email'),
+                        'success': True,
+                        'user_id': result.get('user_id'),
+                    })
+                else:
+                    errors.append({
+                        'email': inv.get('email'),
+                        'error': result.get('error', 'Unknown error'),
+                    })
+            except Exception as e:
+                logger.error(f'Failed to send invitation to {inv.get("email")}: {e}')
+                errors.append({
+                    'email': inv.get('email'),
+                    'error': str(e),
+                })
 
         return Response({
-            'success': True,
-            'invitations': invitations,
-            'count': len(invitations),
+            'success': len(errors) == 0,
+            'sent': len(results),
+            'failed': len(errors),
+            'results': results,
+            'errors': errors,
         })
 
 
