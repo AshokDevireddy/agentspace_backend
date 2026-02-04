@@ -22,6 +22,11 @@ from .views import (
     TelnyxWebhookView,
     UnreadCountView,
 )
+from .sse import (
+    ConversationMessagesSSEView,
+    ConversationsSSEView,
+    UnreadCountSSEView,
+)
 
 urlpatterns = [
     # Core SMS endpoints
@@ -50,4 +55,9 @@ urlpatterns = [
 
     # Webhooks
     path('webhooks/telnyx', TelnyxWebhookView.as_view(), name='telnyx_webhook'),
+
+    # Server-Sent Events (SSE) for real-time updates
+    path('sse/messages', ConversationMessagesSSEView.as_view(), name='sse_messages'),
+    path('sse/unread-count', UnreadCountSSEView.as_view(), name='sse_unread_count'),
+    path('sse/conversations', ConversationsSSEView.as_view(), name='sse_conversations'),
 ]
