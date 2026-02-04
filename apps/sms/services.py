@@ -257,6 +257,79 @@ def send_message(
         return SendMessageResult(success=False, error=str(e))
 
 
+@transaction.atomic
+def send_message_with_billing(
+    user: AuthenticatedUser,
+    data: SendMessageInput,
+) -> SendMessageResult:
+    """
+    Send an SMS message with billing enforcement.
+
+    This function:
+    1. Checks if the user's tier allows SMS
+    2. Checks if within monthly limit
+    3. Sends the message
+    4. Reports overage usage to Stripe if over limit
+
+    Args:
+        user: The authenticated user sending the message
+        data: Message data including conversation_id and content
+
+    Returns:
+        SendMessageResult with success status and message details
+    """
+    from apps.core.permissions import TIER_LIMITS
+
+    tier = user.subscription_tier or 'free'
+    tier_config = TIER_LIMITS.get(tier, TIER_LIMITS['free'])
+    max_sms = tier_config.get('max_sms_per_month', 0)
+
+    # Check if SMS is blocked (free tier)
+    if max_sms == 0:
+        return SendMessageResult(
+            success=False,
+            error='SMS not available on your plan. Please upgrade to access messaging.'
+        )
+
+    # Get current usage
+    messages_sent = 0
+    stripe_customer_id = None
+
+    with connection.cursor() as cursor:
+        cursor.execute("""
+            SELECT messages_sent_count, stripe_customer_id
+            FROM public.users
+            WHERE id = %s
+        """, [str(user.id)])
+        row = cursor.fetchone()
+        if row:
+            messages_sent = row[0] or 0
+            stripe_customer_id = row[1]
+
+    # Determine if user is over their included limit
+    # None means unlimited
+    is_over_limit = max_sms is not None and messages_sent >= max_sms
+
+    # Send the message using existing function
+    result = send_message(user, data)
+
+    if result.success and is_over_limit and stripe_customer_id:
+        # Report overage to Stripe for metered billing
+        try:
+            from apps.webhooks.stripe_service import report_usage
+            report_usage(
+                customer_id=stripe_customer_id,
+                event_name='sms_messages',
+                quantity=1,
+            )
+            logger.info(f'Reported SMS overage for user {user.id}')
+        except Exception as e:
+            # Don't fail the send if usage reporting fails
+            logger.error(f'Failed to report SMS usage: {e}')
+
+    return result
+
+
 def send_bulk_messages(
     user: AuthenticatedUser,
     data: BulkSendInput,

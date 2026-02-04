@@ -47,6 +47,7 @@ from .services import (
     reject_drafts,
     send_bulk_messages,
     send_message,
+    send_message_with_billing,
     start_conversation,
     update_draft_body,
     update_opt_status,
@@ -294,6 +295,72 @@ class MarkMessageReadView(AuthenticatedAPIView, APIView):
         return Response(
             {"success": False, "message": "Message not found or already read"},
             status=status.HTTP_404_NOT_FOUND
+        )
+
+
+class SmsSendWithBillingView(AuthenticatedAPIView, APIView):
+    """
+    POST /api/sms/send
+
+    Send an SMS message with billing enforcement.
+    This endpoint checks subscription tier limits and reports usage to Stripe.
+
+    Request body:
+        conversation_id: UUID of the conversation
+        content: Message content
+    """
+    permission_classes = [IsAuthenticated]
+
+    @method_decorator(ratelimit(key="user", rate=RATE_LIMITS["sms_send"], method="POST"))
+    def post(self, request):
+        user = self.get_user(request)
+
+        data = request.data
+        conversation_id = data.get("conversation_id")
+        content = data.get("content", "").strip()
+
+        if not conversation_id:
+            return Response(
+                {"error": "conversation_id is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if not content:
+            return Response(
+                {"error": "content is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        conversation_uuid = self.parse_uuid(conversation_id, "conversation_id")
+
+        result = send_message_with_billing(
+            user=user,
+            data=SendMessageInput(
+                conversation_id=conversation_uuid,
+                content=content,
+            ),
+        )
+
+        if result.success:
+            return Response(
+                {
+                    "success": True,
+                    "message_id": str(result.message_id),
+                    "external_id": result.external_id,
+                },
+                status=status.HTTP_201_CREATED,
+            )
+
+        # Check if it's a billing-related error
+        if 'not available' in (result.error or '').lower() or 'upgrade' in (result.error or '').lower():
+            return Response(
+                {"success": False, "error": result.error},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        return Response(
+            {"success": False, "error": result.error},
+            status=status.HTTP_400_BAD_REQUEST,
         )
 
 
