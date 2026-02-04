@@ -17,6 +17,8 @@ from .views import (
     IngestJobsView,
     LinkStagedAgentNumbersView,
     OrchestrateIngestView,
+    PolicyReportFilesView,
+    PolicyReportUploadView,
     S3PresignView,
     StagingBulkInsertView,
     StagingRecordsView,
@@ -37,6 +39,10 @@ urlpatterns = [
 
     # S3 presigned URL generation (migrated from Next.js)
     path('presign', S3PresignView.as_view(), name='ingest_presign'),
+
+    # Policy Report Storage (Supabase Storage - migrated from Next.js)
+    path('policy-report-upload', PolicyReportUploadView.as_view(), name='ingest_policy_report_upload'),
+    path('policy-report-files', PolicyReportFilesView.as_view(), name='ingest_policy_report_files'),
 
     # Existing endpoints
     path('enqueue-job', EnqueueJobView.as_view(), name='ingest_enqueue_job'),

@@ -1587,6 +1587,108 @@ class UserStripeProfileView(APIView):
             )
 
 
+class AuthCallbackUserView(APIView):
+    """
+    GET /api/auth/callback-user
+
+    Get user info for auth callback routing.
+    Used by Next.js auth callback to determine where to redirect users.
+
+    Query params:
+        auth_user_id: Supabase auth user ID
+
+    Response (200):
+        {
+            "id": "uuid",
+            "role": "agent",
+            "status": "active",
+            "routing": "/dashboard"
+        }
+
+    This endpoint:
+    - Looks up user by auth_user_id
+    - Handles invited -> onboarding status transition
+    - Returns routing info based on user status/role
+    """
+    permission_classes = [AllowAny]  # Called during auth flow before session is established
+
+    def get(self, request):
+        auth_user_id = request.query_params.get('auth_user_id')
+
+        if not auth_user_id:
+            return Response(
+                {'error': 'ValidationError', 'message': 'auth_user_id is required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute("""
+                    SELECT id, role, status
+                    FROM public.users
+                    WHERE auth_user_id = %s
+                    LIMIT 1
+                """, [auth_user_id])
+                row = cursor.fetchone()
+
+                if not row:
+                    return Response(
+                        {'error': 'NotFound', 'message': 'User not found'},
+                        status=status.HTTP_404_NOT_FOUND
+                    )
+
+                user_id = str(row[0])
+                role = row[1]
+                user_status = row[2]
+
+                # Handle invited -> onboarding transition
+                if user_status == 'invited':
+                    cursor.execute("""
+                        UPDATE public.users
+                        SET status = 'onboarding', updated_at = NOW()
+                        WHERE id = %s AND status = 'invited'
+                        RETURNING id
+                    """, [user_id])
+                    updated = cursor.fetchone()
+                    if updated:
+                        user_status = 'onboarding'
+                        # Create onboarding progress for newly transitioned user
+                        try:
+                            from uuid import UUID
+                            create_onboarding_progress(UUID(user_id))
+                        except Exception as e:
+                            logger.warning(f'Failed to create onboarding progress: {e}')
+
+                # Determine routing based on status and role
+                if user_status == 'invited':
+                    # Shouldn't reach here, but handle just in case
+                    routing = '/setup-account'
+                elif user_status == 'onboarding':
+                    routing = '/setup-account'
+                elif user_status == 'active':
+                    if role == 'client':
+                        routing = '/client/dashboard'
+                    else:
+                        routing = '/'
+                else:
+                    # inactive or other status
+                    routing = None
+
+                return Response({
+                    'id': user_id,
+                    'role': role,
+                    'status': user_status,
+                    'routing': routing,
+                })
+
+        except Exception as e:
+            logger.error(f'Auth callback user lookup failed: {e}')
+            return Response(
+                {'error': 'ServerError', 'message': 'Failed to get user'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
 class UserStripeCustomerIdView(APIView):
     """
     PATCH /api/user/stripe-customer-id

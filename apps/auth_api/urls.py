@@ -20,4 +20,7 @@ urlpatterns = [
     # Session management
     path('refresh', views.RefreshTokenView.as_view(), name='auth_refresh'),
     path('session', views.SessionView.as_view(), name='auth_session'),
+
+    # Callback helpers
+    path('callback-user', views.AuthCallbackUserView.as_view(), name='auth_callback_user'),
 ]

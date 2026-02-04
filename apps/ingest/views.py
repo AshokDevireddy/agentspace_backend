@@ -1295,3 +1295,251 @@ class S3PresignView(APIView):
             'jobId': job_id,
             'files': results,
         })
+
+
+# =============================================================================
+# Supabase Storage Views (Policy Reports by Carrier)
+# =============================================================================
+
+
+class PolicyReportUploadView(APIView):
+    """
+    POST /api/ingest/policy-report-upload
+
+    Upload policy report files organized by carrier.
+    This replaces the frontend direct Supabase Storage access.
+
+    Expects multipart/form-data with files keyed as "carrier_{CarrierName}".
+    Each carrier's existing files are replaced with the new upload.
+
+    Response (200):
+        {
+            "success": true,
+            "message": "Successfully uploaded N file(s)",
+            "agencyId": "uuid",
+            "totalFilesReplaced": 0,
+            "results": [...],
+            "errors": []
+        }
+    """
+    authentication_classes = [CronSecretAuthentication, SupabaseJWTAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        user = get_user_context(request)
+        if not user:
+            return Response(
+                {'error': 'Unauthorized', 'detail': 'User authentication failed'},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
+        if not user.agency_id:
+            return Response(
+                {'error': 'Unauthorized', 'detail': 'User is not associated with an agency'},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
+        from .storage_service import replace_carrier_files, validate_file
+
+        # Parse files from request
+        uploads = []
+        for key, file in request.FILES.items():
+            # Extract carrier name from key (format: "carrier_{CarrierName}")
+            if key.startswith('carrier_'):
+                carrier_name = key[8:]  # Remove "carrier_" prefix
+                uploads.append({
+                    'carrier': carrier_name,
+                    'file': file,
+                })
+
+        if not uploads:
+            return Response(
+                {'error': 'No files uploaded', 'detail': 'Please upload at least one policy report file'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        results = []
+        errors = []
+        total_files_replaced = 0
+
+        for upload in uploads:
+            carrier = upload['carrier']
+            file = upload['file']
+
+            # Validate file
+            validation_error = validate_file(
+                content_type=file.content_type,
+                size=file.size,
+                file_name=file.name,
+            )
+            if validation_error:
+                errors.append(f'{carrier}: {validation_error}')
+                continue
+
+            # Read file content
+            try:
+                file_content = file.read()
+            except Exception as e:
+                errors.append(f'{carrier}: Failed to read file - {e}')
+                continue
+
+            # Upload (replacing existing files)
+            result = replace_carrier_files(
+                agency_id=user.agency_id,
+                carrier_name=carrier,
+                file_content=file_content,
+                file_name=file.name,
+                content_type=file.content_type,
+            )
+
+            if result.success:
+                results.append({
+                    'carrier': carrier,
+                    'fileName': result.file_name,
+                    'storagePath': result.storage_path,
+                    'size': result.size,
+                    'type': result.content_type,
+                })
+            else:
+                errors.append(f'{carrier}: {result.error}')
+
+        success = len(errors) == 0
+        response_data = {
+            'success': success,
+            'message': (
+                f"Successfully uploaded {len(results)} file(s)"
+                if success else 'Some files failed to upload'
+            ),
+            'agencyId': str(user.agency_id),
+            'totalFilesReplaced': total_files_replaced,
+            'results': results,
+            'errors': errors,
+        }
+
+        return Response(
+            response_data,
+            status=status.HTTP_200_OK if success else status.HTTP_207_MULTI_STATUS
+        )
+
+
+class PolicyReportFilesView(APIView):
+    """
+    GET /api/ingest/policy-report-files - List policy report files
+    DELETE /api/ingest/policy-report-files - Delete policy report files
+
+    Query params (GET):
+        carrier: Optional carrier name to filter by
+
+    Request body (DELETE):
+        paths: List of storage paths to delete
+        OR
+        carrier: Carrier name to delete all files for
+
+    Response (GET 200):
+        {
+            "success": true,
+            "agencyId": "uuid",
+            "files": [...]
+        }
+    """
+    authentication_classes = [CronSecretAuthentication, SupabaseJWTAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = get_user_context(request)
+        if not user:
+            return Response(
+                {'error': 'Unauthorized', 'detail': 'User authentication failed'},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
+        if not user.agency_id:
+            return Response(
+                {'error': 'Unauthorized', 'detail': 'User is not associated with an agency'},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
+        from .storage_service import list_agency_files, list_carrier_files
+
+        carrier = request.query_params.get('carrier')
+
+        if carrier:
+            result = list_carrier_files(
+                agency_id=user.agency_id,
+                carrier_name=carrier,
+            )
+        else:
+            result = list_agency_files(agency_id=user.agency_id)
+
+        if not result.success:
+            return Response(
+                {'error': 'Failed to list files', 'detail': result.error},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+        return Response({
+            'success': True,
+            'agencyId': str(user.agency_id),
+            'files': result.files,
+        })
+
+    def delete(self, request):
+        user = get_user_context(request)
+        if not user:
+            return Response(
+                {'error': 'Unauthorized', 'detail': 'User authentication failed'},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
+        if not user.agency_id:
+            return Response(
+                {'error': 'Unauthorized', 'detail': 'User is not associated with an agency'},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
+        from .storage_service import delete_file, delete_carrier_folder
+
+        paths = request.data.get('paths', [])
+        carrier = request.data.get('carrier')
+
+        if carrier:
+            # Delete all files for carrier
+            result = delete_carrier_folder(
+                agency_id=user.agency_id,
+                carrier_name=carrier,
+            )
+
+            if not result.success:
+                return Response(
+                    {'error': 'Failed to delete files', 'detail': result.error},
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                )
+
+            return Response({
+                'success': True,
+                'deletedCount': result.deleted_count,
+            })
+
+        elif paths:
+            # Delete specific files
+            deleted_count = 0
+            errors = []
+
+            for path in paths:
+                result = delete_file(path)
+                if result.success:
+                    deleted_count += 1
+                else:
+                    errors.append(f'{path}: {result.error}')
+
+            return Response({
+                'success': len(errors) == 0,
+                'deletedCount': deleted_count,
+                'errors': errors,
+            })
+
+        else:
+            return Response(
+                {'error': 'Either paths or carrier is required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
